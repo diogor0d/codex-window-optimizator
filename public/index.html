@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codex Window Runner</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Codex Window Runner</h1>
+        <p id="subtitle">Loading service state...</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshBtn" type="button">Refresh</button>
+        <button id="runNowBtn" type="button" class="primary">Run now</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel status-panel">
+        <div class="section-header">
+          <h2>Status</h2>
+          <span id="serviceBadge" class="badge neutral">Unknown</span>
+        </div>
+        <dl class="facts">
+          <div><dt>Auth</dt><dd id="authState">Unknown</dd></div>
+          <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
+          <div><dt>Thread</dt><dd id="threadState">None</dd></div>
+          <div><dt>Local time</dt><dd id="localTime">Unknown</dd></div>
+          <div><dt>Next run</dt><dd id="nextRun">Unknown</dd></div>
+          <div><dt>Last run</dt><dd id="lastRun">None</dd></div>
+        </dl>
+        <div class="button-row">
+          <button id="pauseBtn" type="button">Pause scheduler</button>
+          <button id="resumeBtn" type="button">Resume scheduler</button>
+        </div>
+      </section>
+
+      <section class="panel account-panel">
+        <div class="section-header">
+          <h2>Account</h2>
+          <span id="loginBadge" class="badge neutral">Not checked</span>
+        </div>
+        <p class="hint">
+          Device login runs inside the container, then you complete the official Codex login in this browser.
+        </p>
+        <div class="button-row">
+          <button id="deviceLoginBtn" type="button" class="primary">Start device login</button>
+          <button id="logoutBtn" type="button" class="danger">Logout</button>
+        </div>
+        <pre id="loginOutput" class="terminal" aria-live="polite">No login session yet.</pre>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="section-header">
+          <h2>Schedule</h2>
+          <span id="schedulerBadge" class="badge neutral">Unknown</span>
+        </div>
+        <form id="settingsForm">
+          <label>
+            Timezone
+            <input id="timezoneInput" name="timezone" autocomplete="off">
+          </label>
+          <label>
+            Schedule times
+            <input id="scheduleInput" name="scheduleTimes" autocomplete="off" placeholder="08:00, 13:05, 18:10, 23:15">
+          </label>
+          <label>
+            Workspace directory
+            <input id="workspaceInput" name="workspaceDir" autocomplete="off">
+          </label>
+          <div class="grid-2">
+            <label>
+              Model override
+              <input id="modelInput" name="model" autocomplete="off" placeholder="CLI default">
+            </label>
+            <label>
+              Effort
+              <input id="effortInput" name="effort" autocomplete="off" placeholder="medium">
+            </label>
+          </div>
+          <div class="grid-2">
+            <label>
+              Approval policy
+              <input id="approvalInput" name="approvalPolicy" autocomplete="off">
+            </label>
+            <label>
+              Summary
+              <input id="summaryInput" name="summary" autocomplete="off">
+            </label>
+          </div>
+          <label class="checkbox-line">
+            <input id="networkInput" name="networkAccess" type="checkbox">
+            Allow network access for scheduled turns
+          </label>
+          <label class="checkbox-line">
+            <input id="skipActiveInput" name="skipIfActive" type="checkbox">
+            Skip scheduled send while a turn is already active
+          </label>
+          <label>
+            Scheduled prompt template
+            <textarea id="promptInput" name="promptTemplate" rows="9"></textarea>
+          </label>
+          <div class="button-row">
+            <button type="submit" class="primary">Save settings</button>
+            <span id="settingsMessage" class="form-message"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel goal-panel">
+        <div class="section-header">
+          <h2>Goal</h2>
+        </div>
+        <form id="goalForm">
+          <label>
+            Active Codex goal
+            <textarea id="goalInput" rows="4" placeholder="Finish X, keep tests green, stop when blocked."></textarea>
+          </label>
+          <label>
+            Token budget
+            <input id="tokenBudgetInput" inputmode="numeric" placeholder="Optional">
+          </label>
+          <div class="button-row">
+            <button type="submit" class="primary">Set goal</button>
+            <button id="clearGoalBtn" type="button">Clear goal</button>
+            <span id="goalMessage" class="form-message"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel manual-panel">
+        <div class="section-header">
+          <h2>Manual Send</h2>
+        </div>
+        <label>
+          Optional one-off prompt
+          <textarea id="manualPromptInput" rows="5" placeholder="Leave empty to use the scheduled prompt template."></textarea>
+        </label>
+        <div class="button-row">
+          <button id="manualSendBtn" type="button" class="primary">Send to Codex</button>
+          <span id="manualMessage" class="form-message"></span>
+        </div>
+      </section>
+
+      <section class="panel activity-panel">
+        <div class="section-header">
+          <h2>Activity</h2>
+          <button id="clearActivityBtn" type="button">Clear view</button>
+        </div>
+        <ol id="activityList" class="activity-list"></ol>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

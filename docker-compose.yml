@@ -1,0 +1,24 @@
+services:
+  codex-window-runner:
+    build:
+      context: .
+      args:
+        CODEX_PACKAGE_VERSION: "0.142.5"
+    container_name: codex-window-runner
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Lisbon
+      PORT: "8080"
+      DATA_DIR: /data/app
+      CODEX_HOME: /data/codex-home
+      WORKSPACE_DIR: /workspace
+      # Optional defense in depth when the app is behind Cloudflare Access.
+      # ADMIN_EMAILS: "you@example.com"
+    ports:
+      - "127.0.0.1:8787:8080"
+    volumes:
+      - codex_window_runner_data:/data
+      - ./workspace:/workspace
+
+volumes:
+  codex_window_runner_data:
