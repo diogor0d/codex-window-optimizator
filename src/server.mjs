@@ -14,6 +14,7 @@ const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT_DIR, "data");
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 const CODEX_HOME = process.env.CODEX_HOME || path.join(DATA_DIR, "codex-home");
+const ACCOUNTS_DIR = process.env.CODEX_ACCOUNTS_DIR || path.join(path.dirname(CODEX_HOME), "codex-accounts");
 const DEFAULT_WORKSPACE_DIR = process.env.WORKSPACE_DIR || "/workspace";
 const SERVICE_NAME = "codex-window-runner";
 
@@ -22,6 +23,31 @@ process.env.TZ ||= "Europe/Lisbon";
 const DEFAULT_PROMPT = `Scheduled Codex window ping at {{local_time}}.
 
 Continue the active goal in this thread. If no goal is set, summarize current state and ask me to set one. Prefer small, reversible progress. Do not start unrelated work. Stop and ask before destructive actions, credential handling, broad network access, or anything requiring approval.`;
+
+const ANSI_ESCAPE_RE = /[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
+const VALID_APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "granular", "never"]);
+
+const DEFAULT_THREAD_STATE = {
+  threadId: null,
+  sessionId: null,
+  name: null,
+  lastScheduleKey: null,
+  updatedAt: null
+};
+
+const DEFAULT_DASHBOARD = {
+  rateLimits: null,
+  lastUserMessage: null,
+  lastAgentMessage: null,
+  lastCompletedTurn: null
+};
+
+function normalizeApprovalPolicy(value) {
+  if (value === "unlessTrusted") {
+    return "on-request";
+  }
+  return VALID_APPROVAL_POLICIES.has(value) ? value : "on-request";
+}
 
 const DEFAULT_STORE = {
   version: 1,
@@ -33,26 +59,26 @@ const DEFAULT_STORE = {
     model: "",
     effort: "medium",
     summary: "concise",
-    approvalPolicy: "unlessTrusted",
+    approvalPolicy: "on-request",
     networkAccess: false,
     workspaceDir: DEFAULT_WORKSPACE_DIR,
     skipIfActive: true
   },
-  threadState: {
-    threadId: null,
-    sessionId: null,
-    name: null,
-    lastScheduleKey: null,
-    updatedAt: null
-  },
+  selectedAccountId: "default",
+  accounts: [],
+  threadState: structuredClone(DEFAULT_THREAD_STATE),
   scheduledRuns: [],
   activityEvents: [],
-  authEvents: []
+  authEvents: [],
+  dashboard: structuredClone(DEFAULT_DASHBOARD)
 };
 
 let store = structuredClone(DEFAULT_STORE);
 let saveChain = Promise.resolve();
 const sseClients = new Set();
+const authStatusCacheByAccount = new Map();
+const appServers = new Map();
+const loginSessions = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -60,6 +86,80 @@ function nowIso() {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function defaultAccount() {
+  return {
+    id: "default",
+    label: "Default account",
+    enabled: true,
+    codeHome: CODEX_HOME,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    threadState: clone(DEFAULT_THREAD_STATE),
+    dashboard: clone(DEFAULT_DASHBOARD)
+  };
+}
+
+function createAccount(label = "New account") {
+  const id = `acct_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  return {
+    id,
+    label,
+    enabled: true,
+    codeHome: path.join(ACCOUNTS_DIR, id),
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    threadState: clone(DEFAULT_THREAD_STATE),
+    dashboard: clone(DEFAULT_DASHBOARD)
+  };
+}
+
+function normalizeAccount(account, fallback = defaultAccount()) {
+  const normalized = {
+    ...fallback,
+    ...account,
+    id: account?.id || fallback.id,
+    label: account?.label || fallback.label,
+    enabled: account?.enabled !== false,
+    codeHome: account?.codeHome || fallback.codeHome,
+    threadState: mergeDefaults(account?.threadState || {}, DEFAULT_THREAD_STATE),
+    dashboard: mergeDefaults(account?.dashboard || {}, DEFAULT_DASHBOARD)
+  };
+  normalized.updatedAt ||= nowIso();
+  normalized.createdAt ||= normalized.updatedAt;
+  return normalized;
+}
+
+function getAccount(accountId = store.selectedAccountId) {
+  const id = accountId || store.selectedAccountId || "default";
+  return store.accounts.find((account) => account.id === id) || store.accounts[0];
+}
+
+function requireAccount(accountId = store.selectedAccountId) {
+  const account = getAccount(accountId);
+  if (!account) {
+    throw new Error("Account not found");
+  }
+  return account;
+}
+
+function publicAccount(account) {
+  const auth = authStatusCacheByAccount.get(account.id)?.status || {
+    loggedIn: false,
+    mode: "unknown",
+    detail: "Not checked yet"
+  };
+  return {
+    id: account.id,
+    label: account.label,
+    enabled: account.enabled,
+    isSelected: account.id === store.selectedAccountId,
+    auth,
+    appServer: { running: getAppServer(account.id, false)?.running || false },
+    thread: account.threadState,
+    dashboard: account.dashboard
+  };
 }
 
 function mergeDefaults(target, defaults) {
@@ -86,6 +186,7 @@ function mergeDefaults(target, defaults) {
 
 function redactString(value) {
   return value
+    .replace(ANSI_ESCAPE_RE, "")
     .replace(/(refresh_token["'\s:=]+)[^"',\s]+/gi, "$1[REDACTED]")
     .replace(/(access_token["'\s:=]+)[^"',\s]+/gi, "$1[REDACTED]")
     .replace(/(id_token["'\s:=]+)[^"',\s]+/gi, "$1[REDACTED]")
@@ -121,6 +222,19 @@ function redact(value, depth = 0) {
 async function ensureDirs() {
   await mkdir(DATA_DIR, { recursive: true });
   await mkdir(CODEX_HOME, { recursive: true });
+  await mkdir(ACCOUNTS_DIR, { recursive: true });
+  const accounts = store?.accounts?.length ? store.accounts : [defaultAccount()];
+  for (const account of accounts) {
+    await ensureAccountDirs(account);
+  }
+}
+
+async function ensureAccountDirs(account) {
+  await mkdir(account.codeHome, { recursive: true });
+  const configPath = path.join(account.codeHome, "config.toml");
+  if (!existsSync(configPath)) {
+    await writeFile(configPath, 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
+  }
 }
 
 async function loadStore() {
@@ -135,6 +249,30 @@ async function loadStore() {
     store = structuredClone(DEFAULT_STORE);
     await saveStore();
   }
+  normalizeStore();
+  await saveStore();
+}
+
+function normalizeStore() {
+  store.settings.approvalPolicy = normalizeApprovalPolicy(store.settings.approvalPolicy);
+  if (!Array.isArray(store.accounts) || store.accounts.length === 0) {
+    const migrated = defaultAccount();
+    migrated.threadState = mergeDefaults(store.threadState || {}, DEFAULT_THREAD_STATE);
+    migrated.dashboard = mergeDefaults(store.dashboard || {}, DEFAULT_DASHBOARD);
+    store.accounts = [migrated];
+    store.selectedAccountId = migrated.id;
+  } else {
+    store.accounts = store.accounts.map((account, index) => {
+      const fallback = index === 0 ? defaultAccount() : createAccount(account?.label || `Account ${index + 1}`);
+      return normalizeAccount(account, fallback);
+    });
+    if (!store.accounts.some((account) => account.id === store.selectedAccountId)) {
+      store.selectedAccountId = store.accounts[0].id;
+    }
+  }
+  const selected = getAccount();
+  store.threadState = selected?.threadState || clone(DEFAULT_THREAD_STATE);
+  store.dashboard = selected?.dashboard || clone(DEFAULT_DASHBOARD);
 }
 
 function saveStore() {
@@ -154,6 +292,24 @@ function broadcast(eventName, data) {
   }
 }
 
+function logActivityEvent(event) {
+  const line = JSON.stringify({
+    type: "activity",
+    ts: event.ts,
+    source: event.source,
+    severity: event.severity,
+    message: event.message,
+    payload: event.payload
+  });
+  if (event.severity === "error") {
+    console.error(line);
+  } else if (event.severity === "warn") {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
+
 function addActivity(source, severity, message, payload = {}) {
   const event = {
     id: randomUUID(),
@@ -165,6 +321,7 @@ function addActivity(source, severity, message, payload = {}) {
   };
   store.activityEvents.push(event);
   store.activityEvents = store.activityEvents.slice(-1500);
+  logActivityEvent(event);
   broadcast("activity", event);
   void saveStore();
   return event;
@@ -184,24 +341,35 @@ function addAuthEvent(message, payload = {}) {
   return event;
 }
 
+function getFirstTextContent(content) {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  const textPart = content.find((part) => part?.type === "text" && typeof part.text === "string");
+  return textPart?.text || "";
+}
+
 function workspaceCwd() {
   const configured = store.settings.workspaceDir || DEFAULT_WORKSPACE_DIR;
   return existsSync(configured) ? configured : ROOT_DIR;
 }
 
-function codexEnv() {
+function codexEnv(account = getAccount()) {
   return {
     ...process.env,
-    CODEX_HOME
+    CODEX_HOME: account?.codeHome || CODEX_HOME,
+    NO_COLOR: "1",
+    TERM: "dumb"
   };
 }
 
 function runCodex(args, options = {}) {
+  const account = options.account || getAccount();
   const timeoutMs = options.timeoutMs ?? 30000;
   return new Promise((resolve) => {
     const child = spawn("codex", args, {
       cwd: workspaceCwd(),
-      env: codexEnv(),
+      env: codexEnv(account),
       stdio: ["pipe", "pipe", "pipe"]
     });
     let stdout = "";
@@ -238,23 +406,24 @@ function runCodex(args, options = {}) {
   });
 }
 
-let authStatusCache = {
-  checkedAt: 0,
-  status: {
+function unknownAuthStatus() {
+  return {
     loggedIn: false,
     mode: "unknown",
     detail: "Not checked yet"
-  }
-};
+  };
+}
 
-async function getAuthStatus(force = false) {
-  if (!force && Date.now() - authStatusCache.checkedAt < 10000) {
-    return authStatusCache.status;
+async function getAuthStatus(accountOrId = store.selectedAccountId, force = false) {
+  const account = typeof accountOrId === "object" ? accountOrId : requireAccount(accountOrId);
+  const cached = authStatusCacheByAccount.get(account.id);
+  if (!force && cached && Date.now() - cached.checkedAt < 10000) {
+    return cached.status;
   }
-  const result = await runCodex(["login", "status"], { timeoutMs: 20000 });
+  const result = await runCodex(["login", "status"], { account, timeoutMs: 20000 });
   const combined = `${result.stdout}\n${result.stderr}`.trim();
   const loggedIn = result.code === 0;
-  authStatusCache = {
+  const next = {
     checkedAt: Date.now(),
     status: {
       loggedIn,
@@ -263,16 +432,19 @@ async function getAuthStatus(force = false) {
       code: result.code
     }
   };
-  return authStatusCache.status;
+  authStatusCacheByAccount.set(account.id, next);
+  return next.status;
 }
 
 class CodexAppServer {
-  constructor() {
+  constructor(accountId) {
+    this.accountId = accountId;
     this.proc = null;
     this.nextId = 1;
     this.pending = new Map();
     this.buffer = "";
     this.threadStatuses = new Map();
+    this.readyPromise = null;
   }
 
   get running() {
@@ -283,33 +455,43 @@ class CodexAppServer {
     if (this.running) {
       return;
     }
+    const account = requireAccount(this.accountId);
     await ensureDirs();
     this.proc = spawn("codex", ["app-server", "--listen", "stdio://"], {
       cwd: workspaceCwd(),
-      env: codexEnv(),
+      env: codexEnv(account),
       stdio: ["pipe", "pipe", "pipe"]
     });
     this.buffer = "";
-    addActivity("codex", "info", "Started Codex app-server", { cwd: workspaceCwd(), codeHome: CODEX_HOME });
+    addActivity("codex", "info", "Started Codex app-server", {
+      accountId: account.id,
+      accountLabel: account.label,
+      cwd: workspaceCwd(),
+      codeHome: account.codeHome
+    });
 
     this.proc.stdout.on("data", (chunk) => this.handleStdout(chunk.toString("utf8")));
     this.proc.stderr.on("data", (chunk) => {
       const text = redactString(chunk.toString("utf8").trim());
       if (text) {
-        addActivity("codex", "warn", "Codex app-server stderr", { text });
+        addActivity("codex", "warn", "Codex app-server stderr", { accountId: this.accountId, text });
       }
     });
     this.proc.on("error", (error) => {
-      addActivity("codex", "error", "Failed to start Codex app-server", { error: error.message });
+      addActivity("codex", "error", "Failed to start Codex app-server", { accountId: this.accountId, error: error.message });
       this.rejectAll(error);
       this.proc = null;
     });
     this.proc.on("close", (code, signal) => {
-      addActivity("codex", code === 0 ? "info" : "error", "Codex app-server exited", { code, signal });
+      addActivity("codex", code === 0 ? "info" : "error", "Codex app-server exited", { accountId: this.accountId, code, signal });
       this.rejectAll(new Error(`app-server exited with code ${code ?? "unknown"}`));
       this.proc = null;
+      this.readyPromise = null;
       this.threadStatuses.clear();
     });
+
+    this.readyPromise = this.initializeConnection();
+    await this.readyPromise;
   }
 
   stop() {
@@ -318,6 +500,7 @@ class CodexAppServer {
     }
     this.proc = null;
     this.rejectAll(new Error("app-server stopped"));
+    this.readyPromise = null;
   }
 
   rejectAll(error) {
@@ -343,7 +526,7 @@ class CodexAppServer {
       try {
         message = JSON.parse(line);
       } catch (error) {
-        addActivity("codex", "warn", "Unparseable app-server line", { line, error: error.message });
+        addActivity("codex", "warn", "Unparseable app-server line", { accountId: this.accountId, line, error: error.message });
         continue;
       }
       this.handleMessage(message);
@@ -364,7 +547,8 @@ class CodexAppServer {
 
     if (message.method) {
       this.updateThreadStatus(message);
-      addActivity("codex", "info", message.method, message.params || {});
+      updateDashboardState(this.accountId, message);
+      addActivity("codex", "info", message.method, { accountId: this.accountId, ...(message.params || {}) });
       broadcast("codex", redact(message));
     }
   }
@@ -389,6 +573,30 @@ class CodexAppServer {
 
   async send(method, params = {}, timeoutMs = 120000) {
     await this.start();
+    if (this.readyPromise) {
+      await this.readyPromise;
+    }
+    return this.rawRequest(method, params, timeoutMs);
+  }
+
+  async initializeConnection() {
+    const result = await this.rawRequest("initialize", {
+      clientInfo: {
+        name: SERVICE_NAME,
+        title: "Codex Window Runner",
+        version: "0.1.0"
+      }
+    }, 30000);
+    this.rawNotification("initialized", {});
+    addActivity("codex", "info", "Codex app-server initialized", { result });
+    return result;
+  }
+
+  rawNotification(method, params = {}) {
+    this.rawWrite({ method, params });
+  }
+
+  rawRequest(method, params = {}, timeoutMs = 120000) {
     const id = this.nextId++;
     const payload = { method, id, params };
     return new Promise((resolve, reject) => {
@@ -406,17 +614,93 @@ class CodexAppServer {
           reject(error);
         }
       });
-      this.proc.stdin.write(`${JSON.stringify(payload)}\n`);
+      try {
+        this.rawWrite(payload);
+      } catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+      }
     });
+  }
+
+  rawWrite(payload) {
+    if (!this.proc || !this.proc.stdin.writable) {
+      throw new Error("app-server stdin is not writable");
+    }
+    this.proc.stdin.write(`${JSON.stringify(payload)}\n`);
   }
 }
 
-const appServer = new CodexAppServer();
+function getAppServer(accountId = store.selectedAccountId, create = true) {
+  if (!accountId) {
+    return null;
+  }
+  if (!appServers.has(accountId) && create) {
+    appServers.set(accountId, new CodexAppServer(accountId));
+  }
+  return appServers.get(accountId) || null;
+}
 
-async function ensureThread() {
-  const auth = await getAuthStatus();
+function updateDashboardState(accountId, message) {
+  const account = getAccount(accountId);
+  if (!account) {
+    return;
+  }
+  const params = message.params || {};
+  account.dashboard ||= structuredClone(DEFAULT_DASHBOARD);
+
+  if (message.method === "account/rateLimits/updated" && params.rateLimits) {
+    account.dashboard.rateLimits = {
+      ...redact(params.rateLimits),
+      updatedAt: nowIso()
+    };
+    void saveStore();
+  }
+
+  if (message.method === "item/completed" && params.item?.type === "userMessage") {
+    const text = getFirstTextContent(params.item.content);
+    account.dashboard.lastUserMessage = {
+      ts: nowIso(),
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      text
+    };
+    void saveStore();
+  }
+
+  if (message.method === "item/completed" && params.item?.type === "agentMessage") {
+    account.dashboard.lastAgentMessage = {
+      ts: nowIso(),
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      text: params.item.text || ""
+    };
+    void saveStore();
+  }
+
+  if (message.method === "turn/completed") {
+    account.dashboard.lastCompletedTurn = {
+      ts: nowIso(),
+      threadId: params.threadId || null,
+      turnId: params.turn?.id || null,
+      status: params.turn?.status || null,
+      error: params.turn?.error || null,
+      durationMs: params.turn?.durationMs || null
+    };
+    void saveStore();
+  }
+  if (account.id === store.selectedAccountId) {
+    store.dashboard = account.dashboard;
+  }
+}
+
+async function ensureThread(accountId = store.selectedAccountId) {
+  const account = requireAccount(accountId);
+  const appServer = getAppServer(account.id);
+  const auth = await getAuthStatus(account, true);
   if (!auth.loggedIn) {
-    throw new Error("Codex is not logged in");
+    throw new Error(`${account.label} is not logged in`);
   }
 
   const common = {
@@ -427,50 +711,63 @@ async function ensureThread() {
     common.model = store.settings.model;
   }
 
-  if (store.threadState.threadId) {
+  if (account.threadState.threadId) {
     try {
       const result = await appServer.send("thread/resume", {
-        threadId: store.threadState.threadId,
+        threadId: account.threadState.threadId,
         ...common
       });
       const thread = result?.thread || {};
-      store.threadState = {
-        ...store.threadState,
-        threadId: thread.id || store.threadState.threadId,
-        sessionId: thread.sessionId || store.threadState.sessionId,
-        name: thread.name || store.threadState.name,
+      account.threadState = {
+        ...account.threadState,
+        threadId: thread.id || account.threadState.threadId,
+        sessionId: thread.sessionId || account.threadState.sessionId,
+        name: thread.name || account.threadState.name,
         updatedAt: nowIso()
       };
+      if (account.id === store.selectedAccountId) {
+        store.threadState = account.threadState;
+      }
       await saveStore();
-      return store.threadState.threadId;
+      return account.threadState.threadId;
     } catch (error) {
       addActivity("codex", "error", "Failed to resume stored thread; creating a new one", {
-        threadId: store.threadState.threadId,
+        accountId: account.id,
+        accountLabel: account.label,
+        threadId: account.threadState.threadId,
         error: error.message
       });
-      store.threadState.threadId = null;
-      store.threadState.sessionId = null;
+      account.threadState.threadId = null;
+      account.threadState.sessionId = null;
     }
   }
 
   const result = await appServer.send("thread/start", {
     ...common,
-    approvalPolicy: store.settings.approvalPolicy || "unlessTrusted",
-    sandbox: "workspaceWrite"
+    approvalPolicy: normalizeApprovalPolicy(store.settings.approvalPolicy),
+    sandbox: "workspace-write"
   });
   const thread = result?.thread || {};
   if (!thread.id) {
     throw new Error("Codex did not return a thread id");
   }
-  store.threadState = {
-    ...store.threadState,
+  account.threadState = {
+    ...account.threadState,
     threadId: thread.id,
     sessionId: thread.sessionId || thread.id,
     name: thread.name || null,
     updatedAt: nowIso()
   };
+  if (account.id === store.selectedAccountId) {
+    store.threadState = account.threadState;
+  }
   await saveStore();
-  addActivity("codex", "info", "Created Codex thread", { threadId: thread.id, sessionId: thread.sessionId });
+  addActivity("codex", "info", "Created Codex thread", {
+    accountId: account.id,
+    accountLabel: account.label,
+    threadId: thread.id,
+    sessionId: thread.sessionId
+  });
   return thread.id;
 }
 
@@ -503,28 +800,37 @@ function addScheduledRun(run) {
   broadcast("run", run);
 }
 
-async function startTurn({ reason, scheduleKey = null, scheduledTime = null, prompt = null }) {
+async function startTurn({ accountId = store.selectedAccountId, reason, scheduleKey = null, scheduledTime = null, prompt = null }) {
+  const account = requireAccount(accountId);
+  const appServer = getAppServer(account.id);
   const run = {
     id: randomUUID(),
     ts: nowIso(),
+    accountId: account.id,
+    accountLabel: account.label,
     scheduleKey,
     scheduledTime,
     reason,
     status: "starting",
-    threadId: store.threadState.threadId,
+    threadId: account.threadState.threadId,
     turnId: null,
     error: null
   };
   addScheduledRun(run);
 
   try {
-    const threadId = await ensureThread();
+    const threadId = await ensureThread(account.id);
     run.threadId = threadId;
 
     if (store.settings.skipIfActive && appServer.isThreadActive(threadId)) {
       run.status = "skipped_active_turn";
       addScheduledRun(run);
-      addActivity("scheduler", "warn", "Skipped send because the Codex thread is active", { threadId, reason });
+      addActivity("scheduler", "warn", "Skipped send because the Codex thread is active", {
+        accountId: account.id,
+        accountLabel: account.label,
+        threadId,
+        reason
+      });
       return run;
     }
 
@@ -534,7 +840,7 @@ async function startTurn({ reason, scheduleKey = null, scheduledTime = null, pro
       input: [{ type: "text", text: inputText }],
       cwd: store.settings.workspaceDir || DEFAULT_WORKSPACE_DIR,
       sandboxPolicy: buildSandboxPolicy(),
-      approvalPolicy: store.settings.approvalPolicy || "unlessTrusted",
+      approvalPolicy: normalizeApprovalPolicy(store.settings.approvalPolicy),
       summary: store.settings.summary || "concise"
     };
     if (store.settings.model) {
@@ -550,13 +856,25 @@ async function startTurn({ reason, scheduleKey = null, scheduledTime = null, pro
     run.status = turn.status || "started";
     appServer.threadStatuses.set(threadId, { type: "active", activeFlags: ["turn"] });
     addScheduledRun(run);
-    addActivity("scheduler", "info", "Started Codex turn", { runId: run.id, threadId, turnId: run.turnId, reason });
+    addActivity("scheduler", "info", "Started Codex turn", {
+      accountId: account.id,
+      accountLabel: account.label,
+      runId: run.id,
+      threadId,
+      turnId: run.turnId,
+      reason
+    });
     return run;
   } catch (error) {
     run.status = "failed";
     run.error = error.message;
     addScheduledRun(run);
-    addActivity("scheduler", "error", "Failed to start Codex turn", { runId: run.id, error: error.message });
+    addActivity("scheduler", "error", "Failed to start Codex turn", {
+      accountId: account.id,
+      accountLabel: account.label,
+      runId: run.id,
+      error: error.message
+    });
     return run;
   }
 }
@@ -601,14 +919,24 @@ async function schedulerTick() {
     return;
   }
   const key = `${local.date}T${local.time}`;
-  if (store.threadState.lastScheduleKey === key) {
-    return;
+  for (const account of store.accounts.filter((item) => item.enabled)) {
+    if (account.threadState.lastScheduleKey === key) {
+      continue;
+    }
+    account.threadState.lastScheduleKey = key;
+    account.threadState.updatedAt = nowIso();
+    if (account.id === store.selectedAccountId) {
+      store.threadState = account.threadState;
+    }
+    await saveStore();
+    addActivity("scheduler", "info", "Schedule matched", {
+      accountId: account.id,
+      accountLabel: account.label,
+      key,
+      localTime: local.time
+    });
+    void startTurn({ accountId: account.id, reason: "scheduled", scheduleKey: key, scheduledTime: local.time });
   }
-  store.threadState.lastScheduleKey = key;
-  store.threadState.updatedAt = nowIso();
-  await saveStore();
-  addActivity("scheduler", "info", "Schedule matched", { key, localTime: local.time });
-  void startTurn({ reason: "scheduled", scheduleKey: key, scheduledTime: local.time });
 }
 
 let schedulerTimer = null;
@@ -669,6 +997,10 @@ async function readJson(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+function accountIdFromUrl(url) {
+  return url.searchParams.get("accountId") || store.selectedAccountId;
+}
+
 function validateTime(value) {
   return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
@@ -709,6 +1041,7 @@ async function patchSettings(body) {
       next[key] = body[key];
     }
   }
+  next.approvalPolicy = normalizeApprovalPolicy(next.approvalPolicy);
   if (!next.promptTemplate.trim()) {
     throw new Error("promptTemplate cannot be empty");
   }
@@ -718,26 +1051,32 @@ async function patchSettings(body) {
   return store.settings;
 }
 
-let loginSession = null;
+function getLoginSession(accountId = store.selectedAccountId) {
+  return loginSessions.get(accountId) || { status: "none", accountId };
+}
 
-function startDeviceLogin() {
-  if (loginSession?.status === "running") {
-    return loginSession;
+function startDeviceLogin(accountId = store.selectedAccountId) {
+  const account = requireAccount(accountId);
+  const current = loginSessions.get(account.id);
+  if (current?.status === "running") {
+    return current;
   }
   const session = {
     id: randomUUID(),
+    accountId: account.id,
+    accountLabel: account.label,
     status: "running",
     startedAt: nowIso(),
     finishedAt: null,
     output: [],
     exitCode: null
   };
-  loginSession = session;
-  addAuthEvent("Started Codex device login", { sessionId: session.id });
+  loginSessions.set(account.id, session);
+  addAuthEvent("Started Codex device login", { accountId: account.id, accountLabel: account.label, sessionId: session.id });
 
   const child = spawn("codex", ["login", "--device-auth"], {
     cwd: workspaceCwd(),
-    env: codexEnv(),
+    env: codexEnv(account),
     stdio: ["pipe", "pipe", "pipe"]
   });
 
@@ -749,8 +1088,13 @@ function startDeviceLogin() {
     const entry = { ts: nowIso(), stream, text };
     session.output.push(entry);
     session.output = session.output.slice(-200);
-    broadcast("login", { sessionId: session.id, ...entry });
-    addActivity("auth", stream === "stderr" ? "warn" : "info", "Device login output", { stream, text });
+    broadcast("login", { accountId: account.id, sessionId: session.id, ...entry });
+    addActivity("auth", stream === "stderr" ? "warn" : "info", "Device login output", {
+      accountId: account.id,
+      accountLabel: account.label,
+      stream,
+      text
+    });
   };
 
   child.stdout.on("data", (chunk) => append("stdout", chunk));
@@ -759,21 +1103,25 @@ function startDeviceLogin() {
     session.status = "failed";
     session.finishedAt = nowIso();
     session.output.push({ ts: nowIso(), stream: "error", text: error.message });
-    addAuthEvent("Codex device login failed to start", { sessionId: session.id, error: error.message });
+    addAuthEvent("Codex device login failed to start", { accountId: account.id, accountLabel: account.label, sessionId: session.id, error: error.message });
     broadcast("login", session);
   });
   child.on("close", async (code) => {
     session.status = code === 0 ? "completed" : "failed";
     session.exitCode = code;
     session.finishedAt = nowIso();
-    addAuthEvent("Codex device login finished", { sessionId: session.id, code });
-    await getAuthStatus(true);
-    if (authStatusCache.status.loggedIn) {
+    addAuthEvent("Codex device login finished", { accountId: account.id, accountLabel: account.label, sessionId: session.id, code });
+    const auth = await getAuthStatus(account, true);
+    if (auth.loggedIn) {
       try {
-        await appServer.start();
-        await ensureThread();
+        await getAppServer(account.id).start();
+        await ensureThread(account.id);
       } catch (error) {
-        addActivity("codex", "error", "Post-login app-server startup failed", { error: error.message });
+        addActivity("codex", "error", "Post-login app-server startup failed", {
+          accountId: account.id,
+          accountLabel: account.label,
+          error: error.message
+        });
       }
     }
     broadcast("login", session);
@@ -782,11 +1130,18 @@ function startDeviceLogin() {
   return session;
 }
 
-async function logoutCodex() {
-  appServer.stop();
-  const result = await runCodex(["logout"], { timeoutMs: 30000 });
-  await getAuthStatus(true);
-  addAuthEvent("Logged out Codex credentials", { code: result.code, stdout: result.stdout, stderr: result.stderr });
+async function logoutCodex(accountId = store.selectedAccountId) {
+  const account = requireAccount(accountId);
+  getAppServer(account.id, false)?.stop();
+  const result = await runCodex(["logout"], { account, timeoutMs: 30000 });
+  await getAuthStatus(account, true);
+  addAuthEvent("Logged out Codex credentials", {
+    accountId: account.id,
+    accountLabel: account.label,
+    code: result.code,
+    stdout: result.stdout,
+    stderr: result.stderr
+  });
   return result;
 }
 
@@ -814,18 +1169,77 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/status") {
-    const auth = await getAuthStatus();
+    await Promise.all(store.accounts.map((account) => getAuthStatus(account).catch(() => unknownAuthStatus())));
+    const selected = requireAccount();
+    const auth = authStatusCacheByAccount.get(selected.id)?.status || unknownAuthStatus();
     return sendJson(res, 200, {
       ts: nowIso(),
+      selectedAccountId: selected.id,
+      selectedAccount: publicAccount(selected),
+      accounts: store.accounts.map(publicAccount),
       auth,
-      appServer: { running: appServer.running },
+      appServer: { running: getAppServer(selected.id, false)?.running || false },
       scheduler: {
         enabled: store.settings.schedulerEnabled,
         next: nextRunSummary()
       },
-      thread: store.threadState,
-      latestRun: store.scheduledRuns.at(-1) || null
+      thread: selected.threadState,
+      latestRun: [...store.scheduledRuns].reverse().find((run) => run.accountId === selected.id) || null,
+      dashboard: selected.dashboard || DEFAULT_DASHBOARD
     });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/accounts") {
+    await Promise.all(store.accounts.map((account) => getAuthStatus(account).catch(() => unknownAuthStatus())));
+    return sendJson(res, 200, {
+      selectedAccountId: store.selectedAccountId,
+      accounts: store.accounts.map(publicAccount)
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/accounts") {
+    const body = await readJson(req);
+    const account = createAccount(typeof body.label === "string" && body.label.trim() ? body.label.trim() : `Account ${store.accounts.length + 1}`);
+    store.accounts.push(account);
+    store.selectedAccountId = account.id;
+    store.threadState = account.threadState;
+    store.dashboard = account.dashboard;
+    await ensureAccountDirs(account);
+    await saveStore();
+    addActivity("account", "info", "Account added", { accountId: account.id, accountLabel: account.label });
+    return sendJson(res, 200, { selectedAccountId: account.id, account: publicAccount(account), accounts: store.accounts.map(publicAccount) });
+  }
+
+  if (req.method === "PATCH" && url.pathname.startsWith("/api/accounts/")) {
+    const accountId = decodeURIComponent(url.pathname.split("/").at(-1));
+    const account = requireAccount(accountId);
+    const body = await readJson(req);
+    if (typeof body.label === "string" && body.label.trim()) {
+      account.label = body.label.trim();
+    }
+    if (body.enabled !== undefined) {
+      account.enabled = Boolean(body.enabled);
+    }
+    if (body.selected === true) {
+      store.selectedAccountId = account.id;
+      store.threadState = account.threadState;
+      store.dashboard = account.dashboard;
+    }
+    account.updatedAt = nowIso();
+    await saveStore();
+    addActivity("account", "info", "Account updated", { accountId: account.id, accountLabel: account.label, enabled: account.enabled });
+    return sendJson(res, 200, { selectedAccountId: store.selectedAccountId, account: publicAccount(account), accounts: store.accounts.map(publicAccount) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/accounts/select") {
+    const body = await readJson(req);
+    const account = requireAccount(body.accountId);
+    store.selectedAccountId = account.id;
+    store.threadState = account.threadState;
+    store.dashboard = account.dashboard;
+    await saveStore();
+    addActivity("account", "info", "Account selected", { accountId: account.id, accountLabel: account.label });
+    return sendJson(res, 200, { selectedAccountId: account.id, account: publicAccount(account), accounts: store.accounts.map(publicAccount) });
   }
 
   if (req.method === "GET" && url.pathname === "/api/activity") {
@@ -850,6 +1264,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/run-now") {
     const body = await readJson(req);
     const run = await startTurn({
+      accountId: body.accountId || store.selectedAccountId,
       reason: "manual",
       prompt: typeof body.prompt === "string" && body.prompt.trim() ? body.prompt : null
     });
@@ -875,7 +1290,8 @@ async function handleApi(req, res, url) {
     if (typeof body.objective !== "string" || !body.objective.trim()) {
       return sendError(res, 400, "objective is required");
     }
-    const threadId = await ensureThread();
+    const accountId = body.accountId || store.selectedAccountId;
+    const threadId = await ensureThread(accountId);
     const params = {
       threadId,
       objective: body.objective.trim(),
@@ -884,32 +1300,35 @@ async function handleApi(req, res, url) {
     if (Number.isInteger(body.tokenBudget) && body.tokenBudget > 0) {
       params.tokenBudget = body.tokenBudget;
     }
-    const result = await appServer.send("thread/goal/set", params);
-    addActivity("thread", "info", "Goal set", { threadId, objective: params.objective });
+    const result = await getAppServer(accountId).send("thread/goal/set", params);
+    addActivity("thread", "info", "Goal set", { accountId, threadId, objective: params.objective });
     return sendJson(res, 200, result);
   }
 
   if (req.method === "DELETE" && url.pathname === "/api/thread/goal") {
-    const threadId = await ensureThread();
-    const result = await appServer.send("thread/goal/clear", { threadId });
-    addActivity("thread", "info", "Goal cleared", { threadId });
+    const accountId = accountIdFromUrl(url);
+    const threadId = await ensureThread(accountId);
+    const result = await getAppServer(accountId).send("thread/goal/clear", { threadId });
+    addActivity("thread", "info", "Goal cleared", { accountId, threadId });
     return sendJson(res, 200, result);
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/status") {
-    return sendJson(res, 200, await getAuthStatus(true));
+    return sendJson(res, 200, await getAuthStatus(accountIdFromUrl(url), true));
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/device/start") {
-    return sendJson(res, 200, startDeviceLogin());
+    const body = await readJson(req);
+    return sendJson(res, 200, startDeviceLogin(body.accountId || store.selectedAccountId));
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/device/current") {
-    return sendJson(res, 200, loginSession || { status: "none" });
+    return sendJson(res, 200, getLoginSession(accountIdFromUrl(url)));
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-    const result = await logoutCodex();
+    const body = await readJson(req);
+    const result = await logoutCodex(body.accountId || store.selectedAccountId);
     return sendJson(res, result.code === 0 ? 200 : 500, result);
   }
 
@@ -939,7 +1358,7 @@ async function serveStatic(req, res, url) {
     const ext = path.extname(resolved);
     res.writeHead(200, {
       "content-type": CONTENT_TYPES[ext] || "application/octet-stream",
-      "cache-control": ext === ".html" ? "no-store" : "public, max-age=3600"
+      "cache-control": "no-store"
     });
     createReadStream(resolved).pipe(res);
   } catch {
@@ -969,7 +1388,7 @@ async function bootstrap() {
   await loadStore();
   addActivity("server", "info", "Service starting", {
     dataDir: DATA_DIR,
-    codeHome: CODEX_HOME,
+    accountsDir: ACCOUNTS_DIR,
     workspaceDir: store.settings.workspaceDir
   });
 
@@ -981,21 +1400,32 @@ async function bootstrap() {
 
   startScheduler();
 
-  const auth = await getAuthStatus(true);
-  if (auth.loggedIn) {
-    try {
-      await appServer.start();
-      await ensureThread();
-    } catch (error) {
-      addActivity("codex", "error", "Initial app-server startup failed", { error: error.message });
+  for (const account of store.accounts) {
+    const auth = await getAuthStatus(account, true);
+    if (auth.loggedIn) {
+      try {
+        await getAppServer(account.id).start();
+        await ensureThread(account.id);
+      } catch (error) {
+        addActivity("codex", "error", "Initial app-server startup failed", {
+          accountId: account.id,
+          accountLabel: account.label,
+          error: error.message
+        });
+      }
+    } else if (account.enabled) {
+      addActivity("auth", "warn", "Codex account is not logged in; scheduled sends will fail until device login completes", {
+        accountId: account.id,
+        accountLabel: account.label
+      });
     }
-  } else {
-    addActivity("auth", "warn", "Codex is not logged in; scheduled sends will fail until device login completes");
   }
 
   const shutdown = async () => {
     addActivity("server", "info", "Shutting down");
-    appServer.stop();
+    for (const serverInstance of appServers.values()) {
+      serverInstance.stop();
+    }
     clearInterval(schedulerTimer);
     server.close();
     await saveStore();

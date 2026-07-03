@@ -13,6 +13,7 @@
         <p id="subtitle">Loading service state...</p>
       </div>
       <div class="topbar-actions">
+        <button id="themeToggleBtn" type="button" aria-pressed="false">Dark mode</button>
         <button id="refreshBtn" type="button">Refresh</button>
         <button id="runNowBtn" type="button" class="primary">Run now</button>
       </div>
@@ -38,18 +39,58 @@
         </div>
       </section>
 
+      <section class="panel window-panel">
+        <div class="section-header">
+          <h2>Codex Window</h2>
+          <span id="windowBadge" class="badge neutral">Unknown</span>
+        </div>
+        <div class="window-meter">
+          <div class="meter-copy">
+            <span id="windowUsageLabel">Usage unknown</span>
+            <span id="windowResetHint">Reset unknown</span>
+          </div>
+          <div class="meter-track" aria-hidden="true">
+            <div id="windowUsageBar" class="meter-bar"></div>
+          </div>
+        </div>
+        <dl class="facts">
+          <div><dt>Usage</dt><dd id="windowUsage">Unknown</dd></div>
+          <div><dt>Reset</dt><dd id="windowReset">Unknown</dd></div>
+          <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
+          <div><dt>Last ping</dt><dd id="lastPing">None</dd></div>
+          <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
+        </dl>
+      </section>
+
       <section class="panel account-panel">
         <div class="section-header">
-          <h2>Account</h2>
+          <h2>Accounts</h2>
           <span id="loginBadge" class="badge neutral">Not checked</span>
         </div>
         <p class="hint">
-          Device login runs inside the container, then you complete the official Codex login in this browser.
+          Each account uses its own persistent Codex home. Enabled accounts are pinged by the scheduler.
         </p>
+        <label>
+          Selected account
+          <select id="accountSelect"></select>
+        </label>
+        <div class="account-edit-row">
+          <input id="accountLabelInput" autocomplete="off" placeholder="Account label">
+          <button id="saveAccountBtn" type="button">Save label</button>
+        </div>
+        <label class="checkbox-line">
+          <input id="accountEnabledInput" type="checkbox">
+          Include this account in scheduled pings
+        </label>
         <div class="button-row">
           <button id="deviceLoginBtn" type="button" class="primary">Start device login</button>
           <button id="logoutBtn" type="button" class="danger">Logout</button>
         </div>
+        <div class="account-add-row">
+          <input id="newAccountLabelInput" autocomplete="off" placeholder="New account label">
+          <button id="addAccountBtn" type="button">Add account</button>
+        </div>
+        <div id="accountList" class="account-list"></div>
         <pre id="loginOutput" class="terminal" aria-live="polite">No login session yet.</pre>
       </section>
 
@@ -148,9 +189,16 @@
       <section class="panel activity-panel">
         <div class="section-header">
           <h2>Activity</h2>
-          <button id="clearActivityBtn" type="button">Clear view</button>
+          <div class="activity-actions">
+            <label class="inline-toggle">
+              <input id="rawEventsInput" type="checkbox">
+              Raw events
+            </label>
+            <button id="clearActivityBtn" type="button">Clear view</button>
+          </div>
         </div>
-        <ol id="activityList" class="activity-list"></ol>
+        <p id="activityHint" class="hint">Showing turn lifecycle, completed messages, rate limits, settings, auth, and errors.</p>
+        <ol id="activityList" class="activity-list timeline-list"></ol>
       </section>
     </main>
 

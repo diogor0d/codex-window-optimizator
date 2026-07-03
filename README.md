@@ -16,8 +16,8 @@ The point is to keep Codex local-message usage aligned with its documented five-
 - Runs a local web UI for status, activity, settings, and account management.
 - Uses `codex login --device-auth` for a headless Ubuntu server.
 - Lets you complete Codex login from your normal remote browser.
-- Persists Codex credentials in a Docker volume under `CODEX_HOME`.
-- Starts `codex app-server --listen stdio://` and sends `turn/start` requests to one stored thread.
+- Persists each Codex account in its own Docker-volume-backed Codex home.
+- Starts `codex app-server --listen stdio://` per logged-in account and sends `turn/start` requests to each account's stored thread.
 - Streams service and Codex activity to the browser.
 - Supports manual run-now messages, scheduled prompt editing, scheduler pause/resume, and Codex goal set/clear.
 
@@ -61,7 +61,7 @@ http://127.0.0.1:8787
 ## Headless Codex Login
 
 1. Open the web UI.
-2. Go to `Account`.
+2. Go to `Accounts`.
 3. Click `Start device login`.
 4. The app runs this inside the container:
 
@@ -77,7 +77,22 @@ codex login --device-auth
 /data/codex-home/auth.json
 ```
 
-Because `/data` is a Docker volume, the login survives container restarts and rebuilds.
+The first migrated account uses `/data/codex-home`. Additional accounts use:
+
+```text
+/data/codex-accounts/<account-id>/auth.json
+```
+
+Because `/data` is a Docker volume, logins survive container restarts and rebuilds.
+
+## Multiple Accounts
+
+- The existing single-account login is migrated to `Default account`.
+- Add accounts from the `Accounts` panel.
+- Each account has separate credentials, thread state, and rate-limit/window tracking.
+- Enabled accounts receive scheduled pings at every configured schedule time.
+- Disabled accounts remain logged in but are skipped by the scheduler.
+- `Run now`, device login, logout, and goal controls apply to the selected account.
 
 ## Cloudflare Access
 
@@ -111,6 +126,7 @@ Environment variables:
 | `PORT` | `8080` | HTTP port inside the container. |
 | `DATA_DIR` | `/data/app` | Service state directory. |
 | `CODEX_HOME` | `/data/codex-home` | Codex config and auth directory. |
+| `CODEX_ACCOUNTS_DIR` | `/data/codex-accounts` | Codex homes for additional accounts. |
 | `WORKSPACE_DIR` | `/workspace` | Directory Codex uses as its cwd and writable root. |
 | `ADMIN_EMAILS` | unset | Optional comma-separated Cloudflare Access email allowlist. |
 
@@ -129,9 +145,10 @@ Settings managed in the web UI:
 
 ## Operational Notes
 
-- Scheduled sends are skipped if the stored thread is active and `skipIfActive` is enabled.
+- Scheduled sends run for every enabled account.
+- Scheduled sends are skipped for an account if its stored thread is active and `skipIfActive` is enabled.
 - Network access is disabled for scheduled turns by default.
-- The default approval policy is `unlessTrusted`.
+- The default approval policy is `on-request`.
 - The service stores event history in `/data/app/store.json`.
 - If `codex app-server` exits, the next run or login completion will start it again.
 - If the saved thread cannot be resumed, the service creates a new thread and records the failure in activity.

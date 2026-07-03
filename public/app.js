@@ -2,7 +2,11 @@ const $ = (selector) => document.querySelector(selector);
 
 const state = {
   settings: null,
-  activityIds: new Set()
+  activityIds: new Set(),
+  activityEvents: [],
+  showRawEvents: false,
+  accounts: [],
+  selectedAccountId: null
 };
 
 async function api(path, options = {}) {
@@ -25,6 +29,29 @@ function badge(element, text, tone) {
   element.className = `badge ${tone}`;
 }
 
+function preferredTheme() {
+  const stored = localStorage.getItem("theme");
+  if (stored === "dark" || stored === "light") {
+    return stored;
+  }
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("theme", theme);
+  const button = $("#themeToggleBtn");
+  if (button) {
+    const isDark = theme === "dark";
+    button.textContent = isDark ? "Light mode" : "Dark mode";
+    button.setAttribute("aria-pressed", String(isDark));
+  }
+}
+
+function initTheme() {
+  setTheme(preferredTheme());
+}
+
 function formatRun(run) {
   if (!run) {
     return "None";
@@ -33,11 +60,90 @@ function formatRun(run) {
   return `${label} (${new Date(run.ts).toLocaleString()})`;
 }
 
+function formatUnixSeconds(seconds) {
+  if (!Number.isFinite(seconds)) {
+    return "Unknown";
+  }
+  return new Date(seconds * 1000).toLocaleString();
+}
+
+function compactText(value, fallback = "None") {
+  if (!value) {
+    return fallback;
+  }
+  const text = String(value).replace(/\s+/g, " ").trim();
+  return text.length > 180 ? `${text.slice(0, 180)}...` : text;
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms)) {
+    return "Unknown";
+  }
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function clampPercent(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
+function shortId(value) {
+  if (!value) {
+    return "";
+  }
+  const text = String(value);
+  return text.length > 10 ? text.slice(-8) : text;
+}
+
+function readableSource(value) {
+  const text = String(value || "service");
+  return text.replaceAll("_", " ");
+}
+
+function updateWindowSummary(dashboard = {}) {
+  const limits = dashboard.rateLimits;
+  const primary = limits?.primary;
+  const usedValue = Number(primary?.usedPercent);
+  const used = Number.isFinite(usedValue) ? `${usedValue}%` : "Unknown";
+  const reset = Number.isFinite(primary?.resetsAt) ? formatUnixSeconds(primary.resetsAt) : "Unknown";
+  const duration = Number.isFinite(primary?.windowDurationMins) ? `${primary.windowDurationMins} min` : "Unknown";
+  const plan = limits?.planType ? `${limits.planType} / ${duration}` : duration;
+  const lastTurn = dashboard.lastCompletedTurn;
+
+  $("#windowUsage").textContent = used;
+  $("#windowReset").textContent = reset;
+  $("#windowPlan").textContent = plan;
+  $("#lastPing").textContent = compactText(dashboard.lastUserMessage?.text);
+  $("#lastReply").textContent = compactText(dashboard.lastAgentMessage?.text);
+  $("#windowUsageLabel").textContent = Number.isFinite(usedValue) ? `${usedValue}% of current window used` : "Usage unknown";
+  $("#windowResetHint").textContent = Number.isFinite(primary?.resetsAt) ? `Resets ${reset}` : "Reset unknown";
+  $("#windowUsageBar").style.width = `${clampPercent(usedValue)}%`;
+
+  if (lastTurn?.status === "completed" && !lastTurn.error) {
+    badge($("#windowBadge"), `Last turn OK (${formatDuration(lastTurn.durationMs)})`, "ok");
+  } else if (lastTurn?.error) {
+    badge($("#windowBadge"), "Last turn failed", "bad");
+  } else if (limits) {
+    badge($("#windowBadge"), "Window tracked", "ok");
+  } else {
+    badge($("#windowBadge"), "No data yet", "neutral");
+  }
+}
+
 function updateStatus(status) {
+  state.accounts = status.accounts || [];
+  state.selectedAccountId = status.selectedAccountId || status.selectedAccount?.id || null;
+  renderAccounts();
+  const selectedAccount = status.selectedAccount || {};
   $("#subtitle").textContent = status.scheduler.next.localNow;
   $("#authState").textContent = status.auth.detail || (status.auth.loggedIn ? "Logged in" : "Not logged in");
   $("#appServerState").textContent = status.appServer.running ? "Running" : "Stopped";
-  $("#threadState").textContent = status.thread.threadId || "None";
+  $("#threadState").textContent = selectedAccount.thread?.threadId || status.thread.threadId || "None";
   $("#localTime").textContent = status.scheduler.next.localNow;
   $("#nextRun").textContent = status.scheduler.enabled ? status.scheduler.next.nextLocal : "Paused";
   $("#lastRun").textContent = formatRun(status.latestRun);
@@ -45,14 +151,82 @@ function updateStatus(status) {
   badge($("#serviceBadge"), status.auth.loggedIn ? "Ready" : "Needs login", status.auth.loggedIn ? "ok" : "warn");
   badge($("#loginBadge"), status.auth.loggedIn ? "Logged in" : "Logged out", status.auth.loggedIn ? "ok" : "bad");
   badge($("#schedulerBadge"), status.scheduler.enabled ? "Enabled" : "Paused", status.scheduler.enabled ? "ok" : "warn");
+  updateWindowSummary(status.dashboard || {});
 
   $("#pauseBtn").disabled = !status.scheduler.enabled;
   $("#resumeBtn").disabled = status.scheduler.enabled;
 }
 
+function selectedAccountId() {
+  return state.selectedAccountId || $("#accountSelect")?.value || null;
+}
+
+function renderAccounts() {
+  const select = $("#accountSelect");
+  const list = $("#accountList");
+  if (!select || !list) {
+    return;
+  }
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const account of state.accounts) {
+    const option = document.createElement("option");
+    option.value = account.id;
+    option.textContent = account.label;
+    option.selected = account.id === state.selectedAccountId;
+    select.append(option);
+  }
+  if (!state.selectedAccountId && previous) {
+    select.value = previous;
+  }
+
+  const selected = state.accounts.find((account) => account.id === state.selectedAccountId) || state.accounts[0];
+  $("#accountLabelInput").value = selected?.label || "";
+  $("#accountEnabledInput").checked = selected?.enabled !== false;
+
+  list.innerHTML = "";
+  for (const account of state.accounts) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `account-card ${account.id === state.selectedAccountId ? "selected" : ""}`;
+    const authTone = account.auth?.loggedIn ? "ok" : "bad";
+    const enabledTone = account.enabled ? "ok" : "warn";
+    card.innerHTML = `
+      <span>
+        <strong>${escapeHtml(account.label)}</strong>
+        <small>${escapeHtml(account.thread?.threadId ? `thread ${shortId(account.thread.threadId)}` : "no thread yet")}</small>
+      </span>
+      <span class="account-card-badges">
+        <span class="mini-badge ${authTone}">${account.auth?.loggedIn ? "logged in" : "logged out"}</span>
+        <span class="mini-badge ${enabledTone}">${account.enabled ? "scheduled" : "paused"}</span>
+      </span>
+    `;
+    card.addEventListener("click", () => selectAccount(account.id));
+    list.append(card);
+  }
+}
+
 async function refreshStatus() {
   const status = await api("/api/status");
   updateStatus(status);
+}
+
+async function selectAccount(accountId) {
+  await api("/api/accounts/select", { method: "POST", body: JSON.stringify({ accountId }) });
+  await refreshStatus();
+  renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId)}`));
+}
+
+async function patchSelectedAccount(patch) {
+  const accountId = selectedAccountId();
+  if (!accountId) {
+    return;
+  }
+  await api(`/api/accounts/${encodeURIComponent(accountId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch)
+  });
+  await refreshStatus();
 }
 
 function fillSettings(settings) {
@@ -80,31 +254,237 @@ function stringifyPayload(payload) {
   return JSON.stringify(payload, null, 2);
 }
 
+function eventPriority(event) {
+  if (event.severity === "error" || event.severity === "warn") {
+    return true;
+  }
+  if (event.source !== "codex") {
+    return true;
+  }
+  return new Set([
+    "turn/started",
+    "turn/completed",
+    "turn/failed",
+    "turn/cancelled",
+    "item/completed",
+    "account/rateLimits/updated",
+    "thread/status/changed"
+  ]).has(event.message);
+}
+
+function shouldShowEvent(event) {
+  if (state.showRawEvents) {
+    return true;
+  }
+  if (!eventPriority(event)) {
+    return false;
+  }
+  if (event.message === "item/completed") {
+    const itemType = event.payload?.item?.type;
+    return itemType === "userMessage" || itemType === "agentMessage";
+  }
+  if (event.message === "thread/status/changed") {
+    return event.payload?.status?.type !== "active" || event.severity !== "info";
+  }
+  return true;
+}
+
+function summarizeEvent(event) {
+  const payload = event.payload || {};
+  const baseTags = [
+    readableSource(event.source),
+    event.severity || "info"
+  ];
+
+  if (event.severity === "error") {
+    return {
+      kind: "error",
+      title: event.message || "Error",
+      body: compactText(payload.error || payload.message || stringifyPayload(payload), ""),
+      tags: baseTags,
+      payload
+    };
+  }
+
+  if (event.message === "account/rateLimits/updated") {
+    const limits = payload.rateLimits;
+    const primary = limits?.primary;
+    const used = Number.isFinite(primary?.usedPercent) ? `${primary.usedPercent}% used` : "Usage unknown";
+    const reset = Number.isFinite(primary?.resetsAt) ? `resets ${formatUnixSeconds(primary.resetsAt)}` : "reset unknown";
+    return {
+      kind: "window",
+      title: "Codex window updated",
+      body: `${used}, ${reset}`,
+      tags: [limits?.planType || "plan unknown", `${primary?.windowDurationMins || "?"} min window`],
+      payload: {
+        usedPercent: primary?.usedPercent,
+        resetsAt: formatUnixSeconds(primary?.resetsAt),
+        windowDurationMins: primary?.windowDurationMins,
+        planType: limits?.planType,
+        rateLimitReachedType: limits?.rateLimitReachedType
+      }
+    };
+  }
+
+  if (event.message === "item/completed") {
+    const item = payload.item;
+    if (item?.type === "userMessage") {
+      const text = item.content?.find((part) => part?.type === "text")?.text || "";
+      return {
+        kind: "message",
+        title: "Ping sent",
+        body: compactText(text, ""),
+        tags: ["user", `turn ${shortId(payload.turnId)}`].filter(Boolean),
+        payload: {
+          text,
+          threadId: payload.threadId,
+          turnId: payload.turnId
+        }
+      };
+    }
+    if (item?.type === "agentMessage") {
+      return {
+        kind: "message",
+        title: "Codex replied",
+        body: compactText(item.text, ""),
+        tags: ["assistant", `turn ${shortId(payload.turnId)}`].filter(Boolean),
+        payload: {
+          text: item.text || "",
+          threadId: payload.threadId,
+          turnId: payload.turnId
+        }
+      };
+    }
+  }
+
+  if (event.message === "turn/started") {
+    return {
+      kind: "turn",
+      title: "Turn started",
+      body: `Codex started processing turn ${shortId(payload.turn?.id)}.`,
+      tags: ["active", `thread ${shortId(payload.threadId)}`].filter(Boolean),
+      payload
+    };
+  }
+
+  if (event.message === "turn/completed") {
+    return {
+      kind: "turn",
+      title: "Turn completed",
+      body: `${payload.turn?.status || "completed"} in ${formatDuration(payload.turn?.durationMs)}`,
+      tags: [payload.turn?.error ? "error" : "ok", `turn ${shortId(payload.turn?.id)}`].filter(Boolean),
+      payload: {
+        status: payload.turn?.status,
+        duration: formatDuration(payload.turn?.durationMs),
+        error: payload.turn?.error,
+        threadId: payload.threadId,
+        turnId: payload.turn?.id
+      }
+    };
+  }
+
+  if (event.message === "Started Codex turn") {
+    return {
+      kind: "turn",
+      title: "Scheduled run started",
+      body: `Reason: ${payload.reason || "unknown"}`,
+      tags: [`run ${shortId(payload.runId)}`, `turn ${shortId(payload.turnId)}`].filter(Boolean),
+      payload
+    };
+  }
+
+  if (event.message === "thread/status/changed") {
+    return {
+      kind: "system",
+      title: "Thread status changed",
+      body: payload.status?.type || "unknown",
+      tags: [`thread ${shortId(payload.threadId)}`].filter(Boolean),
+      payload
+    };
+  }
+
+  if (event.message === "Settings updated") {
+    return {
+      kind: "settings",
+      title: "Settings updated",
+      body: "Scheduler configuration was saved.",
+      tags: baseTags,
+      payload
+    };
+  }
+
+  if (event.source === "auth") {
+    return {
+      kind: "auth",
+      title: event.message,
+      body: payload.text ? compactText(payload.text, "") : "",
+      tags: baseTags,
+      payload
+    };
+  }
+
+  return {
+    kind: "system",
+    title: event.message,
+    body: "",
+    tags: baseTags,
+    payload
+  };
+}
+
 function addActivity(event, prepend = true) {
   if (!event || state.activityIds.has(event.id)) {
     return;
   }
-  state.activityIds.add(event.id);
+  state.activityEvents.push(event);
+  state.activityEvents = state.activityEvents.slice(-1000);
+  renderActivity();
+}
+
+function renderActivity() {
+  state.activityIds.clear();
   const list = $("#activityList");
-  const item = document.createElement("li");
-  item.className = `activity-item ${event.severity || "info"}`;
-  const payload = stringifyPayload(event.payload);
-  item.innerHTML = `
-    <div class="activity-meta">
-      <span>${escapeHtml(event.source || "service")} / ${escapeHtml(event.severity || "info")}</span>
-      <time>${escapeHtml(new Date(event.ts).toLocaleString())}</time>
-    </div>
-    <div class="activity-message">${escapeHtml(event.message || "")}</div>
-    ${payload ? `<pre class="activity-payload">${escapeHtml(payload)}</pre>` : ""}
-  `;
-  if (prepend) {
-    list.prepend(item);
-  } else {
+  list.innerHTML = "";
+  const events = [...state.activityEvents].filter(shouldShowEvent).slice(-300).reverse();
+  for (const event of events) {
+    if (state.activityIds.has(event.id)) {
+      continue;
+    }
+    state.activityIds.add(event.id);
+    const summary = summarizeEvent(event);
+    const item = document.createElement("li");
+    item.className = `activity-item ${event.severity || "info"} ${summary.kind || "system"}`;
+    const payload = stringifyPayload(summary.payload);
+    const tags = (summary.tags || [])
+      .filter(Boolean)
+      .slice(0, 5)
+      .map((tag) => `<span class="activity-chip">${escapeHtml(tag)}</span>`)
+      .join("");
+    item.innerHTML = `
+      <div class="timeline-dot" aria-hidden="true"></div>
+      <div class="activity-content">
+        <div class="activity-top">
+          <div>
+            <div class="activity-message">${escapeHtml(summary.title || "")}</div>
+            ${summary.body ? `<p class="activity-body">${escapeHtml(summary.body)}</p>` : ""}
+          </div>
+          <time>${escapeHtml(new Date(event.ts).toLocaleTimeString())}</time>
+        </div>
+        ${tags ? `<div class="activity-tags">${tags}</div>` : ""}
+        ${payload ? `<details class="activity-details"><summary>Details</summary><pre class="activity-payload">${escapeHtml(payload)}</pre></details>` : ""}
+      </div>
+    `;
     list.append(item);
   }
-  while (list.children.length > 300) {
-    list.lastElementChild.remove();
+  if (events.length === 0) {
+    const item = document.createElement("li");
+    item.className = "activity-empty";
+    item.textContent = state.showRawEvents ? "No activity yet." : "No high-signal activity yet. Enable Raw events to inspect the full stream.";
+    list.append(item);
   }
+  $("#activityHint").textContent = state.showRawEvents
+    ? "Showing all raw app-server and service events."
+    : "Showing turn lifecycle, completed messages, rate limits, settings, auth, and errors.";
 }
 
 function escapeHtml(value) {
@@ -141,11 +521,9 @@ function renderLoginOutput(session) {
 
 async function refreshActivity() {
   const data = await api("/api/activity?limit=200");
-  $("#activityList").innerHTML = "";
+  state.activityEvents = data.events || [];
   state.activityIds.clear();
-  for (const event of data.events || []) {
-    addActivity(event, false);
-  }
+  renderActivity();
 }
 
 function connectEvents() {
@@ -154,7 +532,7 @@ function connectEvents() {
     addActivity(JSON.parse(message.data), true);
   });
   events.addEventListener("login", async () => {
-    renderLoginOutput(await api("/api/auth/device/current"));
+    renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
     await refreshStatus();
   });
   events.addEventListener("run", async () => {
@@ -203,6 +581,7 @@ async function saveSettings(event) {
 async function setGoal(event) {
   event.preventDefault();
   const body = {
+    accountId: selectedAccountId(),
     objective: $("#goalInput").value.trim()
   };
   const tokenBudget = Number.parseInt($("#tokenBudgetInput").value, 10);
@@ -221,7 +600,7 @@ async function setGoal(event) {
 async function clearGoal() {
   $("#goalMessage").textContent = "Clearing...";
   try {
-    await api("/api/thread/goal", { method: "DELETE" });
+    await api(`/api/thread/goal?accountId=${encodeURIComponent(selectedAccountId() || "")}`, { method: "DELETE" });
     $("#goalMessage").textContent = "Goal cleared.";
   } catch (error) {
     $("#goalMessage").textContent = error.message;
@@ -229,7 +608,10 @@ async function clearGoal() {
 }
 
 async function runNow(prompt = null) {
-  const body = prompt ? { prompt } : {};
+  const body = { accountId: selectedAccountId() };
+  if (prompt) {
+    body.prompt = prompt;
+  }
   return api("/api/run-now", { method: "POST", body: JSON.stringify(body) });
 }
 
@@ -269,7 +651,10 @@ function bindActions() {
   $("#deviceLoginBtn").addEventListener("click", async () => {
     $("#deviceLoginBtn").disabled = true;
     try {
-      renderLoginOutput(await api("/api/auth/device/start", { method: "POST", body: "{}" }));
+      renderLoginOutput(await api("/api/auth/device/start", {
+        method: "POST",
+        body: JSON.stringify({ accountId: selectedAccountId() })
+      }));
     } catch (error) {
       $("#loginOutput").textContent = error.message;
     } finally {
@@ -279,7 +664,10 @@ function bindActions() {
   $("#logoutBtn").addEventListener("click", async () => {
     $("#logoutBtn").disabled = true;
     try {
-      await api("/api/auth/logout", { method: "POST", body: "{}" });
+      await api("/api/auth/logout", {
+        method: "POST",
+        body: JSON.stringify({ accountId: selectedAccountId() })
+      });
       await refreshStatus();
     } finally {
       $("#logoutBtn").disabled = false;
@@ -291,16 +679,46 @@ function bindActions() {
   $("#clearActivityBtn").addEventListener("click", () => {
     $("#activityList").innerHTML = "";
     state.activityIds.clear();
+    state.activityEvents = [];
+  });
+  $("#rawEventsInput").addEventListener("change", (event) => {
+    state.showRawEvents = event.target.checked;
+    renderActivity();
+  });
+  const themeToggle = $("#themeToggleBtn");
+  if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+      setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+    });
+  }
+  $("#accountSelect").addEventListener("change", (event) => {
+    void selectAccount(event.target.value);
+  });
+  $("#saveAccountBtn").addEventListener("click", async () => {
+    await patchSelectedAccount({ label: $("#accountLabelInput").value.trim() });
+  });
+  $("#accountEnabledInput").addEventListener("change", async (event) => {
+    await patchSelectedAccount({ enabled: event.target.checked });
+  });
+  $("#addAccountBtn").addEventListener("click", async () => {
+    const label = $("#newAccountLabelInput").value.trim() || `Account ${state.accounts.length + 1}`;
+    const result = await api("/api/accounts", { method: "POST", body: JSON.stringify({ label }) });
+    $("#newAccountLabelInput").value = "";
+    state.accounts = result.accounts || [];
+    state.selectedAccountId = result.selectedAccountId;
+    renderAccounts();
+    await refreshStatus();
   });
 }
 
 async function init() {
+  initTheme();
   bindActions();
   connectEvents();
   await refreshSettings();
   await refreshStatus();
   await refreshActivity();
-  renderLoginOutput(await api("/api/auth/device/current"));
+  renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
   setInterval(refreshStatus, 15000);
 }
 
