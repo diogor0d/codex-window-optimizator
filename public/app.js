@@ -6,7 +6,8 @@ const state = {
   activityEvents: [],
   showRawEvents: false,
   accounts: [],
-  selectedAccountId: null
+  selectedAccountId: null,
+  runs: []
 };
 
 async function api(path, options = {}) {
@@ -140,13 +141,12 @@ function updateStatus(status) {
   state.selectedAccountId = status.selectedAccountId || status.selectedAccount?.id || null;
   renderAccounts();
   const selectedAccount = status.selectedAccount || {};
-  $("#subtitle").textContent = status.scheduler.next.localNow;
   $("#authState").textContent = status.auth.detail || (status.auth.loggedIn ? "Logged in" : "Not logged in");
   $("#appServerState").textContent = status.appServer.running ? "Running" : "Stopped";
   $("#threadState").textContent = selectedAccount.thread?.threadId || status.thread.threadId || "None";
   $("#localTime").textContent = status.scheduler.next.localNow;
-  $("#nextRun").textContent = status.scheduler.enabled ? status.scheduler.next.nextLocal : "Paused";
   $("#lastRun").textContent = formatRun(status.latestRun);
+  renderNextSend(status.scheduler.next.nextLocal, status.scheduler.enabled);
 
   badge($("#serviceBadge"), status.auth.loggedIn ? "Ready" : "Needs login", status.auth.loggedIn ? "ok" : "warn");
   badge($("#loginBadge"), status.auth.loggedIn ? "Logged in" : "Logged out", status.auth.loggedIn ? "ok" : "bad");
@@ -155,6 +155,7 @@ function updateStatus(status) {
 
   $("#pauseBtn").disabled = !status.scheduler.enabled;
   $("#resumeBtn").disabled = status.scheduler.enabled;
+  renderDepartures();
 }
 
 function selectedAccountId() {
@@ -570,8 +571,170 @@ function renderLoginOutput(session) {
 async function refreshActivity() {
   const data = await api("/api/activity?limit=200");
   state.activityEvents = data.events || [];
+  state.runs = data.runs || [];
   state.activityIds.clear();
   renderActivity();
+  renderDepartures();
+}
+
+function timezoneParts(timezone) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(new Date());
+  return Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+}
+
+let clockTimer = null;
+
+function startClock() {
+  const render = () => {
+    const timezone = state.settings?.timezone || "Europe/Lisbon";
+    let parts;
+    try {
+      parts = timezoneParts(timezone);
+    } catch {
+      parts = timezoneParts("Europe/Lisbon");
+    }
+    const digits = $("#headerClock");
+    if (digits) {
+      digits.textContent = `${parts.hour}:${parts.minute}:${parts.second}`;
+    }
+    const dateLine = $("#subtitle");
+    if (dateLine) {
+      dateLine.textContent = `${parts.weekday} ${parts.day} ${parts.month} · ${timezone.replaceAll("_", " ").replaceAll("/", " / ")}`.toUpperCase();
+    }
+  };
+  render();
+  if (!clockTimer) {
+    clockTimer = setInterval(render, 1000);
+  }
+}
+
+function renderNextSend(nextLocal, schedulerEnabled) {
+  const strip = $("#nextRunFlap");
+  if (!strip) {
+    return;
+  }
+  let time = "--:--";
+  let day = schedulerEnabled ? "" : "PAUSED";
+  if (schedulerEnabled && nextLocal) {
+    const match = /(\d{2}:\d{2})/.exec(nextLocal);
+    if (match) {
+      time = match[1];
+    }
+    day = nextLocal.startsWith("tomorrow") ? "TOMORROW" : "TODAY";
+  }
+  const signature = `${time}|${day}`;
+  if (strip.dataset.signature === signature) {
+    return;
+  }
+  const previous = strip.dataset.chars || "";
+  strip.dataset.signature = signature;
+  strip.dataset.chars = time;
+  strip.innerHTML = "";
+  [...time].forEach((char, index) => {
+    const cell = document.createElement("span");
+    cell.className = "flap-cell";
+    const face = document.createElement("span");
+    face.textContent = char;
+    if (previous[index] && previous[index] !== char) {
+      cell.classList.add("tick");
+      face.style.animationDelay = `${index * 45}ms`;
+    }
+    cell.append(face);
+    strip.append(cell);
+    if (index === 1) {
+      const colon = document.createElement("span");
+      colon.className = "flap-colon";
+      colon.textContent = ":";
+      strip.append(colon);
+    }
+  });
+  const dayTag = $("#nextRunDay");
+  if (dayTag) {
+    dayTag.textContent = day;
+  }
+  strip.setAttribute("aria-label", `Next send ${time}${day ? `, ${day.toLowerCase()}` : ""}`);
+}
+
+function boardCellFor(account, time, today, timeNow) {
+  const runs = (state.runs || []).filter(
+    (item) => item.accountId === account.id && item.scheduledTime === time && String(item.ts).slice(0, 10) === today
+  );
+  const run = runs[runs.length - 1];
+  let cls = time <= timeNow ? "missed" : "pending";
+  let label = time <= timeNow ? "No send recorded" : "Scheduled";
+  if (run) {
+    cls = "info";
+    label = run.status;
+    if (run.status === "completed") {
+      cls = "ok";
+      label = "Completed";
+    } else if (run.status === "failed") {
+      cls = "bad";
+      label = "Failed";
+    } else if (run.status === "skipped_active_turn") {
+      cls = "warn";
+      label = "Skipped, a turn was already active";
+    } else if (["starting", "started", "inProgress"].includes(run.status)) {
+      cls = "active";
+      label = "Running";
+    }
+  }
+  return `<span class="board-cell ${cls}" title="${escapeHtml(time)} — ${escapeHtml(label)}">${boardGlyph(cls)}</span>`;
+}
+
+function boardGlyph(cls) {
+  if (cls === "ok") return "✓";
+  if (cls === "bad") return "✕";
+  if (cls === "warn") return "⏸";
+  if (cls === "active") return "●";
+  if (cls === "missed") return "–";
+  return "·";
+}
+
+function renderDepartures() {
+  const host = $("#departuresBoard");
+  if (!host) {
+    return;
+  }
+  const timezone = state.settings?.timezone || "Europe/Lisbon";
+  let parts;
+  try {
+    parts = timezoneParts(timezone);
+  } catch {
+    parts = timezoneParts("Europe/Lisbon");
+  }
+  const today = `${parts.year}-${parts.month}-${parts.day}`;
+  const timeNow = `${parts.hour}:${parts.minute}`;
+  const accounts = state.accounts;
+  const times = [
+    ...new Set(
+      accounts
+        .filter((account) => account.enabled)
+        .flatMap((account) => account.effectiveSettings?.scheduleTimes || [])
+    )
+  ].sort();
+  if (!accounts.length || !times.length) {
+    host.innerHTML = '<p class="board-empty">No enabled accounts with schedule times. Add one in Accounts or Settings.</p>';
+    return;
+  }
+  const head = `<div class="board-row board-head"><span class="board-account">account</span>${times
+    .map((time) => `<span class="board-time">${escapeHtml(time)}</span>`)
+    .join("")}</div>`;
+  const rows = accounts.map((account) => {
+    const cells = times.map((time) => boardCellFor(account, time, today, timeNow)).join("");
+    return `<div class="board-row"><span class="board-account" title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</span>${cells}</div>`;
+  });
+  host.innerHTML = head + rows.join("");
 }
 
 function connectEvents() {
@@ -789,6 +952,7 @@ function bindActions() {
 async function init() {
   initTheme();
   bindActions();
+  startClock();
   connectEvents();
   await refreshSettings();
   await refreshStatus();
