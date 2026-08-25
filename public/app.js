@@ -183,6 +183,7 @@ function renderAccounts() {
   const selected = state.accounts.find((account) => account.id === state.selectedAccountId) || state.accounts[0];
   $("#accountLabelInput").value = selected?.label || "";
   $("#accountEnabledInput").checked = selected?.enabled !== false;
+  fillAccountOverrides(selected);
 
   list.innerHTML = "";
   for (const account of state.accounts) {
@@ -227,6 +228,50 @@ async function patchSelectedAccount(patch) {
     body: JSON.stringify(patch)
   });
   await refreshStatus();
+}
+
+function fillAccountOverrides(account) {
+  const overrides = account?.settings || {};
+  const effective = account?.effectiveSettings || {};
+  $("#accountScheduleInput").value = (overrides.scheduleTimes || []).join(", ");
+  $("#accountWorkspaceInput").value = overrides.workspaceDir || "";
+  $("#accountModelInput").value = overrides.model || "";
+  $("#accountPromptInput").value = overrides.promptTemplate || "";
+  $("#accountScheduleInput").placeholder = (effective.scheduleTimes || []).join(", ") || "Inherited";
+  $("#accountWorkspaceInput").placeholder = effective.workspaceDir || "Inherited";
+  $("#accountModelInput").placeholder = effective.model || "CLI default";
+  $("#accountPromptInput").placeholder = "Inherited global template";
+}
+
+function setAccountMessage(text) {
+  const el = $("#accountMessage");
+  if (el) {
+    el.textContent = text;
+  }
+}
+
+async function saveAccountOverrides() {
+  const accountId = selectedAccountId();
+  if (!accountId) {
+    return;
+  }
+  const scheduleTimes = $("#accountScheduleInput").value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const settings = {
+    scheduleTimes: scheduleTimes.length ? scheduleTimes : null,
+    workspaceDir: $("#accountWorkspaceInput").value.trim() || null,
+    model: $("#accountModelInput").value.trim() || null,
+    promptTemplate: $("#accountPromptInput").value.trim() || null
+  };
+  setAccountMessage("Saving...");
+  try {
+    await patchSelectedAccount({ settings });
+    setAccountMessage("Overrides saved.");
+  } catch (error) {
+    setAccountMessage(error.message);
+  }
 }
 
 function fillSettings(settings) {
@@ -452,10 +497,13 @@ function renderActivity() {
     }
     state.activityIds.add(event.id);
     const summary = summarizeEvent(event);
+    const accountTag = event.payload?.accountId
+      ? event.payload.accountLabel || `account ${shortId(event.payload.accountId)}`
+      : null;
     const item = document.createElement("li");
     item.className = `activity-item ${event.severity || "info"} ${summary.kind || "system"}`;
     const payload = stringifyPayload(summary.payload);
-    const tags = (summary.tags || [])
+    const tags = [accountTag, ...(summary.tags || [])]
       .filter(Boolean)
       .slice(0, 5)
       .map((tag) => `<span class="activity-chip">${escapeHtml(tag)}</span>`)
@@ -696,6 +744,33 @@ function bindActions() {
   });
   $("#saveAccountBtn").addEventListener("click", async () => {
     await patchSelectedAccount({ label: $("#accountLabelInput").value.trim() });
+  });
+  $("#saveAccountOverridesBtn").addEventListener("click", () => {
+    void saveAccountOverrides();
+  });
+  $("#removeAccountBtn").addEventListener("click", async () => {
+    const accountId = selectedAccountId();
+    const account = state.accounts.find((item) => item.id === accountId);
+    if (!account) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `Remove "${account.label}"? Its Codex credentials and thread data will be deleted from the server.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    $("#removeAccountBtn").disabled = true;
+    setAccountMessage("Removing...");
+    try {
+      await api(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
+      setAccountMessage("");
+      await refreshStatus();
+    } catch (error) {
+      setAccountMessage(error.message);
+    } finally {
+      $("#removeAccountBtn").disabled = false;
+    }
   });
   $("#accountEnabledInput").addEventListener("change", async (event) => {
     await patchSelectedAccount({ enabled: event.target.checked });

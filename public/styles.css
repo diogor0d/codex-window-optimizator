@@ -414,6 +414,22 @@ textarea:focus {
   height: 16px;
 }
 
+.account-overrides {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.account-overrides summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.account-overrides[open] summary {
+  margin-bottom: 12px;
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -85,7 +85,32 @@
         <div class="button-row">
           <button id="deviceLoginBtn" type="button" class="primary">Start device login</button>
           <button id="logoutBtn" type="button" class="danger">Logout</button>
+          <button id="removeAccountBtn" type="button" class="danger">Remove</button>
         </div>
+        <span id="accountMessage" class="form-message"></span>
+        <details id="accountOverrides" class="account-overrides">
+          <summary>Per-account overrides</summary>
+          <p class="hint">Leave empty to inherit the global defaults from Settings.</p>
+          <label>
+            Schedule times
+            <input id="accountScheduleInput" autocomplete="off" placeholder="Inherited">
+          </label>
+          <label>
+            Workspace directory
+            <input id="accountWorkspaceInput" autocomplete="off" placeholder="Inherited">
+          </label>
+          <label>
+            Model override
+            <input id="accountModelInput" autocomplete="off" placeholder="Inherited">
+          </label>
+          <label>
+            Scheduled prompt template
+            <textarea id="accountPromptInput" rows="5"></textarea>
+          </label>
+          <div class="button-row">
+            <button id="saveAccountOverridesBtn" type="button">Save overrides</button>
+          </div>
+        </details>
         <div class="account-add-row">
           <input id="newAccountLabelInput" autocomplete="off" placeholder="New account label">
           <button id="addAccountBtn" type="button">Add account</button>

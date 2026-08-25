@@ -89,10 +89,22 @@ Because `/data` is a Docker volume, logins survive container restarts and rebuil
 
 - The existing single-account login is migrated to `Default account`.
 - Add accounts from the `Accounts` panel.
+- Remove accounts with the `Remove` button. This stops the account's app-server and permanently deletes its Codex home directory, including its `auth.json` credentials.
 - Each account has separate credentials, thread state, and rate-limit/window tracking.
 - Enabled accounts receive scheduled pings at every configured schedule time.
 - Disabled accounts remain logged in but are skipped by the scheduler.
 - `Run now`, device login, logout, and goal controls apply to the selected account.
+
+### Per-Account Overrides
+
+Under `Accounts` > `Per-account overrides`, each account can override:
+
+- Schedule times
+- Scheduled prompt template
+- Model override
+- Workspace directory
+
+Leave a field empty to inherit the global default from `Settings`. Overridden schedule times let accounts ping at different times instead of all at once; the `Next run` indicator covers the union of enabled accounts' schedules.
 
 ## Cloudflare Access
 

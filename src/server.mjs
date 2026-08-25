@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -94,6 +94,7 @@ function defaultAccount() {
     label: "Default account",
     enabled: true,
     codeHome: CODEX_HOME,
+    settings: {},
     createdAt: nowIso(),
     updatedAt: nowIso(),
     threadState: clone(DEFAULT_THREAD_STATE),
@@ -108,11 +109,55 @@ function createAccount(label = "New account") {
     label,
     enabled: true,
     codeHome: path.join(ACCOUNTS_DIR, id),
+    settings: {},
     createdAt: nowIso(),
     updatedAt: nowIso(),
     threadState: clone(DEFAULT_THREAD_STATE),
     dashboard: clone(DEFAULT_DASHBOARD)
   };
+}
+
+const ACCOUNT_SETTING_KEYS = ["scheduleTimes", "promptTemplate", "model", "workspaceDir"];
+
+function normalizeAccountSettings(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const out = {};
+  for (const key of ACCOUNT_SETTING_KEYS) {
+    if (value[key] === undefined || value[key] === null) {
+      continue;
+    }
+    if (key === "scheduleTimes") {
+      if (Array.isArray(value.scheduleTimes) && value.scheduleTimes.length > 0 && value.scheduleTimes.every(validateTime)) {
+        out.scheduleTimes = [...new Set(value.scheduleTimes)].sort();
+      }
+      continue;
+    }
+    if (typeof value[key] === "string" && value[key].trim()) {
+      out[key] = value[key].trim();
+    }
+  }
+  return out;
+}
+
+function applyAccountSettings(current, patch) {
+  const merged = { ...(current || {}) };
+  for (const key of ACCOUNT_SETTING_KEYS) {
+    if (patch[key] === undefined) {
+      continue;
+    }
+    delete merged[key];
+    const normalized = normalizeAccountSettings({ [key]: patch[key] });
+    if (normalized[key] !== undefined) {
+      merged[key] = normalized[key];
+    }
+  }
+  return merged;
+}
+
+function effectiveSettings(account) {
+  return { ...store.settings, ...(account?.settings || {}) };
 }
 
 function normalizeAccount(account, fallback = defaultAccount()) {
@@ -123,6 +168,7 @@ function normalizeAccount(account, fallback = defaultAccount()) {
     label: account?.label || fallback.label,
     enabled: account?.enabled !== false,
     codeHome: account?.codeHome || fallback.codeHome,
+    settings: normalizeAccountSettings(account?.settings),
     threadState: mergeDefaults(account?.threadState || {}, DEFAULT_THREAD_STATE),
     dashboard: mergeDefaults(account?.dashboard || {}, DEFAULT_DASHBOARD)
   };
@@ -136,10 +182,13 @@ function getAccount(accountId = store.selectedAccountId) {
   return store.accounts.find((account) => account.id === id) || store.accounts[0];
 }
 
-function requireAccount(accountId = store.selectedAccountId) {
-  const account = getAccount(accountId);
+function requireAccount(accountId) {
+  const id = accountId ?? store.selectedAccountId;
+  const account = id ? store.accounts.find((item) => item.id === id) : store.accounts[0];
   if (!account) {
-    throw new Error("Account not found");
+    const error = new Error("Account not found");
+    error.statusCode = 404;
+    throw error;
   }
   return account;
 }
@@ -157,6 +206,8 @@ function publicAccount(account) {
     isSelected: account.id === store.selectedAccountId,
     auth,
     appServer: { running: getAppServer(account.id, false)?.running || false },
+    settings: clone(account.settings || {}),
+    effectiveSettings: effectiveSettings(account),
     thread: account.threadState,
     dashboard: account.dashboard
   };
@@ -235,6 +286,19 @@ async function ensureAccountDirs(account) {
   if (!existsSync(configPath)) {
     await writeFile(configPath, 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
   }
+}
+
+async function removeAccountHome(codeHome) {
+  if (!codeHome) {
+    return false;
+  }
+  const resolved = path.resolve(codeHome);
+  const allowedRoots = [path.resolve(CODEX_HOME), path.resolve(ACCOUNTS_DIR)];
+  if (!allowedRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) {
+    return false;
+  }
+  await rm(resolved, { recursive: true, force: true });
+  return true;
 }
 
 async function loadStore() {
@@ -548,8 +612,10 @@ class CodexAppServer {
     if (message.method) {
       this.updateThreadStatus(message);
       updateDashboardState(this.accountId, message);
-      addActivity("codex", "info", message.method, { accountId: this.accountId, ...(message.params || {}) });
-      broadcast("codex", redact(message));
+      const account = store.accounts.find((item) => item.id === this.accountId);
+      const attribution = { accountId: this.accountId, accountLabel: account?.label || this.accountId };
+      addActivity("codex", "info", message.method, { ...(message.params || {}), ...attribution });
+      broadcast("codex", { ...redact(message), ...attribution });
     }
   }
 
@@ -643,7 +709,7 @@ function getAppServer(accountId = store.selectedAccountId, create = true) {
 }
 
 function updateDashboardState(accountId, message) {
-  const account = getAccount(accountId);
+  const account = store.accounts.find((item) => item.id === accountId);
   if (!account) {
     return;
   }
@@ -703,12 +769,13 @@ async function ensureThread(accountId = store.selectedAccountId) {
     throw new Error(`${account.label} is not logged in`);
   }
 
+  const settings = effectiveSettings(account);
   const common = {
     serviceName: SERVICE_NAME,
-    cwd: store.settings.workspaceDir || DEFAULT_WORKSPACE_DIR
+    cwd: settings.workspaceDir || DEFAULT_WORKSPACE_DIR
   };
-  if (store.settings.model) {
-    common.model = store.settings.model;
+  if (settings.model) {
+    common.model = settings.model;
   }
 
   if (account.threadState.threadId) {
@@ -779,8 +846,9 @@ function renderPrompt(template, scheduledTime, reason) {
     .replaceAll("{{reason}}", reason || "scheduled");
 }
 
-function buildSandboxPolicy() {
-  const workspaceDir = store.settings.workspaceDir || DEFAULT_WORKSPACE_DIR;
+function buildSandboxPolicy(account) {
+  const settings = effectiveSettings(account);
+  const workspaceDir = settings.workspaceDir || DEFAULT_WORKSPACE_DIR;
   return {
     type: "workspaceWrite",
     writableRoots: [workspaceDir],
@@ -834,17 +902,18 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
       return run;
     }
 
-    const inputText = prompt || renderPrompt(store.settings.promptTemplate, scheduledTime, reason);
+    const settings = effectiveSettings(account);
+    const inputText = prompt || renderPrompt(settings.promptTemplate, scheduledTime, reason);
     const params = {
       threadId,
       input: [{ type: "text", text: inputText }],
-      cwd: store.settings.workspaceDir || DEFAULT_WORKSPACE_DIR,
-      sandboxPolicy: buildSandboxPolicy(),
+      cwd: settings.workspaceDir || DEFAULT_WORKSPACE_DIR,
+      sandboxPolicy: buildSandboxPolicy(account),
       approvalPolicy: normalizeApprovalPolicy(store.settings.approvalPolicy),
       summary: store.settings.summary || "concise"
     };
-    if (store.settings.model) {
-      params.model = store.settings.model;
+    if (settings.model) {
+      params.model = settings.model;
     }
     if (store.settings.effort) {
       params.effort = store.settings.effort;
@@ -901,7 +970,9 @@ function getLocalParts(date, timezone) {
 function nextRunSummary() {
   const timezone = store.settings.timezone;
   const now = getLocalParts(new Date(), timezone);
-  const times = [...store.settings.scheduleTimes].sort();
+  const enabledAccounts = store.accounts.filter((account) => account.enabled);
+  const timeSets = enabledAccounts.map((account) => effectiveSettings(account).scheduleTimes);
+  const times = [...new Set(timeSets.length ? timeSets.flat() : store.settings.scheduleTimes)].sort();
   const todayNext = times.find((time) => time > now.time);
   return {
     timezone,
@@ -915,11 +986,11 @@ async function schedulerTick() {
     return;
   }
   const local = getLocalParts(new Date(), store.settings.timezone);
-  if (!store.settings.scheduleTimes.includes(local.time)) {
-    return;
-  }
   const key = `${local.date}T${local.time}`;
   for (const account of store.accounts.filter((item) => item.enabled)) {
+    if (!effectiveSettings(account).scheduleTimes.includes(local.time)) {
+      continue;
+    }
     if (account.threadState.lastScheduleKey === key) {
       continue;
     }
@@ -1214,11 +1285,32 @@ async function handleApi(req, res, url) {
     const accountId = decodeURIComponent(url.pathname.split("/").at(-1));
     const account = requireAccount(accountId);
     const body = await readJson(req);
+    if (body.settings !== undefined) {
+      if (!body.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) {
+        return sendError(res, 400, "settings must be an object");
+      }
+      for (const key of Object.keys(body.settings)) {
+        if (!ACCOUNT_SETTING_KEYS.includes(key)) {
+          return sendError(res, 400, `Unknown account setting: ${key}`);
+        }
+        const value = body.settings[key];
+        if (key === "scheduleTimes") {
+          if (value !== null && (!Array.isArray(value) || value.length === 0 || !value.every(validateTime))) {
+            return sendError(res, 400, "settings.scheduleTimes must be a non-empty HH:mm array or null");
+          }
+        } else if (value !== null && typeof value !== "string") {
+          return sendError(res, 400, `settings.${key} must be a string or null`);
+        }
+      }
+    }
     if (typeof body.label === "string" && body.label.trim()) {
       account.label = body.label.trim();
     }
     if (body.enabled !== undefined) {
       account.enabled = Boolean(body.enabled);
+    }
+    if (body.settings !== undefined) {
+      account.settings = applyAccountSettings(account.settings, body.settings);
     }
     if (body.selected === true) {
       store.selectedAccountId = account.id;
@@ -1227,7 +1319,7 @@ async function handleApi(req, res, url) {
     }
     account.updatedAt = nowIso();
     await saveStore();
-    addActivity("account", "info", "Account updated", { accountId: account.id, accountLabel: account.label, enabled: account.enabled });
+    addActivity("account", "info", "Account updated", { accountId: account.id, accountLabel: account.label, enabled: account.enabled, settings: account.settings });
     return sendJson(res, 200, { selectedAccountId: store.selectedAccountId, account: publicAccount(account), accounts: store.accounts.map(publicAccount) });
   }
 
@@ -1240,6 +1332,33 @@ async function handleApi(req, res, url) {
     await saveStore();
     addActivity("account", "info", "Account selected", { accountId: account.id, accountLabel: account.label });
     return sendJson(res, 200, { selectedAccountId: account.id, account: publicAccount(account), accounts: store.accounts.map(publicAccount) });
+  }
+
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/accounts/")) {
+    const accountId = decodeURIComponent(url.pathname.split("/").at(-1));
+    const account = requireAccount(accountId);
+    if (store.accounts.length <= 1) {
+      return sendError(res, 400, "Cannot delete the last remaining account");
+    }
+    getAppServer(account.id, false)?.stop();
+    appServers.delete(account.id);
+    loginSessions.delete(account.id);
+    authStatusCacheByAccount.delete(account.id);
+    const removedCredentials = await removeAccountHome(account.codeHome);
+    store.accounts = store.accounts.filter((item) => item.id !== account.id);
+    if (store.selectedAccountId === account.id) {
+      store.selectedAccountId = store.accounts[0].id;
+    }
+    const selected = getAccount();
+    store.threadState = selected.threadState;
+    store.dashboard = selected.dashboard;
+    await saveStore();
+    addActivity("account", "warn", "Account removed", {
+      accountId: account.id,
+      accountLabel: account.label,
+      credentialsRemoved: removedCredentials
+    });
+    return sendJson(res, 200, { selectedAccountId: store.selectedAccountId, accounts: store.accounts.map(publicAccount) });
   }
 
   if (req.method === "GET" && url.pathname === "/api/activity") {
@@ -1380,7 +1499,7 @@ async function requestHandler(req, res) {
     }
   } catch (error) {
     addActivity("server", "error", "Request failed", { path: url.pathname, error: error.message });
-    sendError(res, 500, error.message);
+    sendError(res, error.statusCode || 500, error.message);
   }
 }
 
@@ -1400,26 +1519,28 @@ async function bootstrap() {
 
   startScheduler();
 
-  for (const account of store.accounts) {
+  await Promise.all(store.accounts.map(async (account) => {
     const auth = await getAuthStatus(account, true);
-    if (auth.loggedIn) {
-      try {
-        await getAppServer(account.id).start();
-        await ensureThread(account.id);
-      } catch (error) {
-        addActivity("codex", "error", "Initial app-server startup failed", {
+    if (!auth.loggedIn) {
+      if (account.enabled) {
+        addActivity("auth", "warn", "Codex account is not logged in; scheduled sends will fail until device login completes", {
           accountId: account.id,
-          accountLabel: account.label,
-          error: error.message
+          accountLabel: account.label
         });
       }
-    } else if (account.enabled) {
-      addActivity("auth", "warn", "Codex account is not logged in; scheduled sends will fail until device login completes", {
+      return;
+    }
+    try {
+      await getAppServer(account.id).start();
+      await ensureThread(account.id);
+    } catch (error) {
+      addActivity("codex", "error", "Initial app-server startup failed", {
         accountId: account.id,
-        accountLabel: account.label
+        accountLabel: account.label,
+        error: error.message
       });
     }
-  }
+  }));
 
   const shutdown = async () => {
     addActivity("server", "info", "Shutting down");
