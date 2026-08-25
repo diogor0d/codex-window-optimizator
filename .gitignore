@@ -5,3 +5,4 @@ data/
 *.sqlite
 *.db
 .DS_Store
+docker-compose.override.yml
