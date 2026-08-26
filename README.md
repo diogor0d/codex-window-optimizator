@@ -23,7 +23,7 @@ It cannot see OpenAI's internal reset clock. What it does is simple and predicta
 
 ## The console
 
-A signal-box dashboard: a live station clock, a split-flap **next send** module, per-account usage windows with reset times, and a departures board built from actual run history.
+A signal-box dashboard: a live station clock, a split-flap **next send** module, per-account usage windows with reset times, a fleet-wide quota strip with a 24-hour reset timetable, and a departures board built from actual run history.
 
 ```
 TODAY'S SENDS                        ✓ done   ✕ failed   ⏸ skipped   ● running

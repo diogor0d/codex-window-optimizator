@@ -90,6 +90,45 @@
         </dl>
       </section>
 
+      <section class="panel fleet-panel" aria-labelledby="fleetTitle">
+        <div class="section-header">
+          <h2 id="fleetTitle">Fleet windows</h2>
+          <span id="fleetBadge" class="badge neutral">No data</span>
+        </div>
+        <div class="fleet-stats">
+          <div class="fleet-stat">
+            <span id="fleetMeanFree" class="stat-value">&mdash;</span>
+            <span class="stat-label">mean free</span>
+          </div>
+          <div class="fleet-stat">
+            <span id="fleetNextReset" class="stat-value">&mdash;</span>
+            <span id="fleetNextResetLabel" class="stat-label">next reset</span>
+          </div>
+          <div class="fleet-stat">
+            <span id="fleetNearLimit" class="stat-value">&mdash;</span>
+            <span class="stat-label">near limit</span>
+          </div>
+        </div>
+        <div class="strip-chart" aria-label="Available quota per account">
+          <div class="strip-head" aria-hidden="true">
+            <span>account</span>
+            <span>quota used</span>
+            <span class="strip-head-meta">free &middot; window reset</span>
+          </div>
+          <div id="fleetRows">
+            <p class="board-empty">Waiting for account data...</p>
+          </div>
+        </div>
+        <div class="reset-timetable">
+          <p class="eyebrow tt-title">Reset timetable &middot; next 24h</p>
+          <div id="fleetTimetable"></div>
+        </div>
+        <p class="hint fleet-hint">
+          Segments show quota used in each account&rsquo;s current window; red marks accounts at 80% or more.
+          Rows sort by most free. Resets appear after each account&rsquo;s next send.
+        </p>
+      </section>
+
       <section class="panel account-panel">
         <div class="section-header">
           <h2>Accounts</h2>

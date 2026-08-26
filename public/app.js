@@ -93,6 +93,60 @@ function clampPercent(value) {
   return Math.max(0, Math.min(100, value));
 }
 
+const NEAR_LIMIT_USED = 80;
+
+function accountWindow(account) {
+  const limits = account?.dashboard?.rateLimits;
+  if (!limits) {
+    return null;
+  }
+  const normalize = (entry) => {
+    if (!entry) {
+      return null;
+    }
+    const used = Number(entry.usedPercent);
+    return {
+      hasData: Number.isFinite(used),
+      used: clampPercent(used),
+      free: Number.isFinite(used) ? clampPercent(100 - used) : null,
+      resetsAt: Number.isFinite(Number(entry.resetsAt)) ? Number(entry.resetsAt) : null,
+      windowDurationMins: Number.isFinite(Number(entry.windowDurationMins)) ? Number(entry.windowDurationMins) : null
+    };
+  };
+  const primary = normalize(limits.primary);
+  if (!primary?.hasData) {
+    return null;
+  }
+  return {
+    primary,
+    secondary: normalize(limits.secondary),
+    planType: limits.planType ? String(limits.planType) : null
+  };
+}
+
+function fmtCountdown(msLeft) {
+  if (!Number.isFinite(msLeft)) {
+    return "";
+  }
+  if (msLeft <= 0) {
+    return "due";
+  }
+  const totalMinutes = Math.round(msLeft / 60000);
+  if (totalMinutes < 1) {
+    return "under a minute";
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours ? `in ${hours}h ${String(minutes).padStart(2, "0")}m` : `in ${minutes}m`;
+}
+
+function fmtClockTime(ms) {
+  if (!Number.isFinite(ms)) {
+    return "--:--";
+  }
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function shortId(value) {
   if (!value) {
     return "";
@@ -152,6 +206,7 @@ function updateStatus(status) {
   badge($("#loginBadge"), status.auth.loggedIn ? "Logged in" : "Logged out", status.auth.loggedIn ? "ok" : "bad");
   badge($("#schedulerBadge"), status.scheduler.enabled ? "Enabled" : "Paused", status.scheduler.enabled ? "ok" : "warn");
   updateWindowSummary(status.dashboard || {});
+  renderFleet();
 
   $("#pauseBtn").disabled = !status.scheduler.enabled;
   $("#resumeBtn").disabled = status.scheduler.enabled;
@@ -737,10 +792,185 @@ function renderDepartures() {
   host.innerHTML = head + rows.join("");
 }
 
+function compareFleetAccounts(a, b) {
+  const winA = accountWindow(a);
+  const winB = accountWindow(b);
+  const tier = (account, win) => (account.auth?.loggedIn ? 2 : 0) + (win ? 1 : 0);
+  const tierA = tier(a, winA);
+  const tierB = tier(b, winB);
+  if (tierA !== tierB) {
+    return tierB - tierA;
+  }
+  if (tierA === 3 && winA.primary.free !== winB.primary.free) {
+    return winB.primary.free - winA.primary.free;
+  }
+  return String(a.label).localeCompare(String(b.label));
+}
+
+function renderFleet() {
+  const rowsHost = $("#fleetRows");
+  const timetableHost = $("#fleetTimetable");
+  if (!rowsHost || !timetableHost) {
+    return;
+  }
+  const accounts = [...state.accounts].sort(compareFleetAccounts);
+  const readings = accounts
+    .filter((account) => account.auth?.loggedIn)
+    .map((account) => ({ account, win: accountWindow(account) }))
+    .filter((entry) => entry.win);
+  const nearLimit = readings.filter((entry) => entry.win.primary.used >= NEAR_LIMIT_USED);
+
+  $("#fleetMeanFree").textContent = readings.length
+    ? `${Math.round(readings.reduce((sum, entry) => sum + entry.win.primary.free, 0) / readings.length)}%`
+    : "—";
+  const nearEl = $("#fleetNearLimit");
+  nearEl.textContent = readings.length ? String(nearLimit.length) : "—";
+  nearEl.classList.toggle("bad", nearLimit.length > 0);
+  if (nearLimit.length) {
+    nearEl.title = nearLimit.map((entry) => entry.account.label).join(", ");
+  } else {
+    nearEl.removeAttribute("title");
+  }
+
+  const fleetBadge = $("#fleetBadge");
+  if (!accounts.length) {
+    fleetBadge.textContent = "No accounts";
+    fleetBadge.className = "badge neutral";
+  } else if (!readings.length) {
+    fleetBadge.textContent = "No readings yet";
+    fleetBadge.className = "badge neutral";
+  } else if (nearLimit.length) {
+    fleetBadge.textContent = `${nearLimit.length} near limit`;
+    fleetBadge.className = "badge bad";
+  } else {
+    fleetBadge.textContent = "All clear";
+    fleetBadge.className = "badge ok";
+  }
+
+  rowsHost.innerHTML = !accounts.length
+    ? '<p class="board-empty">No accounts configured yet. Add one under Accounts.</p>'
+    : accounts.map((account) => {
+        const win = accountWindow(account);
+        const loggedIn = Boolean(account.auth?.loggedIn);
+        let rowClasses = "strip-row";
+        let trackCell;
+        let metaCell = "";
+        const labelCell = `
+          <span class="strip-label-stack">
+            <span class="strip-label" title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</span>
+            ${win?.planType && win.planType !== "unknown" ? `<span class="mini-badge neutral strip-plan">${escapeHtml(win.planType)}</span>` : ""}
+          </span>`;
+        if (!loggedIn) {
+          rowClasses += " muted";
+          trackCell = '<span class="strip-note">logged out — re-login from Accounts</span>';
+        } else if (!win) {
+          rowClasses += " muted";
+          trackCell = '<span class="strip-note">no reading yet — appears after the next send</span>';
+        } else {
+          const primary = win.primary;
+          if (primary.used >= NEAR_LIMIT_USED) {
+            rowClasses += " near";
+          }
+          if (!account.enabled) {
+            rowClasses += " muted";
+          }
+          trackCell = `
+            <div class="strip-cell">
+              <div class="strip-track" role="img" aria-label="${escapeHtml(`${account.label}: ${primary.free}% available, ${primary.used}% used`)}">
+                <div class="strip-fill" style="width:${primary.used}%"></div>
+              </div>
+              ${win.secondary?.hasData ? `
+              <div class="strip-week">
+                <span class="week-tag">wk</span>
+                <div class="week-track" role="img" aria-label="${escapeHtml(`${account.label} weekly window: ${win.secondary.free}% available`)}">
+                  <div class="week-fill" style="width:${win.secondary.used}%"></div>
+                </div>
+              </div>` : ""}
+            </div>`;
+          metaCell = `
+            <div class="strip-meta">
+              <span class="free-num">${primary.free}<small>% free</small></span>
+              <span class="reset-line">${
+                primary.resetsAt
+                  ? `<span data-resets="${primary.resetsAt}" title="Window resets at this time"></span>`
+                  : "reset unknown"
+              }</span>
+            </div>`;
+        }
+        return `<div class="${rowClasses}">${labelCell}${trackCell}${metaCell}</div>`;
+      }).join("");
+
+  const lanes = accounts.filter((account) => account.auth?.loggedIn && accountWindow(account)?.primary.resetsAt);
+  timetableHost.innerHTML = !lanes.length
+    ? '<p class="tt-empty">No upcoming window resets tracked yet.</p>'
+    : `
+      <div class="tt-lane" aria-hidden="true">
+        <span class="tt-name">next 24h</span>
+        <div class="tt-scale">
+          <b style="left:25%" data-tick="6"></b>
+          <b style="left:50%" data-tick="12"></b>
+          <b style="left:75%" data-tick="18"></b>
+          <b style="left:calc(100% - 1px)" data-tick="24"></b>
+        </div>
+      </div>
+      ${lanes.map((account) => {
+        const resetsAt = accountWindow(account).primary.resetsAt;
+        return `
+        <div class="tt-lane">
+          <span class="tt-name" title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</span>
+          <div class="tt-axis">
+            <span class="tt-marker" data-resets="${resetsAt}" title="${escapeHtml(`${account.label} window reset`)}"></span>
+            <span class="tt-time" data-resets="${resetsAt}"></span>
+          </div>
+        </div>`;
+      }).join("")}`;
+  tickFleet();
+}
+
+function tickFleet() {
+  const now = Date.now();
+
+  document.querySelectorAll("#fleetRows [data-resets]").forEach((el) => {
+    const resetMs = Number(el.dataset.resets) * 1000;
+    el.textContent = `${fmtClockTime(resetMs)} · ${fmtCountdown(resetMs - now)}`;
+  });
+
+  const nextResetsAt = state.accounts
+    .filter((account) => account.enabled && account.auth?.loggedIn)
+    .map((account) => accountWindow(account)?.primary.resetsAt)
+    .filter((resetsAt) => Number.isFinite(resetsAt) && resetsAt * 1000 > now)
+    .sort((a, b) => a - b)[0];
+  if (Number.isFinite(nextResetsAt)) {
+    $("#fleetNextReset").textContent = fmtClockTime(nextResetsAt * 1000);
+    $("#fleetNextResetLabel").textContent = `next reset · ${fmtCountdown(nextResetsAt * 1000 - now)}`;
+  } else {
+    $("#fleetNextReset").textContent = "—";
+    $("#fleetNextResetLabel").textContent = "next reset";
+  }
+
+  const spanMs = 24 * 3600 * 1000;
+  document.querySelectorAll("#fleetTimetable [data-resets]").forEach((el) => {
+    const resetMs = Number(el.dataset.resets) * 1000;
+    const pos = Math.max(0, Math.min(99.5, ((resetMs - now) / spanMs) * 100));
+    el.style.left = `${pos}%`;
+    el.classList.toggle("flip", pos > 86);
+    if (el.classList.contains("tt-time")) {
+      el.textContent = fmtClockTime(resetMs);
+    }
+  });
+  document.querySelectorAll("#fleetTimetable [data-tick]").forEach((el) => {
+    el.setAttribute("data-time", fmtClockTime(now + Number(el.dataset.tick) * 3600 * 1000));
+  });
+}
+
 function connectEvents() {
   const events = new EventSource("/api/events");
   events.addEventListener("activity", (message) => {
-    addActivity(JSON.parse(message.data), true);
+    const event = JSON.parse(message.data);
+    addActivity(event, true);
+    if (event.message === "account/rateLimits/updated") {
+      void refreshStatus();
+    }
   });
   events.addEventListener("login", async () => {
     renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
@@ -959,6 +1189,7 @@ async function init() {
   await refreshActivity();
   renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
   setInterval(refreshStatus, 15000);
+  setInterval(tickFleet, 1000);
 }
 
 init().catch((error) => {
