@@ -1177,6 +1177,16 @@ textarea:focus {
   opacity: 0.55;
 }
 
+.strip-row.stale .strip-label,
+.strip-row.stale .strip-cell {
+  opacity: 0.5;
+}
+
+.strip-row.stale .free-num,
+.strip-row.stale .reset-line {
+  color: var(--muted);
+}
+
 .tt-title {
   margin: 18px 0 10px;
 }

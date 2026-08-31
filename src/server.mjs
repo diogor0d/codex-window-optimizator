@@ -708,6 +708,62 @@ function getAppServer(accountId = store.selectedAccountId, create = true) {
   return appServers.get(accountId) || null;
 }
 
+function recordRateLimits(account, rateLimits, merge = false) {
+  if (!rateLimits || typeof rateLimits !== "object" || Array.isArray(rateLimits)) {
+    return null;
+  }
+  const incoming = redact(rateLimits);
+  const previous = account.dashboard?.rateLimits;
+  let next = incoming;
+  if (merge && previous) {
+    next = { ...previous, ...incoming };
+    for (const key of ["primary", "secondary"]) {
+      if (incoming[key] === undefined) {
+        next[key] = previous[key];
+      } else if (incoming[key] && previous[key] && typeof incoming[key] === "object" && typeof previous[key] === "object") {
+        next[key] = { ...previous[key], ...incoming[key] };
+      }
+    }
+  }
+  const updatedAt = nowIso();
+  account.dashboard ||= structuredClone(DEFAULT_DASHBOARD);
+  account.dashboard.rateLimits = { ...next, updatedAt };
+  if (account.id === store.selectedAccountId) {
+    store.dashboard = account.dashboard;
+  }
+  return updatedAt;
+}
+
+async function refreshAccountState(account) {
+  const outcome = {
+    accountId: account.id,
+    accountLabel: account.label,
+    authChecked: false,
+    loggedIn: false,
+    rateLimits: "skipped",
+    updatedAt: null,
+    error: null
+  };
+  try {
+    const auth = await getAuthStatus(account, true);
+    outcome.authChecked = true;
+    outcome.loggedIn = auth.loggedIn;
+    if (!auth.loggedIn) {
+      return outcome;
+    }
+    const result = await getAppServer(account.id).send("account/rateLimits/read", null, 30000);
+    if (!result?.rateLimits) {
+      throw new Error("Codex returned no rate-limit data");
+    }
+    outcome.updatedAt = recordRateLimits(account, result.rateLimits);
+    outcome.rateLimits = "updated";
+  } catch (error) {
+    outcome.rateLimits = "failed";
+    outcome.error = redactString(error.message || String(error));
+  }
+  return outcome;
+}
+
 function updateDashboardState(accountId, message) {
   const account = store.accounts.find((item) => item.id === accountId);
   if (!account) {
@@ -717,10 +773,7 @@ function updateDashboardState(accountId, message) {
   account.dashboard ||= structuredClone(DEFAULT_DASHBOARD);
 
   if (message.method === "account/rateLimits/updated" && params.rateLimits) {
-    account.dashboard.rateLimits = {
-      ...redact(params.rateLimits),
-      updatedAt: nowIso()
-    };
+    recordRateLimits(account, params.rateLimits, true);
     void saveStore();
   }
 
@@ -1223,6 +1276,24 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/health") {
     return sendJson(res, 200, { ok: true, ts: nowIso() });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/refresh") {
+    const accounts = await Promise.all(store.accounts.map((account) => refreshAccountState(account)));
+    const summary = {
+      attempted: accounts.length,
+      updated: accounts.filter((account) => account.rateLimits === "updated").length,
+      skipped: accounts.filter((account) => account.rateLimits === "skipped").length,
+      failed: accounts.filter((account) => account.rateLimits === "failed").length
+    };
+    if (summary.updated) {
+      await saveStore();
+    }
+    addActivity("refresh", summary.failed ? "warn" : "info", "Manual state refresh completed", {
+      ...summary,
+      accounts
+    });
+    return sendJson(res, 200, { ts: nowIso(), ...summary, accounts });
   }
 
   if (req.method === "GET" && url.pathname === "/api/events") {

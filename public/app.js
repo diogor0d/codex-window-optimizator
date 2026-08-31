@@ -94,6 +94,7 @@ function clampPercent(value) {
 }
 
 const NEAR_LIMIT_USED = 80;
+const FLEET_TIMETABLE_MS = 24 * 60 * 60 * 1000;
 
 function accountWindow(account) {
   const limits = account?.dashboard?.rateLimits;
@@ -124,12 +125,17 @@ function accountWindow(account) {
   };
 }
 
+function isFreshWindow(win, now = Date.now()) {
+  const resetMs = Number(win?.primary?.resetsAt) * 1000;
+  return Number.isFinite(resetMs) && resetMs > now;
+}
+
 function fmtCountdown(msLeft) {
   if (!Number.isFinite(msLeft)) {
     return "";
   }
   if (msLeft <= 0) {
-    return "due";
+    return "stale";
   }
   const totalMinutes = Math.round(msLeft / 60000);
   if (totalMinutes < 1) {
@@ -266,6 +272,58 @@ function renderAccounts() {
 async function refreshStatus() {
   const status = await api("/api/status");
   updateStatus(status);
+}
+
+let refreshFeedbackTimer = null;
+
+async function refreshAllState() {
+  const button = $("#refreshBtn");
+  if (refreshFeedbackTimer) {
+    clearTimeout(refreshFeedbackTimer);
+    refreshFeedbackTimer = null;
+  }
+  button.disabled = true;
+  button.textContent = "Refreshing...";
+  button.setAttribute("aria-busy", "true");
+
+  let upstream = null;
+  let upstreamError = null;
+  try {
+    upstream = await api("/api/refresh", { method: "POST" });
+  } catch (error) {
+    upstreamError = error;
+  }
+
+  const accountId = selectedAccountId();
+  const reloads = await Promise.allSettled([
+    refreshStatus(),
+    refreshSettings(),
+    refreshActivity(),
+    api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId || "")}`).then(renderLoginOutput)
+  ]);
+  const reloadFailures = reloads.filter((result) => result.status === "rejected").length;
+
+  if (upstreamError) {
+    button.textContent = "Refresh failed";
+    button.title = upstreamError.message;
+  } else {
+    const partial = upstream.failed || upstream.skipped || reloadFailures;
+    button.textContent = partial ? `Updated ${upstream.updated}/${upstream.attempted}` : "All updated";
+    button.title = [
+      `${upstream.updated} quota reading${upstream.updated === 1 ? "" : "s"} updated`,
+      upstream.skipped ? `${upstream.skipped} signed out` : "",
+      upstream.failed ? `${upstream.failed} quota refresh failed` : "",
+      reloadFailures ? `${reloadFailures} view reload${reloadFailures === 1 ? "" : "s"} failed` : ""
+    ].filter(Boolean).join("; ");
+  }
+
+  button.disabled = false;
+  button.removeAttribute("aria-busy");
+  refreshFeedbackTimer = setTimeout(() => {
+    if (!button.disabled) {
+      button.textContent = "Refresh";
+    }
+  }, 3000);
 }
 
 async function selectAccount(accountId) {
@@ -792,10 +850,18 @@ function renderDepartures() {
   host.innerHTML = head + rows.join("");
 }
 
-function compareFleetAccounts(a, b) {
+function compareFleetAccounts(a, b, now = Date.now()) {
   const winA = accountWindow(a);
   const winB = accountWindow(b);
-  const tier = (account, win) => (account.auth?.loggedIn ? 2 : 0) + (win ? 1 : 0);
+  const tier = (account, win) => {
+    if (!account.auth?.loggedIn) {
+      return 0;
+    }
+    if (!win) {
+      return 1;
+    }
+    return isFreshWindow(win, now) ? 3 : 2;
+  };
   const tierA = tier(a, winA);
   const tierB = tier(b, winB);
   if (tierA !== tierB) {
@@ -813,11 +879,15 @@ function renderFleet() {
   if (!rowsHost || !timetableHost) {
     return;
   }
-  const accounts = [...state.accounts].sort(compareFleetAccounts);
-  const readings = accounts
-    .filter((account) => account.auth?.loggedIn)
-    .map((account) => ({ account, win: accountWindow(account) }))
-    .filter((entry) => entry.win);
+  const now = Date.now();
+  const accounts = [...state.accounts].sort((a, b) => compareFleetAccounts(a, b, now));
+  const accountReadings = accounts.map((account) => ({ account, win: accountWindow(account) }));
+  const readings = accountReadings.filter(
+    (entry) => entry.account.auth?.loggedIn && isFreshWindow(entry.win, now)
+  );
+  const staleReadings = accountReadings.filter(
+    (entry) => entry.account.auth?.loggedIn && entry.win && !isFreshWindow(entry.win, now)
+  );
   const nearLimit = readings.filter((entry) => entry.win.primary.used >= NEAR_LIMIT_USED);
 
   $("#fleetMeanFree").textContent = readings.length
@@ -836,15 +906,19 @@ function renderFleet() {
   if (!accounts.length) {
     fleetBadge.textContent = "No accounts";
     fleetBadge.className = "badge neutral";
-  } else if (!readings.length) {
+  } else if (!readings.length && !staleReadings.length) {
     fleetBadge.textContent = "No readings yet";
     fleetBadge.className = "badge neutral";
-  } else if (nearLimit.length) {
-    fleetBadge.textContent = `${nearLimit.length} near limit`;
-    fleetBadge.className = "badge bad";
   } else {
-    fleetBadge.textContent = "All clear";
-    fleetBadge.className = "badge ok";
+    const issues = [];
+    if (nearLimit.length) {
+      issues.push(`${nearLimit.length} near limit`);
+    }
+    if (staleReadings.length) {
+      issues.push(`${staleReadings.length} stale`);
+    }
+    fleetBadge.textContent = issues.join(" · ") || "All clear";
+    fleetBadge.className = `badge ${nearLimit.length ? "bad" : staleReadings.length ? "warn" : "ok"}`;
   }
 
   rowsHost.innerHTML = !accounts.length
@@ -868,15 +942,23 @@ function renderFleet() {
           trackCell = '<span class="strip-note">no reading yet — appears after the next send</span>';
         } else {
           const primary = win.primary;
-          if (primary.used >= NEAR_LIMIT_USED) {
+          const fresh = isFreshWindow(win, now);
+          if (fresh && primary.used >= NEAR_LIMIT_USED) {
             rowClasses += " near";
+          }
+          if (!fresh) {
+            rowClasses += " stale";
           }
           if (!account.enabled) {
             rowClasses += " muted";
           }
           trackCell = `
             <div class="strip-cell">
-              <div class="strip-track" role="img" aria-label="${escapeHtml(`${account.label}: ${primary.free}% available, ${primary.used}% used`)}">
+              <div class="strip-track" role="img" aria-label="${escapeHtml(
+                fresh
+                  ? `${account.label}: ${primary.free}% available, ${primary.used}% used`
+                  : `${account.label}: stale reading, last reported ${primary.free}% available`
+              )}">
                 <div class="strip-fill" style="width:${primary.used}%"></div>
               </div>
               ${win.secondary?.hasData ? `
@@ -889,10 +971,12 @@ function renderFleet() {
             </div>`;
           metaCell = `
             <div class="strip-meta">
-              <span class="free-num">${primary.free}<small>% free</small></span>
+              <span class="free-num">${primary.free}<small>${fresh ? "% free" : "% last reported"}</small></span>
               <span class="reset-line">${
                 primary.resetsAt
-                  ? `<span data-resets="${primary.resetsAt}" title="Window resets at this time"></span>`
+                  ? `<span data-resets="${primary.resetsAt}" title="${
+                      fresh ? "Window resets at this time" : "Reading expired; waiting for Codex to report the next window"
+                    }"></span>`
                   : "reset unknown"
               }</span>
             </div>`;
@@ -900,7 +984,11 @@ function renderFleet() {
         return `<div class="${rowClasses}">${labelCell}${trackCell}${metaCell}</div>`;
       }).join("");
 
-  const lanes = accounts.filter((account) => account.auth?.loggedIn && accountWindow(account)?.primary.resetsAt);
+  const lanes = accounts.filter((account) => {
+    const resetsAt = accountWindow(account)?.primary.resetsAt;
+    const resetMs = Number(resetsAt) * 1000;
+    return account.auth?.loggedIn && resetMs > now && resetMs <= now + FLEET_TIMETABLE_MS;
+  });
   timetableHost.innerHTML = !lanes.length
     ? '<p class="tt-empty">No upcoming window resets tracked yet.</p>'
     : `
@@ -933,6 +1021,9 @@ function tickFleet() {
   document.querySelectorAll("#fleetRows [data-resets]").forEach((el) => {
     const resetMs = Number(el.dataset.resets) * 1000;
     el.textContent = `${fmtClockTime(resetMs)} · ${fmtCountdown(resetMs - now)}`;
+    el.title = resetMs > now
+      ? "Window resets at this time"
+      : "Reading expired; waiting for Codex to report the next window";
   });
 
   const nextResetsAt = state.accounts
@@ -948,10 +1039,19 @@ function tickFleet() {
     $("#fleetNextResetLabel").textContent = "next reset";
   }
 
-  const spanMs = 24 * 3600 * 1000;
+  const spanMs = FLEET_TIMETABLE_MS;
   document.querySelectorAll("#fleetTimetable [data-resets]").forEach((el) => {
     const resetMs = Number(el.dataset.resets) * 1000;
-    const pos = Math.max(0, Math.min(99.5, ((resetMs - now) / spanMs) * 100));
+    const msUntilReset = resetMs - now;
+    const lane = el.closest(".tt-lane");
+    const inRange = msUntilReset > 0 && msUntilReset <= spanMs;
+    if (lane) {
+      lane.hidden = !inRange;
+    }
+    if (!inRange) {
+      return;
+    }
+    const pos = Math.min(99.5, (msUntilReset / spanMs) * 100);
     el.style.left = `${pos}%`;
     el.classList.toggle("flip", pos > 86);
     if (el.classList.contains("tt-time")) {
@@ -1057,10 +1157,8 @@ async function runNow(prompt = null) {
 }
 
 function bindActions() {
-  $("#refreshBtn").addEventListener("click", async () => {
-    await refreshStatus();
-    await refreshSettings();
-    await refreshActivity();
+  $("#refreshBtn").addEventListener("click", () => {
+    void refreshAllState();
   });
   $("#runNowBtn").addEventListener("click", async () => {
     $("#runNowBtn").disabled = true;
