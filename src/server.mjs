@@ -79,6 +79,7 @@ const sseClients = new Set();
 const authStatusCacheByAccount = new Map();
 const appServers = new Map();
 const loginSessions = new Map();
+let stateRefreshPromise = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -337,6 +338,7 @@ function normalizeStore() {
   const selected = getAccount();
   store.threadState = selected?.threadState || clone(DEFAULT_THREAD_STATE);
   store.dashboard = selected?.dashboard || clone(DEFAULT_DASHBOARD);
+  reconcileScheduledRuns();
 }
 
 function saveStore() {
@@ -714,6 +716,7 @@ function recordRateLimits(account, rateLimits, merge = false) {
   }
   const incoming = redact(rateLimits);
   const previous = account.dashboard?.rateLimits;
+  const updatedAt = nowIso();
   let next = incoming;
   if (merge && previous) {
     next = { ...previous, ...incoming };
@@ -725,7 +728,13 @@ function recordRateLimits(account, rateLimits, merge = false) {
       }
     }
   }
-  const updatedAt = nowIso();
+  for (const key of ["primary", "secondary"]) {
+    if (incoming[key] && typeof incoming[key] === "object") {
+      next[key] = { ...next[key], updatedAt };
+    } else if (merge && next[key] && typeof next[key] === "object" && !next[key].updatedAt) {
+      next[key] = { ...next[key], updatedAt: previous?.updatedAt || null };
+    }
+  }
   account.dashboard ||= structuredClone(DEFAULT_DASHBOARD);
   account.dashboard.rateLimits = { ...next, updatedAt };
   if (account.id === store.selectedAccountId) {
@@ -809,6 +818,7 @@ function updateDashboardState(accountId, message) {
     };
     void saveStore();
   }
+  syncScheduledRunFromTurn(accountId, message, true);
   if (account.id === store.selectedAccountId) {
     store.dashboard = account.dashboard;
   }
@@ -907,6 +917,59 @@ function buildSandboxPolicy(account) {
     writableRoots: [workspaceDir],
     networkAccess: Boolean(store.settings.networkAccess)
   };
+}
+
+function terminalTurnOutcome(message) {
+  const method = String(message?.method || "");
+  if (!/^turn\/(completed|failed|cancelled|aborted|interrupted)$/.test(method)) {
+    return null;
+  }
+  const params = message.params || {};
+  const turn = params.turn || {};
+  const methodStatus = method.slice("turn/".length);
+  let status = methodStatus;
+  if (methodStatus === "completed") {
+    status = turn.error || params.error ? "failed" : turn.status || "completed";
+  }
+  return {
+    turnId: turn.id || params.turnId || null,
+    status,
+    error: turn.error || params.error ? redact(turn.error || params.error) : null,
+    completedAt: message.ts || nowIso()
+  };
+}
+
+function syncScheduledRunFromTurn(accountId, message, persist) {
+  const outcome = terminalTurnOutcome(message);
+  if (!accountId || !outcome?.turnId || !Array.isArray(store.scheduledRuns)) {
+    return false;
+  }
+  const run = [...store.scheduledRuns].reverse().find(
+    (item) => item.accountId === accountId && item.turnId === outcome.turnId
+  );
+  if (!run) {
+    return false;
+  }
+  run.status = outcome.status;
+  run.error = outcome.error;
+  run.completedAt = outcome.completedAt;
+  if (persist) {
+    addScheduledRun(run);
+  }
+  return true;
+}
+
+function reconcileScheduledRuns() {
+  if (!Array.isArray(store.activityEvents)) {
+    return;
+  }
+  for (const event of store.activityEvents) {
+    syncScheduledRunFromTurn(event.payload?.accountId, {
+      method: event.message,
+      params: event.payload,
+      ts: event.ts
+    }, false);
+  }
 }
 
 function addScheduledRun(run) {
@@ -1279,21 +1342,28 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/refresh") {
-    const accounts = await Promise.all(store.accounts.map((account) => refreshAccountState(account)));
-    const summary = {
-      attempted: accounts.length,
-      updated: accounts.filter((account) => account.rateLimits === "updated").length,
-      skipped: accounts.filter((account) => account.rateLimits === "skipped").length,
-      failed: accounts.filter((account) => account.rateLimits === "failed").length
-    };
-    if (summary.updated) {
-      await saveStore();
+    if (!stateRefreshPromise) {
+      stateRefreshPromise = (async () => {
+        const accounts = await Promise.all(store.accounts.map((account) => refreshAccountState(account)));
+        const summary = {
+          attempted: accounts.length,
+          updated: accounts.filter((account) => account.rateLimits === "updated").length,
+          skipped: accounts.filter((account) => account.rateLimits === "skipped").length,
+          failed: accounts.filter((account) => account.rateLimits === "failed").length
+        };
+        if (summary.updated) {
+          await saveStore();
+        }
+        addActivity("refresh", summary.failed ? "warn" : "info", "State refresh completed", {
+          ...summary,
+          accounts
+        });
+        return { ts: nowIso(), ...summary, accounts };
+      })().finally(() => {
+        stateRefreshPromise = null;
+      });
     }
-    addActivity("refresh", summary.failed ? "warn" : "info", "Manual state refresh completed", {
-      ...summary,
-      accounts
-    });
-    return sendJson(res, 200, { ts: nowIso(), ...summary, accounts });
+    return sendJson(res, 200, await stateRefreshPromise);
   }
 
   if (req.method === "GET" && url.pathname === "/api/events") {

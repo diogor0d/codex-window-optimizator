@@ -57,19 +57,19 @@ Open the UI:
 http://127.0.0.1:8787
 ```
 
-Then log in: **Accounts → Start device login**. The container runs `codex login --device-auth`; open the shown URL in any browser, sign in, and enter the code. Credentials land in the persistent volume and survive restarts and rebuilds.
+Then log in: **Account console → Manage selected account → Start device login**. The container runs `codex login --device-auth`; open the shown URL in any browser, sign in, and enter the code. Credentials land in the persistent volume and survive restarts and rebuilds.
 
 ## Multiple accounts
 
-- The original login migrates to **Default account**; add more from the Accounts panel.
+- The original login migrates to **Default account**; add more from **Manage selected account** in the Account console.
 - Additional credentials live under `/data/codex-accounts/<account-id>/`.
 - Enabled accounts are pinged at every configured time; disabled accounts stay logged in but are skipped.
 - **Remove** stops the account's app-server and permanently deletes its Codex home, including `auth.json`. The last remaining account cannot be removed.
-- Login, logout, run-now, and goal controls all apply to the selected account.
+- Login, logout, and run-now controls all apply to the selected account.
 
 ### Per-account overrides
 
-Under *Accounts → Per-account overrides*. Leave a field empty to inherit the global default from Settings.
+Under *Account console → Manage selected account → Per-account overrides*. Leave a field empty to inherit the global default from Settings.
 
 | Override | Use it to |
 |---|---|
@@ -88,7 +88,7 @@ This is a **private admin app** with full control over Codex sessions. Do not ex
 - Put it behind **Cloudflare Tunnel + Cloudflare Access**.
 - Set `ADMIN_EMAILS` so the backend only accepts requests carrying a matching Access-authenticated email header. This is defense in depth — if the app is directly exposed, those headers can be spoofed.
 - The app never asks for your ChatGPT password and never displays tokens. Treat the data volume like a password store — **backups contain live credentials; encrypt them**.
-- `codex login status` reports credential *presence*, not validity. A revoked session keeps showing "Logged in" while sends fail with `unauthorized` in the activity feed — if pings start failing, re-login from the Accounts panel.
+- `codex login status` reports credential *presence*, not validity. A revoked session keeps showing "Logged in" while sends fail with `unauthorized` in the activity feed. If pings start failing, re-login from the Account console.
 
 ## Configuration
 

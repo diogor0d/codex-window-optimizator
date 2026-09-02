@@ -46,54 +46,127 @@
     </header>
 
     <main class="layout">
-      <section class="panel status-panel">
-        <div class="section-header">
-          <h2>Status</h2>
-          <span id="serviceBadge" class="badge neutral">Unknown</span>
+      <section class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
+        <div class="section-header account-console-header">
+          <div>
+            <p class="eyebrow">Selected account</p>
+            <h2 id="accountConsoleTitle">Account console</h2>
+          </div>
+          <span id="loginBadge" class="badge neutral">Not checked</span>
         </div>
-        <dl class="facts">
-          <div><dt>Auth</dt><dd id="authState">Unknown</dd></div>
-          <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
-          <div><dt>Thread</dt><dd id="threadState">None</dd></div>
-          <div><dt>Local time</dt><dd id="localTime">Unknown</dd></div>
-          <div><dt>Last run</dt><dd id="lastRun">None</dd></div>
-        </dl>
-        <div class="button-row">
-          <button id="pauseBtn" type="button">Pause scheduler</button>
-          <button id="resumeBtn" type="button">Resume scheduler</button>
-        </div>
-      </section>
 
-      <section class="panel window-panel">
-        <div class="section-header">
-          <h2>Usage window</h2>
-          <span id="windowBadge" class="badge neutral">Unknown</span>
+        <div class="account-selector-rail">
+          <label class="account-selector-label">
+            Active account
+            <select id="accountSelect"></select>
+          </label>
+          <p class="account-selector-note">Every reading and account control below follows this selection.</p>
         </div>
-        <div class="window-meter">
-          <div class="meter-copy">
-            <span id="windowUsageLabel">Usage unknown</span>
-            <span id="windowResetHint">Reset unknown</span>
-          </div>
-          <div class="meter-track" aria-hidden="true">
-            <div id="windowUsageBar" class="meter-bar"></div>
-          </div>
-          <div class="meter-scale" aria-hidden="true">
-            <span>0h</span><span>1h</span><span>2h</span><span>3h</span><span>4h</span><span>5h</span>
-          </div>
+
+        <div class="account-overview-grid">
+          <section class="account-snapshot status-panel" aria-labelledby="accountStatusTitle">
+            <div class="snapshot-header">
+              <h3 id="accountStatusTitle">Account status</h3>
+              <span id="serviceBadge" class="badge neutral">Unknown</span>
+            </div>
+            <dl class="facts">
+              <div><dt>Auth</dt><dd id="authState">Unknown</dd></div>
+              <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
+              <div><dt>Thread</dt><dd id="threadState">None</dd></div>
+              <div><dt>Last run</dt><dd id="lastRun">None</dd></div>
+            </dl>
+          </section>
+
+          <section class="account-snapshot window-panel" aria-labelledby="accountUsageTitle">
+            <div class="snapshot-header">
+              <h3 id="accountUsageTitle">Current usage window</h3>
+              <span id="windowBadge" class="badge neutral">Unknown</span>
+            </div>
+            <div class="window-meter">
+              <div class="meter-copy">
+                <span id="windowUsageLabel">Usage unknown</span>
+                <span id="windowResetHint">Reset unknown</span>
+              </div>
+              <div class="meter-track" aria-hidden="true">
+                <div id="windowUsageBar" class="meter-bar"></div>
+              </div>
+              <div class="meter-scale" aria-hidden="true">
+                <span>0h</span><span>1h</span><span>2h</span><span>3h</span><span>4h</span><span>5h</span>
+              </div>
+            </div>
+            <dl class="facts">
+              <div><dt>Usage</dt><dd id="windowUsage">Unknown</dd></div>
+              <div><dt>Reset</dt><dd id="windowReset">Unknown</dd></div>
+              <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
+              <div><dt>Last ping</dt><dd id="lastPing">None</dd></div>
+              <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
+            </dl>
+          </section>
         </div>
-        <dl class="facts">
-          <div><dt>Usage</dt><dd id="windowUsage">Unknown</dd></div>
-          <div><dt>Reset</dt><dd id="windowReset">Unknown</dd></div>
-          <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
-          <div><dt>Last ping</dt><dd id="lastPing">None</dd></div>
-          <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
-        </dl>
+
+        <details class="account-management">
+          <summary>
+            <span>Manage selected account</span>
+            <small>Login, credentials, overrides, and account list</small>
+          </summary>
+          <div class="account-management-body">
+            <p class="hint">
+              Each account uses its own persistent Codex home. Enabled accounts are included in scheduled sends.
+            </p>
+            <div class="account-edit-row">
+              <input id="accountLabelInput" autocomplete="off" placeholder="Account label" aria-label="Account label">
+              <button id="saveAccountBtn" type="button">Save label</button>
+            </div>
+            <label class="checkbox-line">
+              <input id="accountEnabledInput" type="checkbox">
+              Include this account in scheduled sends
+            </label>
+            <div class="button-row">
+              <button id="deviceLoginBtn" type="button" class="primary">Start device login</button>
+              <button id="logoutBtn" type="button" class="danger">Logout</button>
+              <button id="removeAccountBtn" type="button" class="danger">Remove</button>
+            </div>
+            <span id="accountMessage" class="form-message"></span>
+            <details id="accountOverrides" class="account-overrides">
+              <summary>Per-account overrides</summary>
+              <p class="hint">Leave empty to inherit the global defaults from Settings.</p>
+              <label>
+                Schedule times
+                <input id="accountScheduleInput" autocomplete="off" placeholder="Inherited">
+              </label>
+              <label>
+                Workspace directory
+                <input id="accountWorkspaceInput" autocomplete="off" placeholder="Inherited">
+              </label>
+              <label>
+                Model override
+                <input id="accountModelInput" autocomplete="off" placeholder="Inherited">
+              </label>
+              <label>
+                Scheduled prompt template
+                <textarea id="accountPromptInput" rows="5"></textarea>
+              </label>
+              <div class="button-row">
+                <button id="saveAccountOverridesBtn" type="button">Save overrides</button>
+              </div>
+            </details>
+            <div class="account-add-row">
+              <input id="newAccountLabelInput" autocomplete="off" placeholder="New account label" aria-label="New account label">
+              <button id="addAccountBtn" type="button">Add account</button>
+            </div>
+            <div id="accountList" class="account-list"></div>
+            <pre id="loginOutput" class="terminal" aria-live="polite">No login session yet.</pre>
+          </div>
+        </details>
       </section>
 
       <section class="panel fleet-panel" aria-labelledby="fleetTitle">
         <div class="section-header">
           <h2 id="fleetTitle">Fleet windows</h2>
-          <span id="fleetBadge" class="badge neutral">No data</span>
+          <div class="fleet-header-state">
+            <time id="fleetUpdated" class="fleet-updated">No live reading</time>
+            <span id="fleetBadge" class="badge neutral">No data</span>
+          </div>
         </div>
         <div class="fleet-stats">
           <div class="fleet-stat">
@@ -126,64 +199,8 @@
         <p class="hint fleet-hint">
           Segments show last reported quota used; red marks fresh readings at 80% or more.
           Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
+          Live quota reads run every five minutes while this page is visible and never start a Codex turn.
         </p>
-      </section>
-
-      <section class="panel account-panel">
-        <div class="section-header">
-          <h2>Accounts</h2>
-          <span id="loginBadge" class="badge neutral">Not checked</span>
-        </div>
-        <p class="hint">
-          Each account uses its own persistent Codex home. Enabled accounts are included in scheduled sends.
-        </p>
-        <label>
-          Selected account
-          <select id="accountSelect"></select>
-        </label>
-        <div class="account-edit-row">
-          <input id="accountLabelInput" autocomplete="off" placeholder="Account label">
-          <button id="saveAccountBtn" type="button">Save label</button>
-        </div>
-        <label class="checkbox-line">
-          <input id="accountEnabledInput" type="checkbox">
-          Include this account in scheduled sends
-        </label>
-        <div class="button-row">
-          <button id="deviceLoginBtn" type="button" class="primary">Start device login</button>
-          <button id="logoutBtn" type="button" class="danger">Logout</button>
-          <button id="removeAccountBtn" type="button" class="danger">Remove</button>
-        </div>
-        <span id="accountMessage" class="form-message"></span>
-        <details id="accountOverrides" class="account-overrides">
-          <summary>Per-account overrides</summary>
-          <p class="hint">Leave empty to inherit the global defaults from Settings.</p>
-          <label>
-            Schedule times
-            <input id="accountScheduleInput" autocomplete="off" placeholder="Inherited">
-          </label>
-          <label>
-            Workspace directory
-            <input id="accountWorkspaceInput" autocomplete="off" placeholder="Inherited">
-          </label>
-          <label>
-            Model override
-            <input id="accountModelInput" autocomplete="off" placeholder="Inherited">
-          </label>
-          <label>
-            Scheduled prompt template
-            <textarea id="accountPromptInput" rows="5"></textarea>
-          </label>
-          <div class="button-row">
-            <button id="saveAccountOverridesBtn" type="button">Save overrides</button>
-          </div>
-        </details>
-        <div class="account-add-row">
-          <input id="newAccountLabelInput" autocomplete="off" placeholder="New account label">
-          <button id="addAccountBtn" type="button">Add account</button>
-        </div>
-        <div id="accountList" class="account-list"></div>
-        <pre id="loginOutput" class="terminal" aria-live="polite">No login session yet.</pre>
       </section>
 
       <section class="panel board-panel">
@@ -207,6 +224,15 @@
         <div class="section-header">
           <h2>Schedule</h2>
           <span id="schedulerBadge" class="badge neutral">Unknown</span>
+        </div>
+        <div class="scheduler-console">
+          <dl class="facts">
+            <div><dt>Local time</dt><dd id="localTime">Unknown</dd></div>
+          </dl>
+          <div class="button-row">
+            <button id="pauseBtn" type="button">Pause scheduler</button>
+            <button id="resumeBtn" type="button">Resume scheduler</button>
+          </div>
         </div>
         <form id="settingsForm">
           <label>
@@ -256,27 +282,6 @@
           <div class="button-row">
             <button type="submit" class="primary">Save settings</button>
             <span id="settingsMessage" class="form-message"></span>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel goal-panel">
-        <div class="section-header">
-          <h2>Goal</h2>
-        </div>
-        <form id="goalForm">
-          <label>
-            Active Codex goal
-            <textarea id="goalInput" rows="4" placeholder="Finish X, keep tests green, stop when blocked."></textarea>
-          </label>
-          <label>
-            Token budget
-            <input id="tokenBudgetInput" inputmode="numeric" placeholder="Optional">
-          </label>
-          <div class="button-row">
-            <button type="submit" class="primary">Set goal</button>
-            <button id="clearGoalBtn" type="button">Clear goal</button>
-            <span id="goalMessage" class="form-message"></span>
           </div>
         </form>
       </section>

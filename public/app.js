@@ -7,7 +7,10 @@ const state = {
   showRawEvents: false,
   accounts: [],
   selectedAccountId: null,
-  runs: []
+  runs: [],
+  refreshInFlight: false,
+  lastQuotaRefreshAt: 0,
+  fleetSignature: null
 };
 
 async function api(path, options = {}) {
@@ -95,6 +98,9 @@ function clampPercent(value) {
 
 const NEAR_LIMIT_USED = 80;
 const FLEET_TIMETABLE_MS = 24 * 60 * 60 * 1000;
+const VISIBLE_STATE_REFRESH_MS = 60 * 1000;
+const QUOTA_REFRESH_MS = 5 * 60 * 1000;
+const QUOTA_REFRESH_STORAGE_KEY = "codex-window:last-quota-refresh";
 
 function accountWindow(account) {
   const limits = account?.dashboard?.rateLimits;
@@ -121,7 +127,8 @@ function accountWindow(account) {
   return {
     primary,
     secondary: normalize(limits.secondary),
-    planType: limits.planType ? String(limits.planType) : null
+    planType: limits.planType ? String(limits.planType) : null,
+    updatedAt: limits.updatedAt || null
   };
 }
 
@@ -143,6 +150,10 @@ function fmtCountdown(msLeft) {
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
+  if (hours >= 48) {
+    const days = Math.floor(hours / 24);
+    return `in ${days}d ${hours % 24}h`;
+  }
   return hours ? `in ${hours}h ${String(minutes).padStart(2, "0")}m` : `in ${minutes}m`;
 }
 
@@ -151,6 +162,17 @@ function fmtClockTime(ms) {
     return "--:--";
   }
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtWeeklyReset(ms) {
+  if (!Number.isFinite(ms)) {
+    return "reset unknown";
+  }
+  return new Date(ms).toLocaleString([], {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function shortId(value) {
@@ -276,14 +298,18 @@ async function refreshStatus() {
 
 let refreshFeedbackTimer = null;
 
-async function refreshAllState() {
+async function refreshAllState({ interactive = true } = {}) {
+  if (state.refreshInFlight) {
+    return;
+  }
+  state.refreshInFlight = true;
   const button = $("#refreshBtn");
   if (refreshFeedbackTimer) {
     clearTimeout(refreshFeedbackTimer);
     refreshFeedbackTimer = null;
   }
   button.disabled = true;
-  button.textContent = "Refreshing...";
+  button.textContent = interactive ? "Refreshing..." : "Auto refreshing...";
   button.setAttribute("aria-busy", "true");
 
   let upstream = null;
@@ -293,37 +319,88 @@ async function refreshAllState() {
   } catch (error) {
     upstreamError = error;
   }
-
-  const accountId = selectedAccountId();
-  const reloads = await Promise.allSettled([
-    refreshStatus(),
-    refreshSettings(),
-    refreshActivity(),
-    api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId || "")}`).then(renderLoginOutput)
-  ]);
-  const reloadFailures = reloads.filter((result) => result.status === "rejected").length;
-
-  if (upstreamError) {
-    button.textContent = "Refresh failed";
-    button.title = upstreamError.message;
-  } else {
-    const partial = upstream.failed || upstream.skipped || reloadFailures;
-    button.textContent = partial ? `Updated ${upstream.updated}/${upstream.attempted}` : "All updated";
-    button.title = [
-      `${upstream.updated} quota reading${upstream.updated === 1 ? "" : "s"} updated`,
-      upstream.skipped ? `${upstream.skipped} signed out` : "",
-      upstream.failed ? `${upstream.failed} quota refresh failed` : "",
-      reloadFailures ? `${reloadFailures} view reload${reloadFailures === 1 ? "" : "s"} failed` : ""
-    ].filter(Boolean).join("; ");
+  if (!upstreamError && !upstream.failed) {
+    state.lastQuotaRefreshAt = Date.now();
+    localStorage.setItem(QUOTA_REFRESH_STORAGE_KEY, String(state.lastQuotaRefreshAt));
   }
 
+  const accountId = selectedAccountId();
+  const reloads = await Promise.allSettled(interactive
+    ? [
+        refreshStatus(),
+        refreshSettings(),
+        refreshActivity(),
+        api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId || "")}`).then(renderLoginOutput)
+      ]
+    : [refreshStatus(), refreshActivity()]);
+  const reloadFailures = reloads.filter((result) => result.status === "rejected").length;
+
+  if (interactive) {
+    if (upstreamError) {
+      button.textContent = "Refresh failed";
+      button.title = upstreamError.message;
+    } else {
+      const partial = upstream.failed || upstream.skipped || reloadFailures;
+      button.textContent = partial ? `Updated ${upstream.updated}/${upstream.attempted}` : "All updated";
+      button.title = [
+        `${upstream.updated} quota reading${upstream.updated === 1 ? "" : "s"} updated`,
+        upstream.skipped ? `${upstream.skipped} signed out` : "",
+        upstream.failed ? `${upstream.failed} quota refresh failed` : "",
+        reloadFailures ? `${reloadFailures} view reload${reloadFailures === 1 ? "" : "s"} failed` : ""
+      ].filter(Boolean).join("; ");
+    }
+
+    refreshFeedbackTimer = setTimeout(() => {
+      if (!button.disabled) {
+        button.textContent = "Refresh";
+      }
+    }, 3000);
+  } else {
+    button.textContent = "Refresh";
+    button.title = upstreamError
+      ? `Automatic refresh failed: ${upstreamError.message}`
+      : "Quota and page state refresh automatically while this page is visible.";
+  }
+  state.refreshInFlight = false;
   button.disabled = false;
   button.removeAttribute("aria-busy");
-  refreshFeedbackTimer = setTimeout(() => {
-    if (!button.disabled) {
-      button.textContent = "Refresh";
+}
+
+async function refreshVisibleState() {
+  if (document.visibilityState !== "visible") {
+    return;
+  }
+  await Promise.allSettled([refreshStatus(), refreshActivity()]);
+}
+
+function refreshQuotaIfDue() {
+  if (document.visibilityState !== "visible" || state.refreshInFlight) {
+    return;
+  }
+  if (Date.now() - state.lastQuotaRefreshAt >= QUOTA_REFRESH_MS) {
+    void refreshAllState({ interactive: false });
+  }
+}
+
+function startAutoRefresh() {
+  state.lastQuotaRefreshAt = Math.max(
+    state.lastQuotaRefreshAt,
+    Number(localStorage.getItem(QUOTA_REFRESH_STORAGE_KEY)) || 0
+  );
+  setInterval(() => void refreshVisibleState(), VISIBLE_STATE_REFRESH_MS);
+  setInterval(refreshQuotaIfDue, VISIBLE_STATE_REFRESH_MS);
+  window.addEventListener("storage", (event) => {
+    if (event.key === QUOTA_REFRESH_STORAGE_KEY) {
+      state.lastQuotaRefreshAt = Math.max(state.lastQuotaRefreshAt, Number(event.newValue) || 0);
     }
-  }, 3000);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void refreshVisibleState();
+      refreshQuotaIfDue();
+    }
+  });
+  refreshQuotaIfDue();
 }
 
 async function selectAccount(accountId) {
@@ -705,6 +782,25 @@ function timezoneParts(timezone) {
   return Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
 }
 
+function timezoneDateKey(timezone, date = new Date()) {
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(date);
+  } catch {
+    return timezoneDateKey("Europe/Lisbon", date);
+  }
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 let clockTimer = null;
 
 function startClock() {
@@ -778,9 +874,11 @@ function renderNextSend(nextLocal, schedulerEnabled) {
   strip.setAttribute("aria-label", `Next send ${time}${day ? `, ${day.toLowerCase()}` : ""}`);
 }
 
-function boardCellFor(account, time, today, timeNow) {
+function boardCellFor(account, time, today, timeNow, timezone) {
   const runs = (state.runs || []).filter(
-    (item) => item.accountId === account.id && item.scheduledTime === time && String(item.ts).slice(0, 10) === today
+    (item) => item.accountId === account.id
+      && item.scheduledTime === time
+      && timezoneDateKey(timezone, new Date(item.ts)) === today
   );
   const run = runs[runs.length - 1];
   let cls = time <= timeNow ? "missed" : "pending";
@@ -797,6 +895,9 @@ function boardCellFor(account, time, today, timeNow) {
     } else if (run.status === "skipped_active_turn") {
       cls = "warn";
       label = "Skipped, a turn was already active";
+    } else if (["cancelled", "aborted", "interrupted"].includes(run.status)) {
+      cls = "warn";
+      label = run.status[0].toUpperCase() + run.status.slice(1);
     } else if (["starting", "started", "inProgress"].includes(run.status)) {
       cls = "active";
       label = "Running";
@@ -826,7 +927,7 @@ function renderDepartures() {
   } catch {
     parts = timezoneParts("Europe/Lisbon");
   }
-  const today = `${parts.year}-${parts.month}-${parts.day}`;
+  const today = timezoneDateKey(timezone);
   const timeNow = `${parts.hour}:${parts.minute}`;
   const accounts = state.accounts;
   const times = [
@@ -837,14 +938,14 @@ function renderDepartures() {
     )
   ].sort();
   if (!accounts.length || !times.length) {
-    host.innerHTML = '<p class="board-empty">No enabled accounts with schedule times. Add one in Accounts or Settings.</p>';
+    host.innerHTML = '<p class="board-empty">No enabled accounts with schedule times. Enable one in Account console or Schedule.</p>';
     return;
   }
   const head = `<div class="board-row board-head"><span class="board-account">account</span>${times
     .map((time) => `<span class="board-time">${escapeHtml(time)}</span>`)
     .join("")}</div>`;
   const rows = accounts.map((account) => {
-    const cells = times.map((time) => boardCellFor(account, time, today, timeNow)).join("");
+    const cells = times.map((time) => boardCellFor(account, time, today, timeNow, timezone)).join("");
     return `<div class="board-row"><span class="board-account" title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</span>${cells}</div>`;
   });
   host.innerHTML = head + rows.join("");
@@ -889,6 +990,37 @@ function renderFleet() {
     (entry) => entry.account.auth?.loggedIn && entry.win && !isFreshWindow(entry.win, now)
   );
   const nearLimit = readings.filter((entry) => entry.win.primary.used >= NEAR_LIMIT_USED);
+  const updatedTimes = accountReadings
+    .map((entry) => Date.parse(entry.win?.updatedAt || ""))
+    .filter(Number.isFinite);
+  const latestUpdatedAt = updatedTimes.length ? Math.max(...updatedTimes) : null;
+  const fleetUpdated = $("#fleetUpdated");
+  if (Number.isFinite(latestUpdatedAt)) {
+    fleetUpdated.dataset.updatedAt = String(latestUpdatedAt);
+    fleetUpdated.dateTime = new Date(latestUpdatedAt).toISOString();
+    fleetUpdated.title = `Latest live quota reading: ${new Date(latestUpdatedAt).toLocaleString()}`;
+  } else {
+    delete fleetUpdated.dataset.updatedAt;
+    fleetUpdated.removeAttribute("datetime");
+    fleetUpdated.removeAttribute("title");
+  }
+
+  const fleetSignature = accountReadings.map(({ account, win }) => [
+    account.id,
+    win?.primary?.used ?? "",
+    win?.primary?.resetsAt ?? "",
+    win?.secondary?.used ?? "",
+    win?.secondary?.resetsAt ?? ""
+  ].join(":"))
+    .sort()
+    .join("|");
+  if (state.fleetSignature !== null && state.fleetSignature !== fleetSignature) {
+    const panel = $(".fleet-panel");
+    panel.classList.remove("quota-updated");
+    requestAnimationFrame(() => panel.classList.add("quota-updated"));
+    setTimeout(() => panel.classList.remove("quota-updated"), 900);
+  }
+  state.fleetSignature = fleetSignature;
 
   $("#fleetMeanFree").textContent = readings.length
     ? `${Math.round(readings.reduce((sum, entry) => sum + entry.win.primary.free, 0) / readings.length)}%`
@@ -922,7 +1054,7 @@ function renderFleet() {
   }
 
   rowsHost.innerHTML = !accounts.length
-    ? '<p class="board-empty">No accounts configured yet. Add one under Accounts.</p>'
+    ? '<p class="board-empty">No accounts configured yet. Add one in Account console.</p>'
     : accounts.map((account) => {
         const win = accountWindow(account);
         const loggedIn = Boolean(account.auth?.loggedIn);
@@ -936,10 +1068,10 @@ function renderFleet() {
           </span>`;
         if (!loggedIn) {
           rowClasses += " muted";
-          trackCell = '<span class="strip-note">logged out — re-login from Accounts</span>';
+          trackCell = '<span class="strip-note">logged out — re-login from Account console</span>';
         } else if (!win) {
           rowClasses += " muted";
-          trackCell = '<span class="strip-note">no reading yet — appears after the next send</span>';
+          trackCell = '<span class="strip-note">no reading yet — waiting for a live quota refresh</span>';
         } else {
           const primary = win.primary;
           const fresh = isFreshWindow(win, now);
@@ -962,11 +1094,21 @@ function renderFleet() {
                 <div class="strip-fill" style="width:${primary.used}%"></div>
               </div>
               ${win.secondary?.hasData ? `
-              <div class="strip-week">
+              <div class="strip-week ${Number(win.secondary.resetsAt) * 1000 > now ? "" : "stale"}">
                 <span class="week-tag">wk</span>
-                <div class="week-track" role="img" aria-label="${escapeHtml(`${account.label} weekly window: ${win.secondary.free}% available`)}">
+                <div class="week-track" role="img" aria-label="${escapeHtml(
+                  Number(win.secondary.resetsAt) * 1000 > now
+                    ? `${account.label} weekly window: ${win.secondary.free}% available`
+                    : `${account.label} weekly window: stale reading, last reported ${win.secondary.free}% available`
+                )}">
                   <div class="week-fill" style="width:${win.secondary.used}%"></div>
                 </div>
+                <span class="week-free" data-week-free="${win.secondary.free}">${win.secondary.free}% ${Number(win.secondary.resetsAt) * 1000 > now ? "free" : "last"}</span>
+                <span class="week-reset">${
+                  win.secondary.resetsAt
+                    ? `<span data-week-resets="${win.secondary.resetsAt}" title="Weekly quota reset: ${escapeHtml(formatUnixSeconds(win.secondary.resetsAt))}"></span>`
+                    : "reset unknown"
+                }</span>
               </div>` : ""}
             </div>`;
           metaCell = `
@@ -1018,12 +1160,41 @@ function renderFleet() {
 function tickFleet() {
   const now = Date.now();
 
+  const fleetUpdated = $("#fleetUpdated");
+  const updatedAt = Number(fleetUpdated?.dataset.updatedAt);
+  if (Number.isFinite(updatedAt)) {
+    const ageMs = Math.max(0, now - updatedAt);
+    if (ageMs < 60 * 1000) {
+      fleetUpdated.textContent = "Updated just now";
+    } else if (ageMs < 60 * 60 * 1000) {
+      fleetUpdated.textContent = `Updated ${Math.floor(ageMs / 60000)}m ago`;
+    } else if (ageMs < 24 * 60 * 60 * 1000) {
+      fleetUpdated.textContent = `Updated ${Math.floor(ageMs / 3600000)}h ago`;
+    } else {
+      fleetUpdated.textContent = `Updated ${Math.floor(ageMs / 86400000)}d ago`;
+    }
+  } else if (fleetUpdated) {
+    fleetUpdated.textContent = "No live reading";
+  }
+
   document.querySelectorAll("#fleetRows [data-resets]").forEach((el) => {
     const resetMs = Number(el.dataset.resets) * 1000;
     el.textContent = `${fmtClockTime(resetMs)} · ${fmtCountdown(resetMs - now)}`;
     el.title = resetMs > now
       ? "Window resets at this time"
       : "Reading expired; waiting for Codex to report the next window";
+  });
+
+  document.querySelectorAll("#fleetRows [data-week-resets]").forEach((el) => {
+    const resetMs = Number(el.dataset.weekResets) * 1000;
+    const stale = resetMs <= now;
+    const row = el.closest(".strip-week");
+    row?.classList.toggle("stale", stale);
+    const free = row?.querySelector("[data-week-free]");
+    if (free) {
+      free.textContent = `${free.dataset.weekFree}% ${stale ? "last" : "free"}`;
+    }
+    el.textContent = `${fmtWeeklyReset(resetMs)} · ${fmtCountdown(resetMs - now)}`;
   });
 
   const nextResetsAt = state.accounts
@@ -1077,7 +1248,7 @@ function connectEvents() {
     await refreshStatus();
   });
   events.addEventListener("run", async () => {
-    await refreshStatus();
+    await Promise.allSettled([refreshStatus(), refreshActivity()]);
   });
   events.onerror = () => {
     addActivity({
@@ -1116,35 +1287,6 @@ async function saveSettings(event) {
     await refreshStatus();
   } catch (error) {
     $("#settingsMessage").textContent = error.message;
-  }
-}
-
-async function setGoal(event) {
-  event.preventDefault();
-  const body = {
-    accountId: selectedAccountId(),
-    objective: $("#goalInput").value.trim()
-  };
-  const tokenBudget = Number.parseInt($("#tokenBudgetInput").value, 10);
-  if (Number.isInteger(tokenBudget) && tokenBudget > 0) {
-    body.tokenBudget = tokenBudget;
-  }
-  $("#goalMessage").textContent = "Saving...";
-  try {
-    await api("/api/thread/goal", { method: "POST", body: JSON.stringify(body) });
-    $("#goalMessage").textContent = "Goal set.";
-  } catch (error) {
-    $("#goalMessage").textContent = error.message;
-  }
-}
-
-async function clearGoal() {
-  $("#goalMessage").textContent = "Clearing...";
-  try {
-    await api(`/api/thread/goal?accountId=${encodeURIComponent(selectedAccountId() || "")}`, { method: "DELETE" });
-    $("#goalMessage").textContent = "Goal cleared.";
-  } catch (error) {
-    $("#goalMessage").textContent = error.message;
   }
 }
 
@@ -1213,8 +1355,6 @@ function bindActions() {
     }
   });
   $("#settingsForm").addEventListener("submit", saveSettings);
-  $("#goalForm").addEventListener("submit", setGoal);
-  $("#clearGoalBtn").addEventListener("click", clearGoal);
   $("#clearActivityBtn").addEventListener("click", () => {
     $("#activityList").innerHTML = "";
     state.activityIds.clear();
@@ -1286,8 +1426,8 @@ async function init() {
   await refreshStatus();
   await refreshActivity();
   renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
-  setInterval(refreshStatus, 15000);
   setInterval(tickFleet, 1000);
+  startAutoRefresh();
 }
 
 init().catch((error) => {

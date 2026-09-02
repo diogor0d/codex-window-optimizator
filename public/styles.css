@@ -325,6 +325,7 @@ button:disabled {
 }
 
 .panel {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--panel);
@@ -354,6 +355,150 @@ button:disabled {
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.account-console {
+  grid-column: 1 / -1;
+  padding: 0;
+  overflow: hidden;
+}
+
+.account-console-header {
+  margin: 0;
+  padding: 15px 16px;
+  background: var(--panel-sunken);
+}
+
+.account-console-header .eyebrow {
+  margin-bottom: 2px;
+}
+
+.account-selector-rail {
+  display: grid;
+  grid-template-columns: minmax(240px, 360px) 1fr;
+  gap: 18px;
+  align-items: end;
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.account-selector-label {
+  margin: 0;
+  color: var(--accent);
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.account-selector-label select {
+  min-height: 41px;
+  border-color: var(--accent);
+  color: var(--text);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.account-selector-note {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.account-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(390px, 1.15fr);
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.account-snapshot {
+  min-width: 0;
+  background: var(--panel);
+  padding: 16px;
+}
+
+.account-snapshot .facts {
+  margin-bottom: 0;
+}
+
+.snapshot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.snapshot-header h3 {
+  margin: 0;
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.account-management > summary {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 46px 12px 16px;
+  cursor: pointer;
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.account-management > summary::after {
+  content: "+";
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  color: var(--accent);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 18px;
+  transform: translateY(-50%);
+}
+
+.account-management[open] > summary::after {
+  content: "-";
+}
+
+.account-management > summary small {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: "Saira", sans-serif;
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.account-management[open] > summary {
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-sunken);
+}
+
+.account-management-body {
+  max-width: 760px;
+  padding: 16px;
+}
+
+.scheduler-console {
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+
+.scheduler-console .facts {
+  margin-bottom: 8px;
 }
 
 .badge {
@@ -973,6 +1118,36 @@ textarea:focus {
   grid-column: 1 / -1;
 }
 
+.fleet-header-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.fleet-updated {
+  color: var(--muted);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fleet-panel.quota-updated {
+  animation: quota-signal 850ms ease-out;
+}
+
+@keyframes quota-signal {
+  0% {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+  }
+
+  100% {
+    border-color: var(--line);
+    box-shadow: var(--shadow);
+  }
+}
+
 .fleet-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1109,7 +1284,7 @@ textarea:focus {
 
 .strip-week {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto 1fr auto minmax(132px, auto);
   align-items: center;
   gap: 7px;
 }
@@ -1135,6 +1310,28 @@ textarea:focus {
   height: 100%;
   background: color-mix(in srgb, var(--accent) 65%, transparent);
   transition: width 300ms ease;
+}
+
+.week-free {
+  min-width: 49px;
+  color: var(--muted);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.week-reset {
+  color: var(--muted);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.strip-week.stale {
+  opacity: 0.5;
 }
 
 .strip-meta {
@@ -1331,27 +1528,127 @@ textarea:focus {
   }
 
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .settings-panel,
   .activity-panel {
     grid-row: auto;
   }
+
+  .account-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .strip-week {
+    grid-template-columns: auto 1fr auto;
+  }
+
+  .week-reset {
+    grid-column: 2 / -1;
+    text-align: left;
+  }
 }
 
 @media (max-width: 560px) {
   .layout {
+    width: 100%;
+    max-width: 100vw;
+    overflow: hidden;
     padding: 10px;
   }
 
+  .layout > .panel {
+    width: 100%;
+    max-width: calc(100vw - 20px);
+    overflow: hidden;
+  }
+
   .topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     padding: 14px 16px;
     gap: 14px;
   }
 
+  .brand {
+    grid-column: 1 / -1;
+  }
+
+  .station-clock,
+  .next-module {
+    min-width: 0;
+  }
+
+  .flap-line {
+    gap: 6px;
+  }
+
+  .flap-strip {
+    gap: 2px;
+  }
+
+  .flap-cell {
+    width: 22px;
+  }
+
+  .flap-cell span {
+    font-size: 19px;
+  }
+
+  .flap-day {
+    font-size: 10.5px;
+  }
+
+  .topbar-actions {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .section-header,
+  .snapshot-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .snapshot-header .badge,
+  .fleet-header-state {
+    margin-left: 0;
+  }
+
+  .meter-copy {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .grid-2 {
     grid-template-columns: 1fr;
+  }
+
+  .account-selector-rail {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .account-selector-note {
+    margin-bottom: 0;
+  }
+
+  .account-management > summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .account-management > summary small {
+    margin-left: 0;
+  }
+
+  .fleet-header-state {
+    align-items: flex-end;
+    flex-direction: column-reverse;
+    gap: 5px;
   }
 
   .facts div {
