@@ -845,11 +845,12 @@ function renderNextSend(nextLocal, schedulerEnabled) {
   if (strip.dataset.signature === signature) {
     return;
   }
+  const chars = time.replace(":", "");
   const previous = strip.dataset.chars || "";
   strip.dataset.signature = signature;
-  strip.dataset.chars = time;
+  strip.dataset.chars = chars;
   strip.innerHTML = "";
-  [...time].forEach((char, index) => {
+  [...chars].forEach((char, index) => {
     const cell = document.createElement("span");
     cell.className = "flap-cell";
     const face = document.createElement("span");
