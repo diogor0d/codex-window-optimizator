@@ -990,6 +990,11 @@ function renderFleet() {
   const staleReadings = accountReadings.filter(
     (entry) => entry.account.auth?.loggedIn && entry.win && !isFreshWindow(entry.win, now)
   );
+  const weeklyReadings = accountReadings.filter(
+    (entry) => entry.account.auth?.loggedIn
+      && entry.win?.secondary?.hasData
+      && Number(entry.win.secondary.resetsAt) * 1000 > now
+  );
   const nearLimit = readings.filter((entry) => entry.win.primary.used >= NEAR_LIMIT_USED);
   const updatedTimes = accountReadings
     .map((entry) => Date.parse(entry.win?.updatedAt || ""))
@@ -1025,6 +1030,9 @@ function renderFleet() {
 
   $("#fleetMeanFree").textContent = readings.length
     ? `${Math.round(readings.reduce((sum, entry) => sum + entry.win.primary.free, 0) / readings.length)}%`
+    : "—";
+  $("#fleetWeeklyMeanFree").textContent = weeklyReadings.length
+    ? `${Math.round(weeklyReadings.reduce((sum, entry) => sum + entry.win.secondary.free, 0) / weeklyReadings.length)}%`
     : "—";
   const nearEl = $("#fleetNearLimit");
   nearEl.textContent = readings.length ? String(nearLimit.length) : "—";
