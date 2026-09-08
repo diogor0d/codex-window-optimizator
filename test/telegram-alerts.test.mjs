@@ -51,11 +51,31 @@ test("reports every quota threshold crossed between polls", () => {
 test("alerts when a quota window resets", () => {
   const events = buildQuotaAlertEvents(
     dashboard({ used: 90, reset: 2_000_000_000 }),
-    dashboard({ used: 5, reset: 2_000_010_000 }),
+    dashboard({ used: 5, reset: 2_000_018_000 }),
     settings
   );
 
   assert.ok(events.some((event) => event.type === "quota-reset" && /5-hour quota/.test(event.text)));
+});
+
+test("does not treat projected reset-time adjustments as quota resets", () => {
+  const previous = dashboard({ used: 69, weekly: 26, reset: 2_000_000_000 });
+  const current = dashboard({ used: 70, weekly: 26, reset: 2_000_000_030 });
+  previous.rateLimitsByLimitId = {
+    reserve: {
+      limitName: "gpt-reserve",
+      primary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: 2_000_000_000 }
+    }
+  };
+  current.rateLimitsByLimitId = {
+    reserve: {
+      limitName: "gpt-reserve",
+      primary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: 2_000_000_300 }
+    }
+  };
+
+  const events = buildQuotaAlertEvents(previous, current, settings);
+  assert.equal(events.some((event) => event.type === "quota-reset"), false);
 });
 
 test("recognizes a reset when a sparse update already lowered usage", () => {

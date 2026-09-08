@@ -59,10 +59,13 @@ export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.
         });
       }
     }
+    const resetAdvanceSeconds = after.resetsAt - before.resetsAt;
+    const minimumCycleAdvanceSeconds = after.windowDurationMins * 60 * 0.8;
     if (settings.telegramAlertQuotaResets
       && Number.isSafeInteger(before.resetsAt)
       && Number.isSafeInteger(after.resetsAt)
-      && before.resetsAt !== after.resetsAt) {
+      && Number.isFinite(minimumCycleAdvanceSeconds)
+      && resetAdvanceSeconds >= minimumCycleAdvanceSeconds) {
       events.push({
         type: "quota-reset",
         text: `${entry.label} reset to ${after.usedPercent}% used; next reset ${formatTimestamp(after.resetsAt, settings.timezone)}`
