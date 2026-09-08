@@ -10,7 +10,7 @@ Four departures a day. Every account on its own five-hour window.
 One private, self-hosted console.
 
 ![Node](https://img.shields.io/badge/node-%E2%89%A522-161e28?style=flat-square&labelColor=10161d&color=f5a83c)
-![Codex CLI](https://img.shields.io/badge/codex_cli-0.142.5-161e28?style=flat-square&labelColor=10161d&color=f5a83c)
+![Codex CLI](https://img.shields.io/badge/codex_cli-0.154.0--alpha.3-161e28?style=flat-square&labelColor=10161d&color=f5a83c)
 ![Docker Compose](https://img.shields.io/badge/runs_with-docker_compose-161e28?style=flat-square&labelColor=10161d&color=f5a83c)
 
 </div>
@@ -23,7 +23,7 @@ It cannot see OpenAI's internal reset clock. What it does is simple and predicta
 
 ## The console
 
-A signal-box dashboard: a live station clock, a split-flap **next send** module, per-account usage windows with reset times, a fleet-wide quota strip with a 24-hour reset timetable, and a departures board built from actual run history.
+A signal-box dashboard: a live station clock, a split-flap **next send** module, per-account usage windows with reset times, distinct weekly `gpt-reserve` fallback allowances, a fleet-wide quota strip with a 24-hour reset timetable, and a departures board built from actual run history.
 
 ```
 TODAY'S SENDS                        ✓ done   ✕ failed   ⏸ skipped   ● running
@@ -57,6 +57,8 @@ Open the UI:
 http://127.0.0.1:8787
 ```
 
+On iPhone, open the HTTPS URL in Safari, tap **Share**, then **Add to Home Screen**. The installed app uses a standalone, safe-area-aware layout. It immediately shows a privacy-reduced saved fleet snapshot while live data loads; prompts, messages, workspace paths, credentials, and API responses are not stored in that snapshot. Its offline shell can open without a network connection, but account management still requires access to this server.
+
 Then log in: **Account console → Manage selected account → Start device login**. The container runs `codex login --device-auth`; open the shown URL in any browser, sign in, and enter the code. Credentials land in the persistent volume and survive restarts and rebuilds.
 
 ## Multiple accounts
@@ -64,6 +66,8 @@ Then log in: **Account console → Manage selected account → Start device logi
 - The original login migrates to **Default account**; add more from **Manage selected account** in the Account console.
 - Additional credentials live under `/data/codex-accounts/<account-id>/`.
 - Enabled accounts are pinged at every configured time; disabled accounts stay logged in but are skipped.
+- The server refreshes account authentication and quota windows every five minutes even when no browser is open; visible clients continue polling and can request an immediate refresh.
+- Reserve is shown separately from ordinary quota, including its weekly reset date. Its state becomes **active** only when Codex explicitly reports that ordinary usage is unavailable; percentages are never used to infer activation. Available usage-reset credits and every reported expiration are shown for each account.
 - **Remove** stops the account's app-server and permanently deletes its Codex home, including `auth.json`. The last remaining account cannot be removed.
 - Login, logout, and run-now controls all apply to the selected account.
 
@@ -88,7 +92,7 @@ This is a **private admin app** with full control over Codex sessions. Do not ex
 - Put it behind **Cloudflare Tunnel + Cloudflare Access**.
 - Set `ADMIN_EMAILS` so the backend only accepts requests carrying a matching Access-authenticated email header. This is defense in depth — if the app is directly exposed, those headers can be spoofed.
 - The app never asks for your ChatGPT password and never displays tokens. Treat the data volume like a password store — **backups contain live credentials; encrypt them**.
-- `codex login status` reports credential *presence*, not validity. A revoked session keeps showing "Logged in" while sends fail with `unauthorized` in the activity feed. If pings start failing, re-login from the Account console.
+- `codex login status` reports credential *presence*, not validity. The service therefore verifies authentication through live Codex requests and reports rejected or expired credentials as an **auth issue**. Re-login from the Account console; a successful device login restarts that account's app-server so it uses the new credentials.
 
 ## Configuration
 
@@ -126,7 +130,7 @@ Update:
 git pull && docker compose up -d --build
 ```
 
-The Codex CLI version is pinned by the `CODEX_PACKAGE_VERSION` build arg, so rebuilds never surprise-upgrade Codex. Rollback is `git checkout <ref> && docker compose up -d --build`; the store format migrates forward automatically and old code ignores newer fields.
+The Codex CLI version is pinned by the `CODEX_PACKAGE_VERSION` build arg, so rebuilds never surprise-upgrade Codex. The current alpha pin is required because the latest stable CLI does not yet expose Reserve usage capabilities. Rollback is `git checkout <ref> && docker compose up -d --build`; the store format migrates forward automatically and old code ignores newer fields.
 
 The bundled compose binds `127.0.0.1:8787:8080`. To listen on another interface, add a `docker-compose.override.yml` (kept out of git) rather than editing the tracked file.
 

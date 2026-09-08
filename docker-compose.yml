@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        CODEX_PACKAGE_VERSION: "0.142.5"
+        CODEX_PACKAGE_VERSION: "0.154.0-alpha.3"
     container_name: codex-window-runner
     restart: unless-stopped
     environment:

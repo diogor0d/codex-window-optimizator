@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim
 
-ARG CODEX_PACKAGE_VERSION=0.142.5
+ARG CODEX_PACKAGE_VERSION=0.154.0-alpha.3
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git openssh-client tzdata \

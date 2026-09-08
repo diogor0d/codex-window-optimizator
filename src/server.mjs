@@ -5,6 +5,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { recordRateLimitsNotification, recordRateLimitsRead } from "./rate-limits.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -37,6 +38,9 @@ const DEFAULT_THREAD_STATE = {
 
 const DEFAULT_DASHBOARD = {
   rateLimits: null,
+  rateLimitsByLimitId: {},
+  ordinaryUsageAllowed: null,
+  rateLimitResetCredits: null,
   lastUserMessage: null,
   lastAgentMessage: null,
   lastCompletedTurn: null
@@ -77,9 +81,11 @@ let store = structuredClone(DEFAULT_STORE);
 let saveChain = Promise.resolve();
 const sseClients = new Set();
 const authStatusCacheByAccount = new Map();
+const authStatusRefreshByAccount = new Map();
 const appServers = new Map();
 const loginSessions = new Map();
 let stateRefreshPromise = null;
+let authStatusBroadcastPromise = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -197,6 +203,8 @@ function requireAccount(accountId) {
 function publicAccount(account) {
   const auth = authStatusCacheByAccount.get(account.id)?.status || {
     loggedIn: false,
+    credentialPresent: false,
+    authIssue: false,
     mode: "unknown",
     detail: "Not checked yet"
   };
@@ -475,9 +483,45 @@ function runCodex(args, options = {}) {
 function unknownAuthStatus() {
   return {
     loggedIn: false,
+    credentialPresent: false,
+    authIssue: false,
     mode: "unknown",
     detail: "Not checked yet"
   };
+}
+
+function isAuthenticationError(error) {
+  const text = typeof error === "string" ? error : error?.message || JSON.stringify(error || "");
+  return /\b401\b|unauthori[sz]ed|not logged in|login required|authentication.{0,30}(?:failed|required|expired|invalid)|(?:access|refresh|id)?[_ -]?token.{0,30}(?:expired|invalid|revoked)/i.test(text);
+}
+
+function markAuthIssue(account, error) {
+  const detail = redactString(typeof error === "string" ? error : error?.message || String(error));
+  const previous = authStatusCacheByAccount.get(account.id)?.status;
+  const status = {
+    loggedIn: false,
+    credentialPresent: previous?.credentialPresent !== false,
+    authIssue: true,
+    mode: "auth-error",
+    detail: `Authentication failed: ${detail}`,
+    code: previous?.code ?? null
+  };
+  authStatusCacheByAccount.set(account.id, { checkedAt: Date.now(), status });
+  return status;
+}
+
+function markAuthValidated(account) {
+  const previous = authStatusCacheByAccount.get(account.id)?.status;
+  const status = {
+    loggedIn: true,
+    credentialPresent: true,
+    authIssue: false,
+    mode: "codex",
+    detail: previous?.authIssue ? "Logged in (live request verified)" : previous?.detail || "Logged in",
+    code: 0
+  };
+  authStatusCacheByAccount.set(account.id, { checkedAt: Date.now(), status });
+  return status;
 }
 
 async function getAuthStatus(accountOrId = store.selectedAccountId, force = false) {
@@ -486,20 +530,51 @@ async function getAuthStatus(accountOrId = store.selectedAccountId, force = fals
   if (!force && cached && Date.now() - cached.checkedAt < 10000) {
     return cached.status;
   }
-  const result = await runCodex(["login", "status"], { account, timeoutMs: 20000 });
-  const combined = `${result.stdout}\n${result.stderr}`.trim();
-  const loggedIn = result.code === 0;
-  const next = {
-    checkedAt: Date.now(),
-    status: {
-      loggedIn,
-      mode: loggedIn ? "codex" : "none",
-      detail: combined || (loggedIn ? "Logged in" : "Not logged in"),
-      code: result.code
-    }
-  };
-  authStatusCacheByAccount.set(account.id, next);
-  return next.status;
+  if (authStatusRefreshByAccount.has(account.id)) {
+    return authStatusRefreshByAccount.get(account.id);
+  }
+  const refresh = (async () => {
+    const result = await runCodex(["login", "status"], { account, timeoutMs: 20000 });
+    const combined = `${result.stdout}\n${result.stderr}`.trim();
+    const loggedIn = result.code === 0;
+    const previous = authStatusCacheByAccount.get(account.id)?.status;
+    const next = {
+      checkedAt: Date.now(),
+      status: loggedIn && previous?.authIssue ? {
+        ...previous,
+        credentialPresent: true,
+        code: result.code
+      } : {
+        loggedIn,
+        credentialPresent: loggedIn,
+        authIssue: false,
+        mode: loggedIn ? "codex" : "none",
+        detail: combined || (loggedIn ? "Logged in" : "Not logged in"),
+        code: result.code
+      }
+    };
+    authStatusCacheByAccount.set(account.id, next);
+    return next.status;
+  })().finally(() => {
+    authStatusRefreshByAccount.delete(account.id);
+  });
+  authStatusRefreshByAccount.set(account.id, refresh);
+  return refresh;
+}
+
+function refreshAuthStatusesInBackground() {
+  const staleAccounts = store.accounts.filter((account) => {
+    const cached = authStatusCacheByAccount.get(account.id);
+    return !cached || Date.now() - cached.checkedAt >= 10000;
+  });
+  if (!staleAccounts.length || authStatusBroadcastPromise) {
+    return;
+  }
+  authStatusBroadcastPromise = Promise.all(staleAccounts.map((account) => getAuthStatus(account)))
+    .then(() => broadcast("status", { ts: nowIso() }))
+    .finally(() => {
+      authStatusBroadcastPromise = null;
+    });
 }
 
 class CodexAppServer {
@@ -523,11 +598,12 @@ class CodexAppServer {
     }
     const account = requireAccount(this.accountId);
     await ensureDirs();
-    this.proc = spawn("codex", ["app-server", "--listen", "stdio://"], {
+    const proc = spawn("codex", ["app-server", "--listen", "stdio://"], {
       cwd: workspaceCwd(),
       env: codexEnv(account),
       stdio: ["pipe", "pipe", "pipe"]
     });
+    this.proc = proc;
     this.buffer = "";
     addActivity("codex", "info", "Started Codex app-server", {
       accountId: account.id,
@@ -536,24 +612,31 @@ class CodexAppServer {
       codeHome: account.codeHome
     });
 
-    this.proc.stdout.on("data", (chunk) => this.handleStdout(chunk.toString("utf8")));
-    this.proc.stderr.on("data", (chunk) => {
+    proc.stdout.on("data", (chunk) => this.handleStdout(chunk.toString("utf8")));
+    proc.stderr.on("data", (chunk) => {
       const text = redactString(chunk.toString("utf8").trim());
       if (text) {
         addActivity("codex", "warn", "Codex app-server stderr", { accountId: this.accountId, text });
+        if (isAuthenticationError(text)) {
+          markAuthIssue(account, text);
+        }
       }
     });
-    this.proc.on("error", (error) => {
+    proc.on("error", (error) => {
       addActivity("codex", "error", "Failed to start Codex app-server", { accountId: this.accountId, error: error.message });
-      this.rejectAll(error);
-      this.proc = null;
+      if (this.proc === proc) {
+        this.rejectAll(error);
+        this.proc = null;
+      }
     });
-    this.proc.on("close", (code, signal) => {
+    proc.on("close", (code, signal) => {
       addActivity("codex", code === 0 ? "info" : "error", "Codex app-server exited", { accountId: this.accountId, code, signal });
-      this.rejectAll(new Error(`app-server exited with code ${code ?? "unknown"}`));
-      this.proc = null;
-      this.readyPromise = null;
-      this.threadStatuses.clear();
+      if (this.proc === proc) {
+        this.rejectAll(new Error(`app-server exited with code ${code ?? "unknown"}`));
+        this.proc = null;
+        this.readyPromise = null;
+        this.threadStatuses.clear();
+      }
     });
 
     this.readyPromise = this.initializeConnection();
@@ -567,6 +650,18 @@ class CodexAppServer {
     this.proc = null;
     this.rejectAll(new Error("app-server stopped"));
     this.readyPromise = null;
+  }
+
+  async restart() {
+    const previous = this.proc;
+    this.stop();
+    if (previous?.exitCode === null) {
+      await Promise.race([
+        new Promise((resolve) => previous.once("close", resolve)),
+        new Promise((resolve) => setTimeout(resolve, 5000))
+      ]);
+    }
+    await this.start();
   }
 
   rejectAll(error) {
@@ -604,7 +699,14 @@ class CodexAppServer {
       const pending = this.pending.get(message.id);
       this.pending.delete(message.id);
       if (message.error) {
-        pending.reject(new Error(JSON.stringify(redact(message.error))));
+        const error = new Error(JSON.stringify(redact(message.error)));
+        if (isAuthenticationError(error)) {
+          const account = store.accounts.find((item) => item.id === this.accountId);
+          if (account) {
+            markAuthIssue(account, error);
+          }
+        }
+        pending.reject(error);
       } else {
         pending.resolve(message.result);
       }
@@ -616,6 +718,9 @@ class CodexAppServer {
       updateDashboardState(this.accountId, message);
       const account = store.accounts.find((item) => item.id === this.accountId);
       const attribution = { accountId: this.accountId, accountLabel: account?.label || this.accountId };
+      if (account && isAuthenticationError(message.params)) {
+        markAuthIssue(account, JSON.stringify(redact(message.params)));
+      }
       addActivity("codex", "info", message.method, { ...(message.params || {}), ...attribution });
       broadcast("codex", { ...redact(message), ...attribution });
     }
@@ -710,33 +815,15 @@ function getAppServer(accountId = store.selectedAccountId, create = true) {
   return appServers.get(accountId) || null;
 }
 
-function recordRateLimits(account, rateLimits, merge = false) {
-  if (!rateLimits || typeof rateLimits !== "object" || Array.isArray(rateLimits)) {
+function recordRateLimits(account, payload, merge = false) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return null;
   }
-  const incoming = redact(rateLimits);
-  const previous = account.dashboard?.rateLimits;
   const updatedAt = nowIso();
-  let next = incoming;
-  if (merge && previous) {
-    next = { ...previous, ...incoming };
-    for (const key of ["primary", "secondary"]) {
-      if (incoming[key] === undefined) {
-        next[key] = previous[key];
-      } else if (incoming[key] && previous[key] && typeof incoming[key] === "object" && typeof previous[key] === "object") {
-        next[key] = { ...previous[key], ...incoming[key] };
-      }
-    }
-  }
-  for (const key of ["primary", "secondary"]) {
-    if (incoming[key] && typeof incoming[key] === "object") {
-      next[key] = { ...next[key], updatedAt };
-    } else if (merge && next[key] && typeof next[key] === "object" && !next[key].updatedAt) {
-      next[key] = { ...next[key], updatedAt: previous?.updatedAt || null };
-    }
-  }
   account.dashboard ||= structuredClone(DEFAULT_DASHBOARD);
-  account.dashboard.rateLimits = { ...next, updatedAt };
+  account.dashboard = merge
+    ? recordRateLimitsNotification(account.dashboard, redact(payload), updatedAt)
+    : recordRateLimitsRead(account.dashboard, redact(payload), updatedAt);
   if (account.id === store.selectedAccountId) {
     store.dashboard = account.dashboard;
   }
@@ -749,6 +836,7 @@ async function refreshAccountState(account) {
     accountLabel: account.label,
     authChecked: false,
     loggedIn: false,
+    authIssue: false,
     rateLimits: "skipped",
     updatedAt: null,
     error: null
@@ -757,20 +845,55 @@ async function refreshAccountState(account) {
     const auth = await getAuthStatus(account, true);
     outcome.authChecked = true;
     outcome.loggedIn = auth.loggedIn;
-    if (!auth.loggedIn) {
+    if (!auth.loggedIn && !auth.credentialPresent) {
       return outcome;
     }
-    const result = await getAppServer(account.id).send("account/rateLimits/read", null, 30000);
+    const result = await getAppServer(account.id).send("account/rateLimits/read", {
+      supportsLunaReserve: true
+    }, 30000);
     if (!result?.rateLimits) {
       throw new Error("Codex returned no rate-limit data");
     }
-    outcome.updatedAt = recordRateLimits(account, result.rateLimits);
+    outcome.updatedAt = recordRateLimits(account, result);
     outcome.rateLimits = "updated";
+    outcome.loggedIn = true;
+    markAuthValidated(account);
   } catch (error) {
     outcome.rateLimits = "failed";
     outcome.error = redactString(error.message || String(error));
+    if (isAuthenticationError(error)) {
+      markAuthIssue(account, error);
+      outcome.authIssue = true;
+    }
   }
   return outcome;
+}
+
+async function refreshAllAccountStates(trigger = "manual") {
+  if (!stateRefreshPromise) {
+    stateRefreshPromise = (async () => {
+      const accounts = await Promise.all(store.accounts.map((account) => refreshAccountState(account)));
+      const summary = {
+        attempted: accounts.length,
+        updated: accounts.filter((account) => account.rateLimits === "updated").length,
+        skipped: accounts.filter((account) => account.rateLimits === "skipped").length,
+        failed: accounts.filter((account) => account.rateLimits === "failed").length
+      };
+      if (summary.updated) {
+        await saveStore();
+      }
+      addActivity("refresh", summary.failed ? "warn" : "info", "State refresh completed", {
+        trigger,
+        ...summary,
+        accounts
+      });
+      broadcast("status", { ts: nowIso() });
+      return { ts: nowIso(), ...summary, accounts };
+    })().finally(() => {
+      stateRefreshPromise = null;
+    });
+  }
+  return stateRefreshPromise;
 }
 
 function updateDashboardState(accountId, message) {
@@ -1060,6 +1183,9 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
       runId: run.id,
       error: error.message
     });
+    if (isAuthenticationError(error)) {
+      markAuthIssue(account, error);
+    }
     return run;
   }
 }
@@ -1127,6 +1253,7 @@ async function schedulerTick() {
 }
 
 let schedulerTimer = null;
+let stateRefreshTimer = null;
 
 function startScheduler() {
   if (schedulerTimer) {
@@ -1136,6 +1263,20 @@ function startScheduler() {
     void schedulerTick();
   }, 10_000);
   void schedulerTick();
+}
+
+function startStateRefresh() {
+  if (stateRefreshTimer) {
+    return;
+  }
+  stateRefreshTimer = setInterval(() => {
+    void refreshAllAccountStates("periodic").catch((error) => {
+      addActivity("refresh", "error", "Periodic state refresh failed", { error: error.message });
+    });
+  }, 5 * 60 * 1000);
+  void refreshAllAccountStates("startup").catch((error) => {
+    addActivity("refresh", "error", "Startup state refresh failed", { error: error.message });
+  });
 }
 
 function parseAdminEmails() {
@@ -1299,9 +1440,10 @@ function startDeviceLogin(accountId = store.selectedAccountId) {
     session.finishedAt = nowIso();
     addAuthEvent("Codex device login finished", { accountId: account.id, accountLabel: account.label, sessionId: session.id, code });
     const auth = await getAuthStatus(account, true);
-    if (auth.loggedIn) {
+    if (code === 0 && auth.credentialPresent) {
+      markAuthValidated(account);
       try {
-        await getAppServer(account.id).start();
+        await getAppServer(account.id).restart();
         await ensureThread(account.id);
       } catch (error) {
         addActivity("codex", "error", "Post-login app-server startup failed", {
@@ -1342,28 +1484,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/refresh") {
-    if (!stateRefreshPromise) {
-      stateRefreshPromise = (async () => {
-        const accounts = await Promise.all(store.accounts.map((account) => refreshAccountState(account)));
-        const summary = {
-          attempted: accounts.length,
-          updated: accounts.filter((account) => account.rateLimits === "updated").length,
-          skipped: accounts.filter((account) => account.rateLimits === "skipped").length,
-          failed: accounts.filter((account) => account.rateLimits === "failed").length
-        };
-        if (summary.updated) {
-          await saveStore();
-        }
-        addActivity("refresh", summary.failed ? "warn" : "info", "State refresh completed", {
-          ...summary,
-          accounts
-        });
-        return { ts: nowIso(), ...summary, accounts };
-      })().finally(() => {
-        stateRefreshPromise = null;
-      });
-    }
-    return sendJson(res, 200, await stateRefreshPromise);
+    return sendJson(res, 200, await refreshAllAccountStates("request"));
   }
 
   if (req.method === "GET" && url.pathname === "/api/events") {
@@ -1381,7 +1502,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/status") {
-    await Promise.all(store.accounts.map((account) => getAuthStatus(account).catch(() => unknownAuthStatus())));
+    refreshAuthStatusesInBackground();
     const selected = requireAccount();
     const auth = authStatusCacheByAccount.get(selected.id)?.status || unknownAuthStatus();
     return sendJson(res, 200, {
@@ -1402,7 +1523,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/accounts") {
-    await Promise.all(store.accounts.map((account) => getAuthStatus(account).catch(() => unknownAuthStatus())));
+    refreshAuthStatusesInBackground();
     return sendJson(res, 200, {
       selectedAccountId: store.selectedAccountId,
       accounts: store.accounts.map(publicAccount)
@@ -1598,6 +1719,7 @@ async function handleApi(req, res, url) {
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
@@ -1682,6 +1804,7 @@ async function bootstrap() {
       });
     }
   }));
+  startStateRefresh();
 
   const shutdown = async () => {
     addActivity("server", "info", "Shutting down");
@@ -1689,6 +1812,7 @@ async function bootstrap() {
       serverInstance.stop();
     }
     clearInterval(schedulerTimer);
+    clearInterval(stateRefreshTimer);
     server.close();
     await saveStore();
     process.exit(0);

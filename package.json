@@ -6,7 +6,8 @@
   "description": "A containerized web service that schedules messages into a persistent Codex CLI app-server thread.",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs"
+    "check": "node --check src/server.mjs && node --check public/app.js && node --check public/service-worker.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22"

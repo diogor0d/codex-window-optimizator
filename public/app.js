@@ -44,6 +44,7 @@ function preferredTheme() {
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("theme", theme);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#161e28" : "#ffffff");
   const button = $("#themeToggleBtn");
   if (button) {
     const isDark = theme === "dark";
@@ -101,12 +102,166 @@ const FLEET_TIMETABLE_MS = 24 * 60 * 60 * 1000;
 const VISIBLE_STATE_REFRESH_MS = 60 * 1000;
 const QUOTA_REFRESH_MS = 5 * 60 * 1000;
 const QUOTA_REFRESH_STORAGE_KEY = "codex-window:last-quota-refresh";
+const STATUS_SNAPSHOT_STORAGE_KEY = "codex-window:status-snapshot-v1";
+
+function snapshotAuth(auth = {}) {
+  const loggedIn = Boolean(auth.loggedIn);
+  const authIssue = Boolean(auth.authIssue);
+  return {
+    loggedIn,
+    credentialPresent: Boolean(auth.credentialPresent),
+    authIssue,
+    mode: auth.mode || "unknown",
+    detail: loggedIn ? "Logged in (saved status)" : authIssue ? "Authentication issue (saved status)" : "Logged out (saved status)"
+  };
+}
+
+function snapshotDashboard(dashboard = {}) {
+  const turn = dashboard.lastCompletedTurn;
+  const snapshotWindow = (window) => window ? {
+    usedPercent: window.usedPercent,
+    resetsAt: window.resetsAt ?? null,
+    windowDurationMins: window.windowDurationMins ?? null,
+    updatedAt: window.updatedAt || null
+  } : null;
+  const snapshotLimits = (limits) => limits ? {
+    limitId: limits.limitId || null,
+    limitName: limits.limitName || null,
+    normalModelSlug: limits.normalModelSlug || null,
+    primary: snapshotWindow(limits.primary),
+    secondary: snapshotWindow(limits.secondary),
+    rateLimitReachedType: limits.rateLimitReachedType || null,
+    planType: limits.planType || null,
+    updatedAt: limits.updatedAt || null
+  } : null;
+  const rateLimitsByLimitId = Object.fromEntries(Object.entries(dashboard.rateLimitsByLimitId || {})
+    .map(([limitId, limits]) => [limitId, snapshotLimits(limits)])
+    .filter(([, limits]) => limits));
+  return {
+    rateLimits: snapshotLimits(dashboard.rateLimits),
+    rateLimitsByLimitId,
+    ordinaryUsageAllowed: typeof dashboard.ordinaryUsageAllowed === "boolean"
+      ? dashboard.ordinaryUsageAllowed
+      : null,
+    rateLimitResetCredits: Number.isSafeInteger(dashboard.rateLimitResetCredits?.availableCount)
+      ? {
+          availableCount: Math.max(0, dashboard.rateLimitResetCredits.availableCount),
+          expiresAt: Array.isArray(dashboard.rateLimitResetCredits.expiresAt)
+            ? dashboard.rateLimitResetCredits.expiresAt.map((value) => Number.isSafeInteger(value) ? value : value === null ? null : "unknown")
+            : null,
+          detailsComplete: dashboard.rateLimitResetCredits.detailsComplete === true,
+          updatedAt: dashboard.rateLimitResetCredits.updatedAt || null
+        }
+      : null,
+    lastUserMessage: null,
+    lastAgentMessage: null,
+    lastCompletedTurn: turn ? {
+      ts: turn.ts || null,
+      status: turn.status || null,
+      durationMs: turn.durationMs || null,
+      error: turn.error ? "Previous turn failed" : null
+    } : null
+  };
+}
+
+function statusSnapshot(status) {
+  const accounts = (status.accounts || []).map((account) => ({
+    id: account.id,
+    label: account.label,
+    enabled: account.enabled,
+    isSelected: account.id === status.selectedAccountId,
+    auth: snapshotAuth(account.auth),
+    appServer: { running: Boolean(account.appServer?.running) },
+    settings: {},
+    effectiveSettings: { scheduleTimes: account.effectiveSettings?.scheduleTimes || [] },
+    thread: { threadId: account.thread?.threadId ? "Saved session" : null },
+    dashboard: snapshotDashboard(account.dashboard)
+  }));
+  const selectedAccount = accounts.find((account) => account.id === status.selectedAccountId) || accounts[0] || null;
+  const latestRun = status.latestRun ? {
+    ts: status.latestRun.ts,
+    status: status.latestRun.status,
+    scheduledTime: status.latestRun.scheduledTime,
+    reason: status.latestRun.reason,
+    turnId: status.latestRun.turnId ? "saved" : null
+  } : null;
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    status: {
+      ts: status.ts,
+      selectedAccountId: status.selectedAccountId,
+      selectedAccount,
+      accounts,
+      auth: selectedAccount?.auth || snapshotAuth(),
+      appServer: selectedAccount?.appServer || { running: false },
+      scheduler: status.scheduler,
+      thread: selectedAccount?.thread || { threadId: null },
+      latestRun,
+      dashboard: selectedAccount?.dashboard || snapshotDashboard()
+    }
+  };
+}
+
+function saveStatusSnapshot(status) {
+  try {
+    localStorage.setItem(STATUS_SNAPSHOT_STORAGE_KEY, JSON.stringify(statusSnapshot(status)));
+  } catch {
+    // Live status remains available when storage is disabled or full.
+  }
+}
+
+function setSnapshotMode(snapshot = null) {
+  const notice = $("#snapshotNotice");
+  if (!notice) {
+    return;
+  }
+  notice.hidden = !snapshot;
+  $("main")?.toggleAttribute("inert", Boolean(snapshot));
+  const runButton = $("#runNowBtn");
+  if (runButton) {
+    runButton.disabled = Boolean(snapshot);
+  }
+  if (snapshot) {
+    const savedAt = new Date(snapshot.savedAt);
+    $("#snapshotMessage").textContent = Number.isFinite(savedAt.getTime())
+      ? `Saved fleet status from ${savedAt.toLocaleString()}; loading live data.`
+      : "Showing saved fleet status while live data loads.";
+  }
+}
+
+function hydrateStatusSnapshot() {
+  try {
+    const snapshot = JSON.parse(localStorage.getItem(STATUS_SNAPSHOT_STORAGE_KEY) || "null");
+    if (snapshot?.version !== 1 || !snapshot.status?.accounts) {
+      return false;
+    }
+    updateStatus(snapshot.status);
+    setSnapshotMode(snapshot);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function accountResetCredits(account) {
+  const summary = account?.dashboard?.rateLimitResetCredits;
+  return {
+    resetCreditsAvailable: Number.isSafeInteger(summary?.availableCount)
+      ? Math.max(0, summary.availableCount)
+      : null,
+    resetCreditExpirations: Array.isArray(summary?.expiresAt)
+      ? summary.expiresAt
+          .map((value) => Number.isSafeInteger(value) ? value : value === null ? null : "unknown")
+          .sort((a, b) => Number.isSafeInteger(a) ? Number.isSafeInteger(b) ? a - b : -1 : Number.isSafeInteger(b) ? 1 : 0)
+      : null,
+    resetCreditDetailsComplete: summary?.detailsComplete === true,
+    resetCreditsUpdatedAt: summary?.updatedAt || null
+  };
+}
 
 function accountWindow(account) {
-  const limits = account?.dashboard?.rateLimits;
-  if (!limits) {
-    return null;
-  }
+  const limits = account?.dashboard?.rateLimits || {};
   const normalize = (entry) => {
     if (!entry) {
       return null;
@@ -116,24 +271,117 @@ function accountWindow(account) {
       hasData: Number.isFinite(used),
       used: clampPercent(used),
       free: Number.isFinite(used) ? clampPercent(100 - used) : null,
-      resetsAt: Number.isFinite(Number(entry.resetsAt)) ? Number(entry.resetsAt) : null,
-      windowDurationMins: Number.isFinite(Number(entry.windowDurationMins)) ? Number(entry.windowDurationMins) : null
+      resetsAt: entry.resetsAt != null && Number.isFinite(Number(entry.resetsAt)) ? Number(entry.resetsAt) : null,
+      windowDurationMins: entry.windowDurationMins != null && Number.isFinite(Number(entry.windowDurationMins)) ? Number(entry.windowDurationMins) : null
     };
   };
-  const primary = normalize(limits.primary);
-  if (!primary?.hasData) {
+  const normalizedPrimary = normalize(limits.primary);
+  const normalizedSecondary = normalize(limits.secondary);
+  const ordinaryWindows = [normalizedPrimary, normalizedSecondary].filter(Boolean);
+  const weekly = ordinaryWindows.find((entry) => entry.windowDurationMins === 10080) || null;
+  const primary = ordinaryWindows.find((entry) => entry.windowDurationMins === 300)
+    || (!weekly ? normalizedPrimary || normalizedSecondary : null);
+  const secondary = ordinaryWindows.find((entry) => entry.windowDurationMins === 10080) || null;
+  const reserveSnapshot = Object.values(account?.dashboard?.rateLimitsByLimitId || {})
+    .find((snapshot) => snapshot?.limitName === "gpt-reserve");
+  const reserveWindows = reserveSnapshot
+    ? [reserveSnapshot.primary, reserveSnapshot.secondary].map(normalize).filter(Boolean)
+    : [];
+  const reserveWeekly = reserveWindows.find((entry) => entry.windowDurationMins === 10080) || null;
+  const resetCredits = accountResetCredits(account);
+  if (!primary?.hasData && !secondary?.hasData && !reserveWeekly?.hasData
+    && !Number.isSafeInteger(resetCredits.resetCreditsAvailable)) {
     return null;
   }
   return {
     primary,
-    secondary: normalize(limits.secondary),
+    secondary: secondary === primary ? null : secondary,
+    rateLimitReachedType: limits.rateLimitReachedType || null,
     planType: limits.planType ? String(limits.planType) : null,
-    updatedAt: limits.updatedAt || null
+    updatedAt: [limits.updatedAt, reserveSnapshot?.updatedAt, resetCredits.resetCreditsUpdatedAt]
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null,
+    ordinaryUsageAllowed: typeof account?.dashboard?.ordinaryUsageAllowed === "boolean"
+      ? account.dashboard.ordinaryUsageAllowed
+      : null,
+    ...resetCredits,
+    reserve: reserveSnapshot ? {
+      weekly: reserveWeekly,
+      model: reserveSnapshot.normalModelSlug || null,
+      updatedAt: reserveSnapshot.updatedAt || null
+    } : null
   };
 }
 
+function effectiveWindow(win, now = Date.now()) {
+  const ordinary = win?.primary || win?.secondary;
+  if (!ordinary) {
+    return null;
+  }
+  if (win.ordinaryUsageAllowed === false) {
+    return { ...ordinary, used: 100, free: 0 };
+  }
+  const weeklyExhausted = win.secondary?.hasData
+    && Number(win.secondary.resetsAt) * 1000 > now
+    && win.secondary.free === 0;
+  if (weeklyExhausted) {
+    return { ...win.secondary, used: 100, free: 0 };
+  }
+  if (win.rateLimitReachedType && ordinary.used < 100) {
+    return { ...ordinary, used: 100, free: 0 };
+  }
+  return ordinary;
+}
+
+function reserveState(win, now = Date.now()) {
+  const weekly = win?.reserve?.weekly;
+  if (!weekly?.hasData) {
+    return null;
+  }
+  const resetMs = Number(weekly.resetsAt) * 1000;
+  if (weekly.resetsAt != null && Number.isFinite(resetMs) && resetMs <= now) {
+    return "stale";
+  }
+  if (weekly.free === 0) {
+    return "exhausted";
+  }
+  if (win.ordinaryUsageAllowed === false) {
+    return "active";
+  }
+  if (win.ordinaryUsageAllowed === true) {
+    return "standby";
+  }
+  return "available";
+}
+
+function resetCreditExpiry(win) {
+  if (!Number.isSafeInteger(win?.resetCreditsAvailable)) {
+    return { label: "Not reported", title: "Expiration details were not reported" };
+  }
+  if (win.resetCreditsAvailable === 0) {
+    return { label: "None", title: "No usage resets are currently available" };
+  }
+  if (Array.isArray(win.resetCreditExpirations)) {
+    const labels = win.resetCreditExpirations.map((expiresAt) =>
+      Number.isSafeInteger(expiresAt) ? formatUnixSeconds(expiresAt) : expiresAt === null ? "No expiration" : "Expiration not reported");
+    const missing = Math.max(0, win.resetCreditsAvailable - win.resetCreditExpirations.length);
+    if (missing) {
+      labels.push(`${missing} expiration${missing === 1 ? "" : "s"} not reported`);
+    }
+    if (labels.length) {
+      const label = labels.join("; ");
+      return { label, title: `Usage reset expirations: ${label}` };
+    }
+    if (win.resetCreditDetailsComplete) {
+      return { label: "No expiration", title: "Available usage resets have no reported expiration" };
+    }
+  }
+  return { label: "Not reported", title: "Expiration details were not returned by Codex" };
+}
+
 function isFreshWindow(win, now = Date.now()) {
-  const resetMs = Number(win?.primary?.resetsAt) * 1000;
+  const resetMs = Number(effectiveWindow(win, now)?.resetsAt) * 1000;
   return Number.isFinite(resetMs) && resetMs > now;
 }
 
@@ -190,28 +438,43 @@ function readableSource(value) {
 
 function updateWindowSummary(dashboard = {}) {
   const limits = dashboard.rateLimits;
-  const primary = limits?.primary;
-  const usedValue = Number(primary?.usedPercent);
+  const win = accountWindow({ dashboard });
+  const resetCredits = accountResetCredits({ dashboard });
+  const current = effectiveWindow(win);
+  const usedValue = current?.used;
   const used = Number.isFinite(usedValue) ? `${usedValue}%` : "Unknown";
-  const reset = Number.isFinite(primary?.resetsAt) ? formatUnixSeconds(primary.resetsAt) : "Unknown";
-  const duration = Number.isFinite(primary?.windowDurationMins) ? `${primary.windowDurationMins} min` : "Unknown";
+  const reset = Number.isFinite(current?.resetsAt) ? formatUnixSeconds(current.resetsAt) : "Unknown";
+  const duration = Number.isFinite(current?.windowDurationMins) ? `${current.windowDurationMins} min` : "Unknown";
   const plan = limits?.planType ? `${limits.planType} / ${duration}` : duration;
   const lastTurn = dashboard.lastCompletedTurn;
 
   $("#windowUsage").textContent = used;
   $("#windowReset").textContent = reset;
   $("#windowPlan").textContent = plan;
+  const reserve = win?.reserve?.weekly;
+  const reserveMode = reserveState(win);
+  $("#windowReserve").textContent = reserve?.hasData ? `${reserve.free}% free` : "Unavailable";
+  $("#windowReserveState").textContent = reserveMode
+    ? `${reserveMode}${win.reserve.model ? ` / ${win.reserve.model}` : ""}`
+    : "Not reported";
+  $("#windowReserveReset").textContent = Number.isFinite(reserve?.resetsAt)
+    ? formatUnixSeconds(reserve.resetsAt)
+    : "Not reported";
+  $("#windowResetCredits").textContent = Number.isSafeInteger(resetCredits.resetCreditsAvailable)
+    ? `${resetCredits.resetCreditsAvailable}${resetCredits.resetCreditsUpdatedAt ? ` (read ${new Date(resetCredits.resetCreditsUpdatedAt).toLocaleString()})` : ""}`
+    : "Not reported";
+  $("#windowResetExpiry").textContent = resetCreditExpiry(resetCredits).label;
   $("#lastPing").textContent = compactText(dashboard.lastUserMessage?.text);
   $("#lastReply").textContent = compactText(dashboard.lastAgentMessage?.text);
-  $("#windowUsageLabel").textContent = Number.isFinite(usedValue) ? `${usedValue}% of current window used` : "Usage unknown";
-  $("#windowResetHint").textContent = Number.isFinite(primary?.resetsAt) ? `Resets ${reset}` : "Reset unknown";
+  $("#windowUsageLabel").textContent = Number.isFinite(usedValue) ? `${100 - usedValue}% usable now` : "Usage unknown";
+  $("#windowResetHint").textContent = Number.isFinite(current?.resetsAt) ? `Limiting window resets ${reset}` : "Reset unknown";
   $("#windowUsageBar").style.width = `${clampPercent(usedValue)}%`;
 
   if (lastTurn?.status === "completed" && !lastTurn.error) {
     badge($("#windowBadge"), `Last turn OK (${formatDuration(lastTurn.durationMs)})`, "ok");
   } else if (lastTurn?.error) {
     badge($("#windowBadge"), "Last turn failed", "bad");
-  } else if (limits) {
+  } else if (limits || win?.reserve || Number.isSafeInteger(win?.resetCreditsAvailable)) {
     badge($("#windowBadge"), "Window tracked", "ok");
   } else {
     badge($("#windowBadge"), "No data yet", "neutral");
@@ -230,8 +493,8 @@ function updateStatus(status) {
   $("#lastRun").textContent = formatRun(status.latestRun);
   renderNextSend(status.scheduler.next.nextLocal, status.scheduler.enabled);
 
-  badge($("#serviceBadge"), status.auth.loggedIn ? "Ready" : "Needs login", status.auth.loggedIn ? "ok" : "warn");
-  badge($("#loginBadge"), status.auth.loggedIn ? "Logged in" : "Logged out", status.auth.loggedIn ? "ok" : "bad");
+  badge($("#serviceBadge"), status.auth.loggedIn ? "Ready" : status.auth.authIssue ? "Auth issue" : "Needs login", status.auth.loggedIn ? "ok" : status.auth.authIssue ? "bad" : "warn");
+  badge($("#loginBadge"), status.auth.loggedIn ? "Logged in" : status.auth.authIssue ? "Authentication failed" : "Logged out", status.auth.loggedIn ? "ok" : "bad");
   badge($("#schedulerBadge"), status.scheduler.enabled ? "Enabled" : "Paused", status.scheduler.enabled ? "ok" : "warn");
   updateWindowSummary(status.dashboard || {});
   renderFleet();
@@ -275,6 +538,7 @@ function renderAccounts() {
     card.type = "button";
     card.className = `account-card ${account.id === state.selectedAccountId ? "selected" : ""}`;
     const authTone = account.auth?.loggedIn ? "ok" : "bad";
+    const authLabel = account.auth?.loggedIn ? "logged in" : account.auth?.authIssue ? "auth issue" : "logged out";
     const enabledTone = account.enabled ? "ok" : "warn";
     card.innerHTML = `
       <span>
@@ -282,7 +546,7 @@ function renderAccounts() {
         <small>${escapeHtml(account.thread?.threadId ? `thread ${shortId(account.thread.threadId)}` : "no thread yet")}</small>
       </span>
       <span class="account-card-badges">
-        <span class="mini-badge ${authTone}">${account.auth?.loggedIn ? "logged in" : "logged out"}</span>
+        <span class="mini-badge ${authTone}" title="${escapeHtml(account.auth?.detail || authLabel)}">${authLabel}</span>
         <span class="mini-badge ${enabledTone}">${account.enabled ? "scheduled" : "paused"}</span>
       </span>
     `;
@@ -294,6 +558,8 @@ function renderAccounts() {
 async function refreshStatus() {
   const status = await api("/api/status");
   updateStatus(status);
+  saveStatusSnapshot(status);
+  setSnapshotMode();
 }
 
 let refreshFeedbackTimer = null;
@@ -938,6 +1204,7 @@ function renderDepartures() {
         .flatMap((account) => account.effectiveSettings?.scheduleTimes || [])
     )
   ].sort();
+  host.style.setProperty("--board-columns", String(Math.max(times.length, 1)));
   if (!accounts.length || !times.length) {
     host.innerHTML = '<p class="board-empty">No enabled accounts with schedule times. Enable one in Account console or Schedule.</p>';
     return;
@@ -969,8 +1236,12 @@ function compareFleetAccounts(a, b, now = Date.now()) {
   if (tierA !== tierB) {
     return tierB - tierA;
   }
-  if (tierA === 3 && winA.primary.free !== winB.primary.free) {
-    return winB.primary.free - winA.primary.free;
+  if (tierA === 3) {
+    const freeA = effectiveWindow(winA, now).free;
+    const freeB = effectiveWindow(winB, now).free;
+    if (freeA !== freeB) {
+      return freeB - freeA;
+    }
   }
   return String(a.label).localeCompare(String(b.label));
 }
@@ -988,14 +1259,28 @@ function renderFleet() {
     (entry) => entry.account.auth?.loggedIn && isFreshWindow(entry.win, now)
   );
   const staleReadings = accountReadings.filter(
-    (entry) => entry.account.auth?.loggedIn && entry.win && !isFreshWindow(entry.win, now)
+    (entry) => entry.account.auth?.loggedIn
+      && effectiveWindow(entry.win, now)
+      && !isFreshWindow(entry.win, now)
   );
+  const trackedReadings = accountReadings.filter(
+    (entry) => entry.account.auth?.loggedIn && entry.win
+  );
+  const authIssues = accounts.filter((account) => account.auth?.authIssue);
+  const loggedOut = accounts.filter((account) => !account.auth?.loggedIn && !account.auth?.authIssue);
   const weeklyReadings = accountReadings.filter(
     (entry) => entry.account.auth?.loggedIn
       && entry.win?.secondary?.hasData
       && Number(entry.win.secondary.resetsAt) * 1000 > now
   );
-  const nearLimit = readings.filter((entry) => entry.win.primary.used >= NEAR_LIMIT_USED);
+  const reserveReadings = accountReadings.filter(
+    (entry) => entry.account.auth?.loggedIn
+      && entry.win?.reserve?.weekly?.hasData
+      && reserveState(entry.win, now) !== "stale"
+  );
+  const reserveReady = reserveReadings.filter((entry) => entry.win.reserve.weekly.free > 0);
+  const reserveActive = reserveReadings.filter((entry) => reserveState(entry.win, now) === "active");
+  const nearLimit = readings.filter((entry) => effectiveWindow(entry.win, now).used >= NEAR_LIMIT_USED);
   const updatedTimes = accountReadings
     .map((entry) => Date.parse(entry.win?.updatedAt || ""))
     .filter(Number.isFinite);
@@ -1016,7 +1301,10 @@ function renderFleet() {
     win?.primary?.used ?? "",
     win?.primary?.resetsAt ?? "",
     win?.secondary?.used ?? "",
-    win?.secondary?.resetsAt ?? ""
+    win?.secondary?.resetsAt ?? "",
+    win?.ordinaryUsageAllowed ?? "",
+    win?.reserve?.weekly?.used ?? "",
+    win?.reserve?.weekly?.resetsAt ?? ""
   ].join(":"))
     .sort()
     .join("|");
@@ -1029,11 +1317,17 @@ function renderFleet() {
   state.fleetSignature = fleetSignature;
 
   $("#fleetMeanFree").textContent = readings.length
-    ? `${Math.round(readings.reduce((sum, entry) => sum + entry.win.primary.free, 0) / readings.length)}%`
+    ? `${Math.round(readings.reduce((sum, entry) => sum + effectiveWindow(entry.win, now).free, 0) / readings.length)}%`
     : "—";
   $("#fleetWeeklyMeanFree").textContent = weeklyReadings.length
     ? `${Math.round(weeklyReadings.reduce((sum, entry) => sum + entry.win.secondary.free, 0) / weeklyReadings.length)}%`
     : "—";
+  $("#fleetReserveReady").textContent = reserveReadings.length
+    ? `${reserveReady.length}/${reserveReadings.length}`
+    : "—";
+  $("#fleetReserveLabel").textContent = reserveActive.length
+    ? `reserve ready · ${reserveActive.length} active`
+    : "reserve ready";
   const nearEl = $("#fleetNearLimit");
   nearEl.textContent = readings.length ? String(nearLimit.length) : "—";
   nearEl.classList.toggle("bad", nearLimit.length > 0);
@@ -1047,7 +1341,7 @@ function renderFleet() {
   if (!accounts.length) {
     fleetBadge.textContent = "No accounts";
     fleetBadge.className = "badge neutral";
-  } else if (!readings.length && !staleReadings.length) {
+  } else if (!trackedReadings.length && !authIssues.length && !loggedOut.length) {
     fleetBadge.textContent = "No readings yet";
     fleetBadge.className = "badge neutral";
   } else {
@@ -1058,36 +1352,65 @@ function renderFleet() {
     if (staleReadings.length) {
       issues.push(`${staleReadings.length} stale`);
     }
+    if (authIssues.length) {
+      issues.push(`${authIssues.length} auth issue${authIssues.length === 1 ? "" : "s"}`);
+    }
+    if (loggedOut.length) {
+      issues.push(`${loggedOut.length} logged out`);
+    }
     fleetBadge.textContent = issues.join(" · ") || "All clear";
-    fleetBadge.className = `badge ${nearLimit.length ? "bad" : staleReadings.length ? "warn" : "ok"}`;
+    fleetBadge.className = `badge ${nearLimit.length || authIssues.length ? "bad" : staleReadings.length || loggedOut.length ? "warn" : "ok"}`;
   }
 
   rowsHost.innerHTML = !accounts.length
     ? '<p class="board-empty">No accounts configured yet. Add one in Account console.</p>'
     : accounts.map((account) => {
         const win = accountWindow(account);
+        const resetCredits = accountResetCredits(account);
         const loggedIn = Boolean(account.auth?.loggedIn);
         let rowClasses = "strip-row";
         let trackCell;
         let metaCell = "";
+        const creditExpiry = resetCreditExpiry(resetCredits);
+        const creditExpiryDates = resetCredits.resetCreditsAvailable === 0
+          ? ["None available"]
+          : Array.isArray(resetCredits.resetCreditExpirations) && resetCredits.resetCreditExpirations.length
+            ? [
+                ...resetCredits.resetCreditExpirations.map((expiresAt) => Number.isSafeInteger(expiresAt)
+                  ? new Date(expiresAt * 1000).toLocaleDateString([], { month: "short", day: "numeric" })
+                  : expiresAt === null ? "No expiry" : "Expiry unknown"),
+                ...Array(Math.max(0, resetCredits.resetCreditsAvailable - resetCredits.resetCreditExpirations.length)).fill("Expiry unknown")
+              ]
+            : ["Expiry unknown"];
+        const creditExpiryShort = creditExpiryDates.join(" · ");
         const labelCell = `
           <span class="strip-label-stack">
             <span class="strip-label" title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</span>
             ${win?.planType && win.planType !== "unknown" ? `<span class="mini-badge neutral strip-plan">${escapeHtml(win.planType)}</span>` : ""}
+            ${Number.isSafeInteger(resetCredits.resetCreditsAvailable) ? `
+              <span class="reset-credit-card" title="${escapeHtml(`${creditExpiry.title}. ${resetCredits.resetCreditsUpdatedAt ? `Count read ${new Date(resetCredits.resetCreditsUpdatedAt).toLocaleString()}` : "Read time unavailable"}`)}">
+                <span class="reset-credit-count">${resetCredits.resetCreditsAvailable} reset${resetCredits.resetCreditsAvailable === 1 ? "" : "s"}</span>
+                <span class="reset-credit-dates"><b>${resetCredits.resetCreditsAvailable ? "Expires" : "Status"}</b> ${escapeHtml(creditExpiryShort)}</span>
+              </span>` : ""}
           </span>`;
-        if (!loggedIn) {
+        if (account.auth?.authIssue) {
+          rowClasses += " muted";
+          trackCell = `<span class="strip-note" title="${escapeHtml(account.auth.detail || "Authentication failed")}">authentication issue - re-login from Account console</span>`;
+        } else if (!loggedIn) {
           rowClasses += " muted";
           trackCell = '<span class="strip-note">logged out — re-login from Account console</span>';
         } else if (!win) {
           rowClasses += " muted";
           trackCell = '<span class="strip-note">no reading yet — waiting for a live quota refresh</span>';
         } else {
-          const primary = win.primary;
-          const fresh = isFreshWindow(win, now);
-          if (fresh && primary.used >= NEAR_LIMIT_USED) {
+          const current = effectiveWindow(win, now);
+          const reserve = win.reserve?.weekly;
+          const reserveMode = reserveState(win, now);
+          const fresh = current ? isFreshWindow(win, now) : false;
+          if (fresh && current?.used >= NEAR_LIMIT_USED) {
             rowClasses += " near";
           }
-          if (!fresh) {
+          if (current && !fresh) {
             rowClasses += " stale";
           }
           if (!account.enabled) {
@@ -1095,13 +1418,14 @@ function renderFleet() {
           }
           trackCell = `
             <div class="strip-cell">
+              ${current ? `
               <div class="strip-track" role="img" aria-label="${escapeHtml(
                 fresh
-                  ? `${account.label}: ${primary.free}% available, ${primary.used}% used`
-                  : `${account.label}: stale reading, last reported ${primary.free}% available`
+                  ? `${account.label}: ${current.free}% usable now, ${current.used}% of the limiting quota used`
+                  : `${account.label}: stale reading, last reported ${current.free}% usable`
               )}">
-                <div class="strip-fill" style="width:${primary.used}%"></div>
-              </div>
+                <div class="strip-fill" style="width:${current.used}%"></div>
+              </div>` : '<span class="strip-note">ordinary quota not reported</span>'}
               ${win.secondary?.hasData ? `
               <div class="strip-week ${Number(win.secondary.resetsAt) * 1000 > now ? "" : "stale"}">
                 <span class="week-tag">wk</span>
@@ -1119,24 +1443,35 @@ function renderFleet() {
                     : "reset unknown"
                 }</span>
               </div>` : ""}
+              ${reserve?.hasData ? `
+              <div class="strip-week strip-reserve reserve-${reserveMode}">
+                <span class="week-tag">reserve</span>
+                <div class="week-track" role="img" aria-label="${escapeHtml(
+                  `${account.label} Reserve weekly allowance: ${reserve.free}% available, ${reserveMode}`
+                )}">
+                  <div class="week-fill" style="width:${reserve.used}%"></div>
+                </div>
+                <span class="week-free">${reserve.free}% free</span>
+                <span class="week-reset" title="${escapeHtml(Number.isFinite(reserve.resetsAt) ? `Luna Reserve resets ${formatUnixSeconds(reserve.resetsAt)}` : "Luna Reserve reset not reported")}">${reserveMode}${win.reserve.model ? ` · ${escapeHtml(win.reserve.model)}` : ""}${Number.isFinite(reserve.resetsAt) ? ` · resets ${escapeHtml(fmtWeeklyReset(reserve.resetsAt * 1000))}` : " · reset unknown"}</span>
+              </div>` : ""}
             </div>`;
-          metaCell = `
+          metaCell = current ? `
             <div class="strip-meta">
-              <span class="free-num">${primary.free}<small>${fresh ? "% free" : "% last reported"}</small></span>
+              <span class="free-num">${current.free}<small>${fresh ? "% free" : "% last reported"}</small></span>
               <span class="reset-line">${
-                primary.resetsAt
-                  ? `<span data-resets="${primary.resetsAt}" title="${
+                current.resetsAt
+                  ? `<span data-resets="${current.resetsAt}" title="${
                       fresh ? "Window resets at this time" : "Reading expired; waiting for Codex to report the next window"
                     }"></span>`
                   : "reset unknown"
               }</span>
-            </div>`;
+            </div>` : "";
         }
         return `<div class="${rowClasses}">${labelCell}${trackCell}${metaCell}</div>`;
       }).join("");
 
   const lanes = accounts.filter((account) => {
-    const resetsAt = accountWindow(account)?.primary.resetsAt;
+    const resetsAt = effectiveWindow(accountWindow(account), now)?.resetsAt;
     const resetMs = Number(resetsAt) * 1000;
     return account.auth?.loggedIn && resetMs > now && resetMs <= now + FLEET_TIMETABLE_MS;
   });
@@ -1153,7 +1488,7 @@ function renderFleet() {
         </div>
       </div>
       ${lanes.map((account) => {
-        const resetsAt = accountWindow(account).primary.resetsAt;
+        const resetsAt = effectiveWindow(accountWindow(account), now).resetsAt;
         return `
         <div class="tt-lane">
           <span class="tt-name" title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</span>
@@ -1208,7 +1543,7 @@ function tickFleet() {
 
   const nextResetsAt = state.accounts
     .filter((account) => account.enabled && account.auth?.loggedIn)
-    .map((account) => accountWindow(account)?.primary.resetsAt)
+    .map((account) => effectiveWindow(accountWindow(account), now)?.resetsAt)
     .filter((resetsAt) => Number.isFinite(resetsAt) && resetsAt * 1000 > now)
     .sort((a, b) => a - b)[0];
   if (Number.isFinite(nextResetsAt)) {
@@ -1255,6 +1590,9 @@ function connectEvents() {
   events.addEventListener("login", async () => {
     renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
     await refreshStatus();
+  });
+  events.addEventListener("status", () => {
+    void refreshStatus();
   });
   events.addEventListener("run", async () => {
     await Promise.allSettled([refreshStatus(), refreshActivity()]);
@@ -1426,19 +1764,70 @@ function bindActions() {
   });
 }
 
+function initMobileDock() {
+  const links = [...document.querySelectorAll(".mobile-dock a")];
+  const sections = links
+    .map((link) => document.getElementById(link.dataset.section))
+    .filter(Boolean);
+  if (!links.length || !sections.length || !("IntersectionObserver" in window)) {
+    return;
+  }
+  const setCurrent = (id) => {
+    for (const link of links) {
+      if (link.dataset.section === id) {
+        link.setAttribute("aria-current", "location");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    }
+  };
+  setCurrent(location.hash.slice(1) || "fleet");
+  const observer = new IntersectionObserver((entries) => {
+    const visible = entries
+      .filter((entry) => entry.isIntersecting)
+      .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+    if (visible) {
+      setCurrent(visible.target.id);
+    }
+  }, { rootMargin: "-15% 0px -65%", threshold: [0, 0.25, 0.5] });
+  sections.forEach((section) => observer.observe(section));
+}
+
+function registerServiceWorker() {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      void navigator.serviceWorker.register("/service-worker.js").catch((error) => {
+        console.warn("Service worker registration failed", error);
+      });
+    });
+  }
+}
+
 async function init() {
   initTheme();
   bindActions();
+  initMobileDock();
+  registerServiceWorker();
   startClock();
+  hydrateStatusSnapshot();
   connectEvents();
-  await refreshSettings();
-  await refreshStatus();
-  await refreshActivity();
+  await Promise.all([refreshSettings(), refreshStatus(), refreshActivity()]);
   renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
   setInterval(tickFleet, 1000);
   startAutoRefresh();
 }
 
-init().catch((error) => {
-  document.body.innerHTML = `<main class="panel"><h1>Startup failed</h1><pre>${escapeHtml(error.stack || error.message)}</pre></main>`;
-});
+if (typeof document !== "undefined") {
+  init().catch((error) => {
+    const banner = $("#connectionBanner");
+    const message = $("#connectionMessage");
+    if (banner && message) {
+      message.textContent = `${error.message}. Reconnect to the server, then retry.`;
+      banner.hidden = false;
+      $("#retryConnectionBtn")?.addEventListener("click", () => location.reload());
+      window.addEventListener("online", () => location.reload(), { once: true });
+    }
+  });
+}
+
+export { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, snapshotDashboard };

@@ -1,0 +1,24 @@
+{
+  "id": "/",
+  "name": "Codex Window Runner",
+  "short_name": "Window Runner",
+  "description": "Private operations console for Codex account windows and scheduled sends.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f151d",
+  "theme_color": "#161e28",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

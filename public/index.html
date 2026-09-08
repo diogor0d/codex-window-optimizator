@@ -2,9 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Codex Window Runner</title>
+    <meta name="description" content="Private mobile operations console for Codex account windows and scheduled sends.">
     <meta name="theme-color" content="#161e28">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Window Runner">
+    <meta name="format-detection" content="telephone=no">
+    <link rel="manifest" href="/app.webmanifest">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="icon" href="/favicon.ico" sizes="32x32">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -45,8 +52,21 @@
       </div>
     </header>
 
+    <div id="connectionBanner" class="connection-banner" role="status" hidden>
+      <div>
+        <strong>Server unavailable</strong>
+        <span id="connectionMessage">Reconnect to the server to manage accounts.</span>
+      </div>
+      <button id="retryConnectionBtn" type="button">Retry</button>
+    </div>
+
+    <div id="snapshotNotice" class="snapshot-notice" role="status" hidden>
+      <span id="snapshotMessage">Showing saved fleet status while live data loads.</span>
+      <span class="snapshot-pulse" aria-hidden="true"></span>
+    </div>
+
     <main class="layout">
-      <section class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
+      <section id="account" class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
         <div class="section-header account-console-header">
           <div>
             <p class="eyebrow">Selected account</p>
@@ -98,6 +118,11 @@
               <div><dt>Usage</dt><dd id="windowUsage">Unknown</dd></div>
               <div><dt>Reset</dt><dd id="windowReset">Unknown</dd></div>
               <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
+              <div><dt>Reserve</dt><dd id="windowReserve">Unavailable</dd></div>
+              <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
+              <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
+              <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
+              <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
               <div><dt>Last ping</dt><dd id="lastPing">None</dd></div>
               <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
             </dl>
@@ -160,7 +185,7 @@
         </details>
       </section>
 
-      <section class="panel fleet-panel" aria-labelledby="fleetTitle">
+      <section id="fleet" class="panel fleet-panel" aria-labelledby="fleetTitle">
         <div class="section-header">
           <h2 id="fleetTitle">Fleet windows</h2>
           <div class="fleet-header-state">
@@ -171,11 +196,15 @@
         <div class="fleet-stats">
           <div class="fleet-stat">
             <span id="fleetMeanFree" class="stat-value">&mdash;</span>
-            <span class="stat-label">5h mean free</span>
+            <span class="stat-label">5h mean usable</span>
           </div>
           <div class="fleet-stat">
             <span id="fleetWeeklyMeanFree" class="stat-value">&mdash;</span>
             <span class="stat-label">weekly mean free</span>
+          </div>
+          <div class="fleet-stat">
+            <span id="fleetReserveReady" class="stat-value">&mdash;</span>
+            <span id="fleetReserveLabel" class="stat-label">reserve ready</span>
           </div>
           <div class="fleet-stat">
             <span id="fleetNextReset" class="stat-value">&mdash;</span>
@@ -201,13 +230,13 @@
           <div id="fleetTimetable"></div>
         </div>
         <p class="hint fleet-hint">
-          Segments show last reported quota used; red marks fresh readings at 80% or more.
+          Segments show ordinary and Reserve quota separately; red marks fresh ordinary readings at 80% or more.
           Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
           Live quota reads run every five minutes while this page is visible and never start a Codex turn.
         </p>
       </section>
 
-      <section class="panel board-panel">
+      <section id="board" class="panel board-panel">
         <div class="section-header">
           <h2>Today’s sends</h2>
           <span class="board-legend">
@@ -224,7 +253,7 @@
         <p class="hint board-hint">Built from this server’s run history for today, in the configured timezone.</p>
       </section>
 
-      <section class="panel settings-panel">
+      <section id="schedule" class="panel settings-panel">
         <div class="section-header">
           <h2>Schedule</h2>
           <span id="schedulerBadge" class="badge neutral">Unknown</span>
@@ -290,7 +319,7 @@
         </form>
       </section>
 
-      <section class="panel manual-panel">
+      <section id="send" class="panel manual-panel">
         <div class="section-header">
           <h2>Manual Send</h2>
         </div>
@@ -304,7 +333,7 @@
         </div>
       </section>
 
-      <section class="panel activity-panel">
+      <section id="activity" class="panel activity-panel">
         <div class="section-header">
           <h2>Activity</h2>
           <div class="activity-actions">
@@ -319,6 +348,29 @@
         <ol id="activityList" class="activity-list timeline-list"></ol>
       </section>
     </main>
+
+    <nav class="mobile-dock" aria-label="Console sections">
+      <a href="#fleet" data-section="fleet">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m6 13v-7m5 7V7"/></svg>
+        <span>Fleet</span>
+      </a>
+      <a href="#account" data-section="account">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19c.7-3.5 2.8-5.3 6.5-5.3s5.8 1.8 6.5 5.3"/></svg>
+        <span>Account</span>
+      </a>
+      <a href="#schedule" data-section="schedule">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"/><path d="M8 3.5v4m8-4v4M4 10h16m-8 3v3l2 1"/></svg>
+        <span>Schedule</span>
+      </a>
+      <a href="#send" data-section="send">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5.5 16-3.1-6.1L4 12Z"/><path d="m11.4 13.9 4-4"/></svg>
+        <span>Send</span>
+      </a>
+      <a href="#activity" data-section="activity">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="7" cy="6" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="10" cy="18" r="1"/></svg>
+        <span>Activity</span>
+      </a>
+    </nav>
 
     <script type="module" src="/app.js"></script>
   </body>
