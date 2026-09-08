@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordRateLimitsNotification, recordRateLimitsRead } from "./rate-limits.mjs";
+import { buildQuotaAlertEvents, formatTelegramAlertMessages, withoutTelegramCredentials } from "./telegram-alerts.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -18,6 +19,8 @@ const CODEX_HOME = process.env.CODEX_HOME || path.join(DATA_DIR, "codex-home");
 const ACCOUNTS_DIR = process.env.CODEX_ACCOUNTS_DIR || path.join(path.dirname(CODEX_HOME), "codex-accounts");
 const DEFAULT_WORKSPACE_DIR = process.env.WORKSPACE_DIR || "/workspace";
 const SERVICE_NAME = "codex-window-runner";
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 
 process.env.TZ ||= "Europe/Lisbon";
 
@@ -66,7 +69,14 @@ const DEFAULT_STORE = {
     approvalPolicy: "on-request",
     networkAccess: false,
     workspaceDir: DEFAULT_WORKSPACE_DIR,
-    skipIfActive: true
+    skipIfActive: true,
+    telegramAlertsEnabled: false,
+    telegramQuotaWarningPercent: 80,
+    telegramAlertQuotaResets: true,
+    telegramAlertReserve: true,
+    telegramAlertResetCredits: true,
+    telegramResetExpiryHours: 24,
+    telegramAlertFailures: true
   },
   selectedAccountId: "default",
   accounts: [],
@@ -74,6 +84,8 @@ const DEFAULT_STORE = {
   scheduledRuns: [],
   activityEvents: [],
   authEvents: [],
+  telegramAlertOutbox: [],
+  telegramAlertState: { authIssues: {} },
   dashboard: structuredClone(DEFAULT_DASHBOARD)
 };
 
@@ -86,6 +98,8 @@ const appServers = new Map();
 const loginSessions = new Map();
 let stateRefreshPromise = null;
 let authStatusBroadcastPromise = null;
+let telegramFlushPromise = null;
+let telegramRetryTimer = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -328,6 +342,56 @@ async function loadStore() {
 
 function normalizeStore() {
   store.settings.approvalPolicy = normalizeApprovalPolicy(store.settings.approvalPolicy);
+  for (const key of [
+    "telegramAlertsEnabled",
+    "telegramAlertQuotaResets",
+    "telegramAlertReserve",
+    "telegramAlertResetCredits",
+    "telegramAlertFailures"
+  ]) {
+    if (typeof store.settings[key] !== "boolean") {
+      store.settings[key] = DEFAULT_STORE.settings[key];
+    }
+  }
+  if (!Number.isInteger(store.settings.telegramQuotaWarningPercent)
+    || store.settings.telegramQuotaWarningPercent < 1
+    || store.settings.telegramQuotaWarningPercent > 100) {
+    store.settings.telegramQuotaWarningPercent = DEFAULT_STORE.settings.telegramQuotaWarningPercent;
+  }
+  if (!Number.isInteger(store.settings.telegramResetExpiryHours)
+    || store.settings.telegramResetExpiryHours < 1
+    || store.settings.telegramResetExpiryHours > 720) {
+    store.settings.telegramResetExpiryHours = DEFAULT_STORE.settings.telegramResetExpiryHours;
+  }
+  store.telegramAlertOutbox = Array.isArray(store.telegramAlertOutbox)
+    ? store.telegramAlertOutbox.filter((item) => item
+      && typeof item === "object"
+      && typeof item.id === "string"
+      && typeof item.text === "string"
+      && item.text.length > 0
+      && item.text.length <= 4000).slice(-500).map((item) => ({
+        id: item.id,
+        createdAt: typeof item.createdAt === "string" ? item.createdAt : nowIso(),
+        accountId: typeof item.accountId === "string" ? item.accountId : null,
+        accountLabel: typeof item.accountLabel === "string" ? item.accountLabel.slice(0, 200) : "Unknown account",
+        eventTypes: Array.isArray(item.eventTypes) ? item.eventTypes.filter((value) => typeof value === "string").slice(0, 20) : [],
+        text: item.text,
+        attempts: Number.isSafeInteger(item.attempts) && item.attempts >= 0 ? item.attempts : 0,
+        nextAttemptAt: Number.isFinite(Date.parse(item.nextAttemptAt || "")) ? item.nextAttemptAt : null,
+        deliveredAt: Number.isFinite(Date.parse(item.deliveredAt || "")) ? item.deliveredAt : null
+      }))
+    : [];
+  if (!store.telegramAlertState || typeof store.telegramAlertState !== "object" || Array.isArray(store.telegramAlertState)) {
+    store.telegramAlertState = { authIssues: {} };
+  }
+  if (!store.telegramAlertState.authIssues
+    || typeof store.telegramAlertState.authIssues !== "object"
+    || Array.isArray(store.telegramAlertState.authIssues)) {
+    store.telegramAlertState.authIssues = {};
+  }
+  store.telegramAlertState.authIssues = Object.fromEntries(
+    Object.entries(store.telegramAlertState.authIssues).filter(([, value]) => typeof value === "boolean")
+  );
   if (!Array.isArray(store.accounts) || store.accounts.length === 0) {
     const migrated = defaultAccount();
     migrated.threadState = mergeDefaults(store.threadState || {}, DEFAULT_THREAD_STATE);
@@ -350,13 +414,16 @@ function normalizeStore() {
 }
 
 function saveStore() {
-  saveChain = saveChain.then(async () => {
+  const pending = saveChain.then(async () => {
     await ensureDirs();
     const tmp = `${STORE_PATH}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
     await rename(tmp, STORE_PATH);
   });
-  return saveChain;
+  saveChain = pending.catch((error) => {
+    console.error("Failed to save store", error);
+  });
+  return pending;
 }
 
 function broadcast(eventName, data) {
@@ -401,6 +468,177 @@ function addActivity(source, severity, message, payload = {}) {
   return event;
 }
 
+function telegramConfigured() {
+  return Boolean(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID);
+}
+
+function publicSettings() {
+  return { ...store.settings, telegramConfigured: telegramConfigured() };
+}
+
+async function deliverTelegramMessage(text) {
+  if (!telegramConfigured()) {
+    throw new Error("Telegram credentials are not configured");
+  }
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.ok !== true) {
+      const errorCode = Number.isInteger(result?.error_code) ? result.error_code : response.status;
+      const error = new Error(result?.description || `Telegram returned an invalid HTTP ${response.status} response`);
+      error.transient = errorCode === 408 || errorCode === 429 || errorCode >= 500 || !result;
+      error.configuration = errorCode === 401 || errorCode === 403;
+      error.retryAfterMs = Number.isFinite(result?.parameters?.retry_after)
+        ? result.parameters.retry_after * 1000
+        : null;
+      throw error;
+    }
+  } catch (error) {
+    let safeMessage = redactString(error.message || String(error));
+    for (const secret of [TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]) {
+      if (secret) {
+        safeMessage = safeMessage.replaceAll(secret, "[REDACTED]");
+      }
+    }
+    const safeError = new Error(safeMessage);
+    safeError.transient = error.transient !== false;
+    safeError.configuration = error.configuration === true;
+    safeError.retryAfterMs = error.retryAfterMs || null;
+    throw safeError;
+  }
+}
+
+function flushTelegramOutbox() {
+  if (telegramFlushPromise || !telegramConfigured() || !store.settings.telegramAlertsEnabled) {
+    return telegramFlushPromise;
+  }
+  telegramFlushPromise = (async () => {
+    while (store.telegramAlertOutbox.length) {
+      const item = store.telegramAlertOutbox[0];
+      if (item.deliveredAt) {
+        store.telegramAlertOutbox.shift();
+        await saveStore();
+        continue;
+      }
+      if (Date.parse(item.nextAttemptAt || "") > Date.now()) {
+        break;
+      }
+      try {
+        await deliverTelegramMessage(item.text);
+        item.deliveredAt = nowIso();
+        await saveStore();
+        store.telegramAlertOutbox.shift();
+        await saveStore();
+        addActivity("telegram", "info", "Telegram alert sent", {
+          accountId: item.accountId,
+          accountLabel: item.accountLabel,
+          eventTypes: item.eventTypes,
+          attempts: item.attempts + 1
+        });
+      } catch (error) {
+        if (item.deliveredAt) {
+          addActivity("telegram", "error", "Telegram alert was delivered but outbox persistence failed", {
+            error: error.message,
+            accountId: item.accountId,
+            eventTypes: item.eventTypes
+          });
+          break;
+        }
+        if (error.configuration) {
+          item.attempts += 1;
+          item.nextAttemptAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+          await saveStore();
+          addActivity("telegram", "error", "Telegram rejected the configured credentials or destination", {
+            error: error.message,
+            attempts: item.attempts,
+            nextAttemptAt: item.nextAttemptAt
+          });
+          break;
+        }
+        if (!error.transient) {
+          store.telegramAlertOutbox.shift();
+          await saveStore();
+          addActivity("telegram", "error", "Telegram permanently rejected an alert", {
+            error: error.message,
+            accountId: item.accountId,
+            eventTypes: item.eventTypes
+          });
+          continue;
+        }
+        item.attempts += 1;
+        const retryMs = error.retryAfterMs || Math.min(60, 2 ** Math.min(item.attempts - 1, 6)) * 60 * 1000;
+        item.nextAttemptAt = new Date(Date.now() + retryMs).toISOString();
+        await saveStore();
+        addActivity("telegram", "warn", "Telegram alert delivery deferred", {
+          error: error.message,
+          attempts: item.attempts,
+          nextAttemptAt: item.nextAttemptAt
+        });
+        break;
+      }
+    }
+  })().catch((error) => {
+    addActivity("telegram", "error", "Telegram outbox processing failed", { error: error.message });
+  }).finally(() => {
+    telegramFlushPromise = null;
+  });
+  return telegramFlushPromise;
+}
+
+function queueTelegramEvents(account, events) {
+  if (!store.settings.telegramAlertsEnabled || !telegramConfigured()) {
+    return false;
+  }
+  if (!events.length) {
+    return false;
+  }
+  let queued = false;
+  for (const text of formatTelegramAlertMessages(account.label, events)) {
+    if (store.telegramAlertOutbox.length >= 500) {
+      addActivity("telegram", "error", "Telegram alert outbox is full; new alerts are paused", {
+        accountId: account.id,
+        eventTypes: events.map((event) => event.type)
+      });
+      break;
+    }
+    store.telegramAlertOutbox.push({
+      id: randomUUID(),
+      createdAt: nowIso(),
+      accountId: account.id,
+      accountLabel: account.label,
+      eventTypes: [...new Set(events.map((event) => event.type))],
+      text,
+      attempts: 0,
+      nextAttemptAt: null
+    });
+    queued = true;
+  }
+  if (queued) {
+    void saveStore()
+      .then(() => flushTelegramOutbox())
+      .catch((error) => {
+        console.error("Failed to persist a queued Telegram alert", error);
+      });
+  }
+  return queued;
+}
+
+function queueAccountQuotaAlerts(account, previousDashboard) {
+  queueTelegramEvents(account, buildQuotaAlertEvents(previousDashboard, account.dashboard, store.settings));
+}
+
+function queueOperationalFailureAlert(account, message) {
+  if (!store.settings.telegramAlertFailures) {
+    return false;
+  }
+  return queueTelegramEvents(account, [{ type: "failure", text: message }]);
+}
+
 function addAuthEvent(message, payload = {}) {
   const event = {
     id: randomUUID(),
@@ -429,12 +667,12 @@ function workspaceCwd() {
 }
 
 function codexEnv(account = getAccount()) {
-  return {
+  return withoutTelegramCredentials({
     ...process.env,
     CODEX_HOME: account?.codeHome || CODEX_HOME,
     NO_COLOR: "1",
     TERM: "dumb"
-  };
+  });
 }
 
 function runCodex(args, options = {}) {
@@ -846,6 +1084,10 @@ async function refreshAccountState(account) {
     outcome.authChecked = true;
     outcome.loggedIn = auth.loggedIn;
     if (!auth.loggedIn && !auth.credentialPresent) {
+      if (!store.telegramAlertState.authIssues[account.id]
+        && queueOperationalFailureAlert(account, "Codex account is not logged in")) {
+        store.telegramAlertState.authIssues[account.id] = true;
+      }
       return outcome;
     }
     const result = await getAppServer(account.id).send("account/rateLimits/read", {
@@ -854,16 +1096,23 @@ async function refreshAccountState(account) {
     if (!result?.rateLimits) {
       throw new Error("Codex returned no rate-limit data");
     }
+    const previousDashboard = account.dashboard;
     outcome.updatedAt = recordRateLimits(account, result);
     outcome.rateLimits = "updated";
     outcome.loggedIn = true;
     markAuthValidated(account);
+    store.telegramAlertState.authIssues[account.id] = false;
+    queueAccountQuotaAlerts(account, previousDashboard);
   } catch (error) {
     outcome.rateLimits = "failed";
     outcome.error = redactString(error.message || String(error));
     if (isAuthenticationError(error)) {
       markAuthIssue(account, error);
       outcome.authIssue = true;
+      if (!store.telegramAlertState.authIssues[account.id]
+        && queueOperationalFailureAlert(account, "Authentication failed during quota refresh")) {
+        store.telegramAlertState.authIssues[account.id] = true;
+      }
     }
   }
   return outcome;
@@ -905,7 +1154,9 @@ function updateDashboardState(accountId, message) {
   account.dashboard ||= structuredClone(DEFAULT_DASHBOARD);
 
   if (message.method === "account/rateLimits/updated" && params.rateLimits) {
+    const previousDashboard = account.dashboard;
     recordRateLimits(account, params.rateLimits, true);
+    queueAccountQuotaAlerts(account, previousDashboard);
     void saveStore();
   }
 
@@ -1076,6 +1327,15 @@ function syncScheduledRunFromTurn(accountId, message, persist) {
   run.status = outcome.status;
   run.error = outcome.error;
   run.completedAt = outcome.completedAt;
+  if (persist
+    && run.reason === "scheduled"
+    && outcome.status !== "completed"
+    && !run.failureAlertQueued) {
+    run.failureAlertQueued = queueOperationalFailureAlert(
+      requireAccount(accountId),
+      `Scheduled Codex turn ended as ${outcome.status}; check Activity for details`
+    );
+  }
   if (persist) {
     addScheduledRun(run);
   }
@@ -1186,6 +1446,9 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
     if (isAuthenticationError(error)) {
       markAuthIssue(account, error);
     }
+    if (reason === "scheduled") {
+      queueOperationalFailureAlert(account, "Scheduled Codex send failed; check Activity for details");
+    }
     return run;
   }
 }
@@ -1274,6 +1537,10 @@ function startStateRefresh() {
       addActivity("refresh", "error", "Periodic state refresh failed", { error: error.message });
     });
   }, 5 * 60 * 1000);
+  telegramRetryTimer = setInterval(() => {
+    void flushTelegramOutbox();
+  }, 60 * 1000);
+  void flushTelegramOutbox();
   void refreshAllAccountStates("startup").catch((error) => {
     addActivity("refresh", "error", "Startup state refresh failed", { error: error.message });
   });
@@ -1356,10 +1623,38 @@ async function patchSettings(body) {
     }
     next.scheduleTimes = [...new Set(body.scheduleTimes)].sort();
   }
-  for (const key of ["schedulerEnabled", "networkAccess", "skipIfActive"]) {
+  for (const key of [
+    "schedulerEnabled",
+    "networkAccess",
+    "skipIfActive",
+    "telegramAlertsEnabled",
+    "telegramAlertQuotaResets",
+    "telegramAlertReserve",
+    "telegramAlertResetCredits",
+    "telegramAlertFailures"
+  ]) {
     if (body[key] !== undefined) {
-      next[key] = Boolean(body[key]);
+      if (typeof body[key] !== "boolean") {
+        throw new Error(`${key} must be a boolean`);
+      }
+      next[key] = body[key];
     }
+  }
+  if (body.telegramQuotaWarningPercent !== undefined) {
+    if (!Number.isInteger(body.telegramQuotaWarningPercent)
+      || body.telegramQuotaWarningPercent < 1
+      || body.telegramQuotaWarningPercent > 100) {
+      throw new Error("telegramQuotaWarningPercent must be an integer from 1 to 100");
+    }
+    next.telegramQuotaWarningPercent = body.telegramQuotaWarningPercent;
+  }
+  if (body.telegramResetExpiryHours !== undefined) {
+    if (!Number.isInteger(body.telegramResetExpiryHours)
+      || body.telegramResetExpiryHours < 1
+      || body.telegramResetExpiryHours > 720) {
+      throw new Error("telegramResetExpiryHours must be an integer from 1 to 720");
+    }
+    next.telegramResetExpiryHours = body.telegramResetExpiryHours;
   }
   for (const key of ["promptTemplate", "model", "effort", "summary", "approvalPolicy", "workspaceDir"]) {
     if (body[key] !== undefined) {
@@ -1370,13 +1665,19 @@ async function patchSettings(body) {
     }
   }
   next.approvalPolicy = normalizeApprovalPolicy(next.approvalPolicy);
+  if (next.telegramAlertsEnabled && !telegramConfigured()) {
+    throw new Error("Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID before enabling Telegram alerts");
+  }
   if (!next.promptTemplate.trim()) {
     throw new Error("promptTemplate cannot be empty");
   }
   store.settings = next;
   await saveStore();
   addActivity("settings", "info", "Settings updated", { settings: store.settings });
-  return store.settings;
+  if (store.settings.telegramAlertsEnabled) {
+    void flushTelegramOutbox();
+  }
+  return publicSettings();
 }
 
 function getLoginSession(accountId = store.selectedAccountId) {
@@ -1606,6 +1907,7 @@ async function handleApi(req, res, url) {
     appServers.delete(account.id);
     loginSessions.delete(account.id);
     authStatusCacheByAccount.delete(account.id);
+    delete store.telegramAlertState.authIssues[account.id];
     const removedCredentials = await removeAccountHome(account.codeHome);
     store.accounts = store.accounts.filter((item) => item.id !== account.id);
     if (store.selectedAccountId === account.id) {
@@ -1633,13 +1935,19 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/settings") {
-    return sendJson(res, 200, store.settings);
+    return sendJson(res, 200, publicSettings());
   }
 
   if (req.method === "PATCH" && url.pathname === "/api/settings") {
     const body = await readJson(req);
     const settings = await patchSettings(body);
     return sendJson(res, 200, settings);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/alerts/telegram/test") {
+    await deliverTelegramMessage(`Codex Window Runner\nTelegram alerts are configured and reachable.\n${new Date().toLocaleString("en-GB", { timeZone: store.settings.timezone })}`);
+    addActivity("telegram", "info", "Telegram test alert sent");
+    return sendJson(res, 200, { ok: true });
   }
 
   if (req.method === "POST" && url.pathname === "/api/run-now") {
@@ -1813,6 +2121,7 @@ async function bootstrap() {
     }
     clearInterval(schedulerTimer);
     clearInterval(stateRefreshTimer);
+    clearInterval(telegramRetryTimer);
     server.close();
     await saveStore();
     process.exit(0);

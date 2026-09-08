@@ -12,6 +12,8 @@ services:
       DATA_DIR: /data/app
       CODEX_HOME: /data/codex-home
       WORKSPACE_DIR: /workspace
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       # Optional defense in depth when the app is behind Cloudflare Access.
       # ADMIN_EMAILS: "you@example.com"
     ports:

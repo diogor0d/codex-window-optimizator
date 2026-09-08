@@ -742,6 +742,20 @@ function fillSettings(settings) {
   $("#summaryInput").value = settings.summary || "";
   $("#networkInput").checked = Boolean(settings.networkAccess);
   $("#skipActiveInput").checked = Boolean(settings.skipIfActive);
+  $("#telegramEnabledInput").checked = Boolean(settings.telegramAlertsEnabled);
+  $("#telegramEnabledInput").disabled = !settings.telegramConfigured && !settings.telegramAlertsEnabled;
+  $("#telegramQuotaThresholdInput").value = settings.telegramQuotaWarningPercent ?? 80;
+  $("#telegramExpiryHoursInput").value = settings.telegramResetExpiryHours ?? 24;
+  $("#telegramQuotaResetsInput").checked = settings.telegramAlertQuotaResets !== false;
+  $("#telegramReserveInput").checked = settings.telegramAlertReserve !== false;
+  $("#telegramResetCreditsInput").checked = settings.telegramAlertResetCredits !== false;
+  $("#telegramFailuresInput").checked = settings.telegramAlertFailures !== false;
+  $("#telegramTestBtn").disabled = !settings.telegramConfigured;
+  badge(
+    $("#telegramStatus"),
+    settings.telegramConfigured ? settings.telegramAlertsEnabled ? "Enabled" : "Configured" : "Credentials missing",
+    settings.telegramConfigured ? settings.telegramAlertsEnabled ? "ok" : "warn" : "neutral"
+  );
   $("#promptInput").value = settings.promptTemplate || "";
 }
 
@@ -1625,6 +1639,13 @@ async function saveSettings(event) {
     summary: $("#summaryInput").value.trim(),
     networkAccess: $("#networkInput").checked,
     skipIfActive: $("#skipActiveInput").checked,
+    telegramAlertsEnabled: $("#telegramEnabledInput").checked,
+    telegramQuotaWarningPercent: Number.parseInt($("#telegramQuotaThresholdInput").value, 10),
+    telegramResetExpiryHours: Number.parseInt($("#telegramExpiryHoursInput").value, 10),
+    telegramAlertQuotaResets: $("#telegramQuotaResetsInput").checked,
+    telegramAlertReserve: $("#telegramReserveInput").checked,
+    telegramAlertResetCredits: $("#telegramResetCreditsInput").checked,
+    telegramAlertFailures: $("#telegramFailuresInput").checked,
     promptTemplate: $("#promptInput").value
   };
   $("#settingsMessage").textContent = "Saving...";
@@ -1702,6 +1723,19 @@ function bindActions() {
     }
   });
   $("#settingsForm").addEventListener("submit", saveSettings);
+  $("#telegramTestBtn").addEventListener("click", async () => {
+    const button = $("#telegramTestBtn");
+    button.disabled = true;
+    $("#telegramMessage").textContent = "Sending...";
+    try {
+      await api("/api/alerts/telegram/test", { method: "POST" });
+      $("#telegramMessage").textContent = "Test alert sent.";
+    } catch (error) {
+      $("#telegramMessage").textContent = error.message;
+    } finally {
+      button.disabled = !state.settings?.telegramConfigured;
+    }
+  });
   $("#clearActivityBtn").addEventListener("click", () => {
     $("#activityList").innerHTML = "";
     state.activityIds.clear();

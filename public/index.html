@@ -308,6 +308,37 @@
             <input id="skipActiveInput" name="skipIfActive" type="checkbox">
             Skip a scheduled send while a turn is already active
           </label>
+          <fieldset class="alert-settings">
+            <legend>Telegram alerts</legend>
+            <div class="alert-settings-head">
+              <p>Credentials stay in the server environment and are never sent to this browser.</p>
+              <span id="telegramStatus" class="badge neutral">Checking</span>
+            </div>
+            <label class="checkbox-line">
+              <input id="telegramEnabledInput" name="telegramAlertsEnabled" type="checkbox">
+              Enable Telegram alerts
+            </label>
+            <div class="grid-2">
+              <label>
+                Quota warning threshold (%)
+                <input id="telegramQuotaThresholdInput" name="telegramQuotaWarningPercent" type="number" min="1" max="100" step="1">
+              </label>
+              <label>
+                Reset expiry warning (hours)
+                <input id="telegramExpiryHoursInput" name="telegramResetExpiryHours" type="number" min="1" max="720" step="1">
+              </label>
+            </div>
+            <div class="alert-toggle-grid">
+              <label class="checkbox-line"><input id="telegramQuotaResetsInput" type="checkbox">Quota-window resets</label>
+              <label class="checkbox-line"><input id="telegramReserveInput" type="checkbox">Luna Reserve changes</label>
+              <label class="checkbox-line"><input id="telegramResetCreditsInput" type="checkbox">Usage resets and expiry</label>
+              <label class="checkbox-line"><input id="telegramFailuresInput" type="checkbox">Auth and send failures</label>
+            </div>
+            <div class="button-row">
+              <button id="telegramTestBtn" type="button">Send test alert</button>
+              <span id="telegramMessage" class="form-message"></span>
+            </div>
+          </fieldset>
           <label>
             Scheduled prompt template
             <textarea id="promptInput" name="promptTemplate" rows="9"></textarea>

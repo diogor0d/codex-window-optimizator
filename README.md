@@ -107,8 +107,20 @@ Environment variables (defaults shown are the in-container values):
 | `CODEX_ACCOUNTS_DIR` | `/data/codex-accounts` | Codex homes for additional accounts |
 | `WORKSPACE_DIR` | `/workspace` | Codex cwd and writable root |
 | `ADMIN_EMAILS` | unset | Optional Cloudflare Access email allowlist |
+| `TELEGRAM_BOT_TOKEN` | unset | Telegram bot token; keep only in the server's ignored `.env` |
+| `TELEGRAM_CHAT_ID` | unset | Destination user, group, or channel chat ID |
 
 Managed in the web UI under Settings: timezone, schedule times, workspace directory, model, effort, summary, approval policy, network access for scheduled turns, skip-if-active, and the scheduled prompt template. Network access is off by default; the default approval policy is `on-request`.
+
+### Telegram alerts
+
+1. Create a dedicated bot with Telegram's `@BotFather` and start a conversation with it, or add it to the intended private group.
+2. Obtain the destination chat ID through Telegram's Bot API, then put `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the deployment's ignored `.env` file. Never commit either value.
+3. Recreate the container, open **Schedule → Telegram alerts**, send a test alert, then enable the categories you want.
+
+Alerts are disabled by default. The service can notify on configurable quota-warning crossings, fixed 95% and 100% crossings, quota-window resets, Luna Reserve activation/recovery, usage-reset inventory changes and upcoming expirations, and authentication or scheduled-send failures. Quota polling remains every five minutes, so alerts may arrive up to roughly five minutes after a transition. Messages are grouped per account and emitted only when state crosses a boundary; unchanged readings do not repeat alerts. Pending messages are persisted without credentials and retried with exponential backoff after transient Telegram failures. Delivery is at least once: because Telegram has no idempotency key for `sendMessage`, a process crash immediately after Telegram accepts a message can cause that message to be sent again after restart.
+
+Bot credentials remain server-side, are removed from Codex subprocess environments, and are not returned by the API or saved in `store.json`. Telegram still receives account labels and the alert facts included in each message, so use a private destination and choose labels appropriate for that disclosure.
 
 ## Operations
 

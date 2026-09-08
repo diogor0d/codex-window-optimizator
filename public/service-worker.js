@@ -1,4 +1,4 @@
-const CACHE_NAME = "window-runner-shell-v9";
+const CACHE_NAME = "window-runner-shell-v10";
 const SHELL_PATHS = [
   "/",
   "/styles.css",
