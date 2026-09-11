@@ -83,6 +83,29 @@ test("finds the Reserve weekly allowance in either window", () => {
   assert.equal(reserveState(win), "standby");
 });
 
+test("uses the freshest Reserve snapshot when names are duplicated", () => {
+  const win = accountWindow({
+    dashboard: {
+      rateLimits: {},
+      rateLimitsByLimitId: {
+        stale: {
+          limitName: "gpt-reserve",
+          updatedAt: "2026-09-08T10:00:00.000Z",
+          primary: { usedPercent: 90, resetsAt: 2_100_000_000, windowDurationMins: 10080 }
+        },
+        current: {
+          limitName: "gpt-reserve",
+          updatedAt: "2026-09-08T10:05:00.000Z",
+          primary: { usedPercent: 25, resetsAt: 2_200_000_000, windowDurationMins: 10080 }
+        }
+      }
+    }
+  });
+
+  assert.equal(win.reserve.weekly.free, 75);
+  assert.equal(win.reserve.weekly.resetsAt, 2_200_000_000);
+});
+
 test("does not infer Reserve activation when backend permission is unavailable", () => {
   const win = accountWindow({
     dashboard: {

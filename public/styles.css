@@ -1468,9 +1468,10 @@ textarea:focus {
 }
 
 .week-reset {
-  color: var(--muted);
+  color: var(--text);
   font-family: "Spline Sans Mono", ui-monospace, monospace;
-  font-size: 9.5px;
+  font-size: 10.5px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
@@ -1515,6 +1516,207 @@ textarea:focus {
   gap: 2px;
   justify-items: end;
   text-align: right;
+}
+
+.weekly-horizon {
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--panel-sunken);
+}
+
+.weekly-horizon-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+}
+
+.weekly-horizon-head .eyebrow {
+  margin: 0;
+}
+
+.weekly-horizon-legend {
+  display: flex;
+  gap: 14px;
+  color: var(--muted);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+
+.weekly-horizon-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.weekly-legend-marker {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+}
+
+.weekly-legend-marker.ordinary {
+  transform: rotate(45deg);
+  background: var(--accent);
+}
+
+.weekly-legend-marker.reserve {
+  border: 2px solid var(--ok);
+  border-radius: 50%;
+}
+
+.weekly-horizon-lane {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) 1fr;
+  min-height: 52px;
+  border-top: 1px solid var(--line);
+}
+
+.weekly-horizon-lane:first-child {
+  border-top: 0;
+}
+
+.weekly-horizon-name {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  padding: 7px 12px;
+}
+
+.weekly-horizon-name strong {
+  overflow: hidden;
+  color: var(--text);
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weekly-horizon-dates {
+  display: grid;
+  gap: 1px;
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.weekly-horizon-dates span {
+  overflow-wrap: anywhere;
+}
+
+.weekly-horizon-dates b {
+  display: inline-block;
+  width: 23px;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+}
+
+.weekly-horizon-dates .reserve,
+.weekly-horizon-dates .reserve b {
+  color: var(--ok);
+}
+
+.weekly-horizon-axis {
+  position: relative;
+  min-width: 0;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent calc(14.2857% - 1px),
+    var(--line) calc(14.2857% - 1px),
+    var(--line) 14.2857%
+  );
+}
+
+.weekly-horizon-lane:not(.weekly-horizon-scale) .weekly-horizon-axis::before,
+.weekly-horizon-lane:not(.weekly-horizon-scale) .weekly-horizon-axis::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.weekly-horizon-lane:not(.weekly-horizon-scale) .weekly-horizon-axis::before {
+  top: 30%;
+}
+
+.weekly-horizon-lane:not(.weekly-horizon-scale) .weekly-horizon-axis::after {
+  top: 70%;
+}
+
+.weekly-horizon-scale {
+  min-height: 34px;
+  background: var(--panel);
+}
+
+.weekly-horizon-scale .weekly-horizon-name {
+  color: var(--muted);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.weekly-day {
+  position: absolute;
+  top: 50%;
+  transform: translate(5px, -50%);
+  color: var(--muted);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.weekly-horizon-marker {
+  position: absolute;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+}
+
+.weekly-horizon-marker::after {
+  content: attr(data-marker);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 7px;
+  font-weight: 800;
+}
+
+.weekly-horizon-marker.ordinary {
+  top: 30%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.weekly-horizon-marker.ordinary::after {
+  transform: rotate(-45deg);
+}
+
+.weekly-horizon-marker.reserve {
+  top: 70%;
+  border: 2px solid var(--ok);
+  border-radius: 50%;
+  background: var(--panel-sunken);
+  color: var(--ok);
 }
 
 .free-num {
@@ -2027,6 +2229,37 @@ textarea:focus {
 
   .week-reset {
     grid-column: 2 / -1;
+  }
+
+  .weekly-horizon-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .weekly-horizon-lane {
+    grid-template-columns: 1fr;
+  }
+
+  .weekly-horizon-name {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .weekly-horizon-scale .weekly-horizon-name {
+    display: none;
+  }
+
+  .weekly-horizon-axis {
+    min-height: 42px;
+  }
+
+  .weekly-horizon-scale {
+    min-height: 28px;
+  }
+
+  .weekly-horizon-scale .weekly-horizon-axis {
+    min-height: 28px;
   }
 
   .strip-meta {

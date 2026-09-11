@@ -5,7 +5,8 @@ function windowByDuration(snapshot, duration) {
 
 function reserveSnapshot(dashboard) {
   return Object.values(dashboard?.rateLimitsByLimitId || {})
-    .find((snapshot) => snapshot?.limitName === "gpt-reserve") || null;
+    .filter((snapshot) => snapshot?.limitName === "gpt-reserve")
+    .sort((a, b) => (Date.parse(b.updatedAt || "") || 0) - (Date.parse(a.updatedAt || "") || 0))[0] || null;
 }
 
 function alertWindows(dashboard) {

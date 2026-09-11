@@ -99,6 +99,7 @@ function clampPercent(value) {
 
 const NEAR_LIMIT_USED = 80;
 const FLEET_TIMETABLE_MS = 24 * 60 * 60 * 1000;
+const WEEKLY_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
 const VISIBLE_STATE_REFRESH_MS = 60 * 1000;
 const QUOTA_REFRESH_MS = 5 * 60 * 1000;
 const QUOTA_REFRESH_STORAGE_KEY = "codex-window:last-quota-refresh";
@@ -283,7 +284,8 @@ function accountWindow(account) {
     || (!weekly ? normalizedPrimary || normalizedSecondary : null);
   const secondary = ordinaryWindows.find((entry) => entry.windowDurationMins === 10080) || null;
   const reserveSnapshot = Object.values(account?.dashboard?.rateLimitsByLimitId || {})
-    .find((snapshot) => snapshot?.limitName === "gpt-reserve");
+    .filter((snapshot) => snapshot?.limitName === "gpt-reserve")
+    .sort((a, b) => (Date.parse(b.updatedAt || "") || 0) - (Date.parse(a.updatedAt || "") || 0))[0];
   const reserveWindows = reserveSnapshot
     ? [reserveSnapshot.primary, reserveSnapshot.secondary].map(normalize).filter(Boolean)
     : [];
@@ -418,9 +420,15 @@ function fmtWeeklyReset(ms) {
   }
   return new Date(ms).toLocaleString([], {
     weekday: "short",
+    day: "numeric",
+    month: "short",
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function fmtHorizonDay(ms) {
+  return new Date(ms).toLocaleDateString([], { weekday: "short", day: "numeric" });
 }
 
 function shortId(value) {
@@ -1263,7 +1271,8 @@ function compareFleetAccounts(a, b, now = Date.now()) {
 function renderFleet() {
   const rowsHost = $("#fleetRows");
   const timetableHost = $("#fleetTimetable");
-  if (!rowsHost || !timetableHost) {
+  const weeklyHorizonHost = $("#fleetWeeklyHorizon");
+  if (!rowsHost || !timetableHost || !weeklyHorizonHost) {
     return;
   }
   const now = Date.now();
@@ -1484,6 +1493,55 @@ function renderFleet() {
         return `<div class="${rowClasses}">${labelCell}${trackCell}${metaCell}</div>`;
       }).join("");
 
+  const weeklyHorizonLanes = accountReadings.map(({ account, win }) => {
+    if (!account.auth?.loggedIn) {
+      return null;
+    }
+    const resets = [
+      { kind: "ordinary", short: "WK", label: "Weekly", resetsAt: win?.secondary?.resetsAt },
+      { kind: "reserve", short: "R", label: "Reserve", resetsAt: win?.reserve?.weekly?.resetsAt }
+    ].filter((reset) => {
+      const resetMs = Number(reset.resetsAt) * 1000;
+      return Number.isFinite(resetMs) && resetMs > now && resetMs <= now + WEEKLY_HORIZON_MS;
+    }).sort((a, b) => a.resetsAt - b.resetsAt);
+    return resets.length ? { account, resets } : null;
+  }).filter(Boolean).sort((a, b) =>
+    Math.min(...a.resets.map((reset) => reset.resetsAt))
+      - Math.min(...b.resets.map((reset) => reset.resetsAt)));
+  weeklyHorizonHost.innerHTML = !weeklyHorizonLanes.length
+    ? '<p class="tt-empty">No weekly reset dates reported in the next seven days.</p>'
+    : `
+      <div class="weekly-horizon-lane weekly-horizon-scale" aria-hidden="true">
+        <span class="weekly-horizon-name">account / exact reset</span>
+        <div class="weekly-horizon-axis">
+          ${Array.from({ length: 7 }, (_, index) => `
+            <span class="weekly-day" style="left:${(index / 7) * 100}%">${escapeHtml(fmtHorizonDay(now + index * 24 * 60 * 60 * 1000))}</span>
+          `).join("")}
+        </div>
+      </div>
+      ${weeklyHorizonLanes.map(({ account, resets }) => `
+        <div class="weekly-horizon-lane">
+          <div class="weekly-horizon-name">
+            <strong title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</strong>
+            <span class="weekly-horizon-dates">
+              ${resets.map((reset) => `<span class="${reset.kind}"><b>${reset.short}</b> ${escapeHtml(fmtWeeklyReset(Number(reset.resetsAt) * 1000))}</span>`).join("")}
+            </span>
+          </div>
+          <div class="weekly-horizon-axis">
+            ${resets.map((reset) => `
+              <span
+                class="weekly-horizon-marker ${reset.kind}"
+                data-weekly-horizon-reset="${reset.resetsAt}"
+                data-marker="${reset.short}"
+                title="${escapeHtml(`${account.label} ${reset.label} resets ${formatUnixSeconds(reset.resetsAt)}`)}"
+                aria-label="${escapeHtml(`${account.label} ${reset.label} resets ${formatUnixSeconds(reset.resetsAt)}`)}"
+                role="img"
+              ></span>
+            `).join("")}
+          </div>
+        </div>
+      `).join("")}`;
+
   const lanes = accounts.filter((account) => {
     const resetsAt = effectiveWindow(accountWindow(account), now)?.resetsAt;
     const resetMs = Number(resetsAt) * 1000;
@@ -1553,6 +1611,12 @@ function tickFleet() {
       free.textContent = `${free.dataset.weekFree}% ${stale ? "last" : "free"}`;
     }
     el.textContent = `${fmtWeeklyReset(resetMs)} · ${fmtCountdown(resetMs - now)}`;
+  });
+
+  document.querySelectorAll("#fleetWeeklyHorizon [data-weekly-horizon-reset]").forEach((el) => {
+    const resetMs = Number(el.dataset.weeklyHorizonReset) * 1000;
+    const position = clampPercent(((resetMs - now) / WEEKLY_HORIZON_MS) * 100);
+    el.style.left = `${Math.max(1.5, Math.min(98.5, position))}%`;
   });
 
   const nextResetsAt = state.accounts
