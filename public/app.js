@@ -112,8 +112,12 @@ function snapshotAuth(auth = {}) {
     loggedIn,
     credentialPresent: Boolean(auth.credentialPresent),
     authIssue,
+    probeUnavailable: Boolean(auth.probeUnavailable),
+    logoutConfirmationPending: Boolean(auth.logoutConfirmationPending),
     mode: auth.mode || "unknown",
-    detail: loggedIn ? "Logged in (saved status)" : authIssue ? "Authentication issue (saved status)" : "Logged out (saved status)"
+    detail: auth.logoutConfirmationPending
+      ? "Logged-out status pending confirmation"
+      : loggedIn ? "Logged in (saved status)" : authIssue ? "Authentication issue (saved status)" : "Logged out (saved status)"
   };
 }
 
@@ -494,15 +498,20 @@ function updateStatus(status) {
   state.selectedAccountId = status.selectedAccountId || status.selectedAccount?.id || null;
   renderAccounts();
   const selectedAccount = status.selectedAccount || {};
-  $("#authState").textContent = status.auth.detail || (status.auth.loggedIn ? "Logged in" : "Not logged in");
+  const authUncertain = status.auth.probeUnavailable || status.auth.logoutConfirmationPending;
+  $("#authState").textContent = status.auth.probeUnavailable
+    ? "Authentication check unavailable"
+    : status.auth.logoutConfirmationPending
+      ? "Logged-out status pending confirmation"
+    : status.auth.detail || (status.auth.loggedIn ? "Logged in" : "Not logged in");
   $("#appServerState").textContent = status.appServer.running ? "Running" : "Stopped";
   $("#threadState").textContent = selectedAccount.thread?.threadId || status.thread.threadId || "None";
   $("#localTime").textContent = status.scheduler.next.localNow;
   $("#lastRun").textContent = formatRun(status.latestRun);
   renderNextSend(status.scheduler.next.nextLocal, status.scheduler.enabled);
 
-  badge($("#serviceBadge"), status.auth.loggedIn ? "Ready" : status.auth.authIssue ? "Auth issue" : "Needs login", status.auth.loggedIn ? "ok" : status.auth.authIssue ? "bad" : "warn");
-  badge($("#loginBadge"), status.auth.loggedIn ? "Logged in" : status.auth.authIssue ? "Authentication failed" : "Logged out", status.auth.loggedIn ? "ok" : "bad");
+  badge($("#serviceBadge"), status.auth.probeUnavailable ? "Auth check unavailable" : status.auth.logoutConfirmationPending ? "Auth check pending" : status.auth.loggedIn ? "Ready" : status.auth.authIssue ? "Auth issue" : "Needs login", authUncertain ? "warn" : status.auth.loggedIn ? "ok" : status.auth.authIssue ? "bad" : "warn");
+  badge($("#loginBadge"), status.auth.probeUnavailable ? "Check unavailable" : status.auth.logoutConfirmationPending ? "Confirmation pending" : status.auth.loggedIn ? "Logged in" : status.auth.authIssue ? "Authentication failed" : "Logged out", authUncertain ? "warn" : status.auth.loggedIn ? "ok" : "bad");
   badge($("#schedulerBadge"), status.scheduler.enabled ? "Enabled" : "Paused", status.scheduler.enabled ? "ok" : "warn");
   updateWindowSummary(status.dashboard || {});
   renderFleet();

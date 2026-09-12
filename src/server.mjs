@@ -5,6 +5,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { advanceAuthenticationFailure, interpretCodexLoginStatus, mergeAuthenticationProbe } from "./auth-status.mjs";
 import { recordRateLimitsNotification, recordRateLimitsRead } from "./rate-limits.mjs";
 import { buildQuotaAlertEvents, formatTelegramAlertMessages, withoutTelegramCredentials } from "./telegram-alerts.mjs";
 
@@ -85,7 +86,7 @@ const DEFAULT_STORE = {
   activityEvents: [],
   authEvents: [],
   telegramAlertOutbox: [],
-  telegramAlertState: { authIssues: {} },
+  telegramAlertState: { authIssues: {}, authFailureCounts: {}, intentionalLogouts: {} },
   dashboard: structuredClone(DEFAULT_DASHBOARD)
 };
 
@@ -392,6 +393,23 @@ function normalizeStore() {
   store.telegramAlertState.authIssues = Object.fromEntries(
     Object.entries(store.telegramAlertState.authIssues).filter(([, value]) => typeof value === "boolean")
   );
+  if (!store.telegramAlertState.authFailureCounts
+    || typeof store.telegramAlertState.authFailureCounts !== "object"
+    || Array.isArray(store.telegramAlertState.authFailureCounts)) {
+    store.telegramAlertState.authFailureCounts = {};
+  }
+  store.telegramAlertState.authFailureCounts = Object.fromEntries(
+    Object.entries(store.telegramAlertState.authFailureCounts)
+      .filter(([, value]) => Number.isSafeInteger(value) && value >= 0)
+  );
+  if (!store.telegramAlertState.intentionalLogouts
+    || typeof store.telegramAlertState.intentionalLogouts !== "object"
+    || Array.isArray(store.telegramAlertState.intentionalLogouts)) {
+    store.telegramAlertState.intentionalLogouts = {};
+  }
+  store.telegramAlertState.intentionalLogouts = Object.fromEntries(
+    Object.entries(store.telegramAlertState.intentionalLogouts).filter(([, value]) => value === true)
+  );
   if (!Array.isArray(store.accounts) || store.accounts.length === 0) {
     const migrated = defaultAccount();
     migrated.threadState = mergeDefaults(store.threadState || {}, DEFAULT_THREAD_STATE);
@@ -639,6 +657,34 @@ function queueOperationalFailureAlert(account, message) {
   return queueTelegramEvents(account, [{ type: "failure", text: message }]);
 }
 
+function recordAuthenticationFailure(account, message) {
+  if (store.telegramAlertState.intentionalLogouts[account.id]) {
+    return false;
+  }
+  const next = advanceAuthenticationFailure(
+    store.telegramAlertState.authFailureCounts[account.id],
+    store.telegramAlertState.authIssues[account.id]
+  );
+  store.telegramAlertState.authFailureCounts[account.id] = next.count;
+  void saveStore();
+  if (!next.shouldAlert) {
+    return false;
+  }
+  if (queueOperationalFailureAlert(account, message)) {
+    store.telegramAlertState.authIssues[account.id] = true;
+    void saveStore();
+    return true;
+  }
+  return false;
+}
+
+function clearAuthenticationFailure(account) {
+  store.telegramAlertState.authFailureCounts[account.id] = 0;
+  store.telegramAlertState.authIssues[account.id] = false;
+  delete store.telegramAlertState.intentionalLogouts[account.id];
+  void saveStore();
+}
+
 function addAuthEvent(message, payload = {}) {
   const event = {
     id: randomUUID(),
@@ -687,8 +733,10 @@ function runCodex(args, options = {}) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
     const timer = setTimeout(() => {
       if (!settled) {
+        timedOut = true;
         child.kill("SIGTERM");
       }
     }, timeoutMs);
@@ -702,12 +750,12 @@ function runCodex(args, options = {}) {
     child.on("error", (error) => {
       settled = true;
       clearTimeout(timer);
-      resolve({ code: -1, stdout, stderr: `${stderr}${error.message}` });
+      resolve({ code: -1, timedOut, stdout, stderr: `${stderr}${error.message}` });
     });
     child.on("close", (code, signal) => {
       settled = true;
       clearTimeout(timer);
-      resolve({ code: code ?? -1, signal, stdout: redactString(stdout), stderr: redactString(stderr) });
+      resolve({ code: code ?? -1, signal, timedOut, stdout: redactString(stdout), stderr: redactString(stderr) });
     });
 
     if (options.input) {
@@ -773,23 +821,12 @@ async function getAuthStatus(accountOrId = store.selectedAccountId, force = fals
   }
   const refresh = (async () => {
     const result = await runCodex(["login", "status"], { account, timeoutMs: 20000 });
-    const combined = `${result.stdout}\n${result.stderr}`.trim();
-    const loggedIn = result.code === 0;
+    const interpreted = interpretCodexLoginStatus(result);
     const previous = authStatusCacheByAccount.get(account.id)?.status;
+    const status = mergeAuthenticationProbe(previous, interpreted);
     const next = {
       checkedAt: Date.now(),
-      status: loggedIn && previous?.authIssue ? {
-        ...previous,
-        credentialPresent: true,
-        code: result.code
-      } : {
-        loggedIn,
-        credentialPresent: loggedIn,
-        authIssue: false,
-        mode: loggedIn ? "codex" : "none",
-        detail: combined || (loggedIn ? "Logged in" : "Not logged in"),
-        code: result.code
-      }
+      status
     };
     authStatusCacheByAccount.set(account.id, next);
     return next.status;
@@ -942,6 +979,8 @@ class CodexAppServer {
           const account = store.accounts.find((item) => item.id === this.accountId);
           if (account) {
             markAuthIssue(account, error);
+            recordAuthenticationFailure(account, "Authentication failed in Codex app-server");
+            error.authFailureRecorded = true;
           }
         }
         pending.reject(error);
@@ -1081,13 +1120,15 @@ async function refreshAccountState(account) {
   };
   try {
     const auth = await getAuthStatus(account, true);
-    outcome.authChecked = true;
+    outcome.authChecked = !auth.probeUnavailable;
     outcome.loggedIn = auth.loggedIn;
+    if (auth.probeUnavailable && !auth.loggedIn) {
+      outcome.rateLimits = "failed";
+      outcome.error = "Codex login status check was temporarily unavailable";
+      return outcome;
+    }
     if (!auth.loggedIn && !auth.credentialPresent) {
-      if (!store.telegramAlertState.authIssues[account.id]
-        && queueOperationalFailureAlert(account, "Codex account is not logged in")) {
-        store.telegramAlertState.authIssues[account.id] = true;
-      }
+      recordAuthenticationFailure(account, "Codex account is not logged in");
       return outcome;
     }
     const result = await getAppServer(account.id).send("account/rateLimits/read", {
@@ -1101,7 +1142,7 @@ async function refreshAccountState(account) {
     outcome.rateLimits = "updated";
     outcome.loggedIn = true;
     markAuthValidated(account);
-    store.telegramAlertState.authIssues[account.id] = false;
+    clearAuthenticationFailure(account);
     queueAccountQuotaAlerts(account, previousDashboard);
   } catch (error) {
     outcome.rateLimits = "failed";
@@ -1109,9 +1150,8 @@ async function refreshAccountState(account) {
     if (isAuthenticationError(error)) {
       markAuthIssue(account, error);
       outcome.authIssue = true;
-      if (!store.telegramAlertState.authIssues[account.id]
-        && queueOperationalFailureAlert(account, "Authentication failed during quota refresh")) {
-        store.telegramAlertState.authIssues[account.id] = true;
+      if (!error.authFailureRecorded) {
+        recordAuthenticationFailure(account, "Authentication failed during quota refresh");
       }
     }
   }
@@ -1445,8 +1485,11 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
     });
     if (isAuthenticationError(error)) {
       markAuthIssue(account, error);
+      if (reason === "scheduled" && !error.authFailureRecorded) {
+        recordAuthenticationFailure(account, "Authentication failed during scheduled Codex send");
+      }
     }
-    if (reason === "scheduled") {
+    if (reason === "scheduled" && !isAuthenticationError(error)) {
       queueOperationalFailureAlert(account, "Scheduled Codex send failed; check Activity for details");
     }
     return run;
@@ -1740,9 +1783,9 @@ function startDeviceLogin(accountId = store.selectedAccountId) {
     session.exitCode = code;
     session.finishedAt = nowIso();
     addAuthEvent("Codex device login finished", { accountId: account.id, accountLabel: account.label, sessionId: session.id, code });
-    const auth = await getAuthStatus(account, true);
-    if (code === 0 && auth.credentialPresent) {
+    if (code === 0) {
       markAuthValidated(account);
+      clearAuthenticationFailure(account);
       try {
         await getAppServer(account.id).restart();
         await ensureThread(account.id);
@@ -1753,6 +1796,8 @@ function startDeviceLogin(accountId = store.selectedAccountId) {
           error: error.message
         });
       }
+    } else {
+      await getAuthStatus(account, true);
     }
     broadcast("login", session);
   });
@@ -1764,8 +1809,23 @@ async function logoutCodex(accountId = store.selectedAccountId) {
   const account = requireAccount(accountId);
   getAppServer(account.id, false)?.stop();
   const result = await runCodex(["logout"], { account, timeoutMs: 30000 });
-  await getAuthStatus(account, true);
-  addAuthEvent("Logged out Codex credentials", {
+  if (result.code === 0) {
+    const status = {
+      loggedIn: false,
+      credentialPresent: false,
+      authIssue: false,
+      mode: "none",
+      detail: "Logged out",
+      code: result.code
+    };
+    authStatusCacheByAccount.set(account.id, { checkedAt: Date.now(), status });
+    clearAuthenticationFailure(account);
+    store.telegramAlertState.intentionalLogouts[account.id] = true;
+    void saveStore();
+  } else {
+    await getAuthStatus(account, true);
+  }
+  addAuthEvent(result.code === 0 ? "Logged out Codex credentials" : "Codex logout failed", {
     accountId: account.id,
     accountLabel: account.label,
     code: result.code,
@@ -1908,6 +1968,8 @@ async function handleApi(req, res, url) {
     loginSessions.delete(account.id);
     authStatusCacheByAccount.delete(account.id);
     delete store.telegramAlertState.authIssues[account.id];
+    delete store.telegramAlertState.authFailureCounts[account.id];
+    delete store.telegramAlertState.intentionalLogouts[account.id];
     const removedCredentials = await removeAccountHome(account.codeHome);
     store.accounts = store.accounts.filter((item) => item.id !== account.id);
     if (store.selectedAccountId === account.id) {
@@ -2092,6 +2154,13 @@ async function bootstrap() {
 
   await Promise.all(store.accounts.map(async (account) => {
     const auth = await getAuthStatus(account, true);
+    if (auth.probeUnavailable && !auth.loggedIn) {
+      addActivity("auth", "warn", "Codex login status check was unavailable during startup", {
+        accountId: account.id,
+        accountLabel: account.label
+      });
+      return;
+    }
     if (!auth.loggedIn) {
       if (account.enabled) {
         addActivity("auth", "warn", "Codex account is not logged in; scheduled sends will fail until device login completes", {
