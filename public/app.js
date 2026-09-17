@@ -453,19 +453,19 @@ function updateWindowSummary(dashboard = {}) {
   const win = accountWindow({ dashboard });
   const resetCredits = accountResetCredits({ dashboard });
   const current = effectiveWindow(win);
-  const usedValue = current?.used;
-  const used = Number.isFinite(usedValue) ? `${usedValue}%` : "Unknown";
+  const remainingValue = current?.free;
+  const remaining = Number.isFinite(remainingValue) ? `${remainingValue}%` : "Unknown";
   const reset = Number.isFinite(current?.resetsAt) ? formatUnixSeconds(current.resetsAt) : "Unknown";
   const duration = Number.isFinite(current?.windowDurationMins) ? `${current.windowDurationMins} min` : "Unknown";
   const plan = limits?.planType ? `${limits.planType} / ${duration}` : duration;
   const lastTurn = dashboard.lastCompletedTurn;
 
-  $("#windowUsage").textContent = used;
+  $("#windowUsage").textContent = remaining;
   $("#windowReset").textContent = reset;
   $("#windowPlan").textContent = plan;
   const reserve = win?.reserve?.weekly;
   const reserveMode = reserveState(win);
-  $("#windowReserve").textContent = reserve?.hasData ? `${reserve.free}% free` : "Unavailable";
+  $("#windowReserve").textContent = reserve?.hasData ? `${reserve.free}% remaining` : "Unavailable";
   $("#windowReserveState").textContent = reserveMode
     ? `${reserveMode}${win.reserve.model ? ` / ${win.reserve.model}` : ""}`
     : "Not reported";
@@ -478,9 +478,9 @@ function updateWindowSummary(dashboard = {}) {
   $("#windowResetExpiry").textContent = resetCreditExpiry(resetCredits).label;
   $("#lastPing").textContent = compactText(dashboard.lastUserMessage?.text);
   $("#lastReply").textContent = compactText(dashboard.lastAgentMessage?.text);
-  $("#windowUsageLabel").textContent = Number.isFinite(usedValue) ? `${100 - usedValue}% usable now` : "Usage unknown";
+  $("#windowUsageLabel").textContent = Number.isFinite(remainingValue) ? `${remainingValue}% remaining` : "Usage unknown";
   $("#windowResetHint").textContent = Number.isFinite(current?.resetsAt) ? `Limiting window resets ${reset}` : "Reset unknown";
-  $("#windowUsageBar").style.width = `${clampPercent(usedValue)}%`;
+  $("#windowUsageBar").style.width = `${clampPercent(remainingValue)}%`;
 
   if (lastTurn?.status === "completed" && !lastTurn.error) {
     badge($("#windowBadge"), `Last turn OK (${formatDuration(lastTurn.durationMs)})`, "ok");
@@ -1453,22 +1453,22 @@ function renderFleet() {
               ${current ? `
               <div class="strip-track" role="img" aria-label="${escapeHtml(
                 fresh
-                  ? `${account.label}: ${current.free}% usable now, ${current.used}% of the limiting quota used`
-                  : `${account.label}: stale reading, last reported ${current.free}% usable`
+                  ? `${account.label}: ${current.free}% of the limiting quota remaining`
+                  : `${account.label}: stale reading, last reported ${current.free}% remaining`
               )}">
-                <div class="strip-fill" style="width:${current.used}%"></div>
+                <div class="strip-fill" style="width:${current.free}%"></div>
               </div>` : '<span class="strip-note">ordinary quota not reported</span>'}
               ${win.secondary?.hasData ? `
               <div class="strip-week ${Number(win.secondary.resetsAt) * 1000 > now ? "" : "stale"}">
                 <span class="week-tag">wk</span>
                 <div class="week-track" role="img" aria-label="${escapeHtml(
                   Number(win.secondary.resetsAt) * 1000 > now
-                    ? `${account.label} weekly window: ${win.secondary.free}% available`
-                    : `${account.label} weekly window: stale reading, last reported ${win.secondary.free}% available`
+                    ? `${account.label} weekly window: ${win.secondary.free}% remaining`
+                    : `${account.label} weekly window: stale reading, last reported ${win.secondary.free}% remaining`
                 )}">
-                  <div class="week-fill" style="width:${win.secondary.used}%"></div>
+                  <div class="week-fill" style="width:${win.secondary.free}%"></div>
                 </div>
-                <span class="week-free" data-week-free="${win.secondary.free}">${win.secondary.free}% ${Number(win.secondary.resetsAt) * 1000 > now ? "free" : "last"}</span>
+                <span class="week-free" data-week-free="${win.secondary.free}">${win.secondary.free}% ${Number(win.secondary.resetsAt) * 1000 > now ? "remaining" : "last"}</span>
                 <span class="week-reset">${
                   win.secondary.resetsAt
                     ? `<span data-week-resets="${win.secondary.resetsAt}" title="Weekly quota reset: ${escapeHtml(formatUnixSeconds(win.secondary.resetsAt))}"></span>`
@@ -1479,17 +1479,17 @@ function renderFleet() {
               <div class="strip-week strip-reserve reserve-${reserveMode}">
                 <span class="week-tag">reserve</span>
                 <div class="week-track" role="img" aria-label="${escapeHtml(
-                  `${account.label} Reserve weekly allowance: ${reserve.free}% available, ${reserveMode}`
+                  `${account.label} Reserve weekly allowance: ${reserve.free}% remaining, ${reserveMode}`
                 )}">
-                  <div class="week-fill" style="width:${reserve.used}%"></div>
+                  <div class="week-fill" style="width:${reserve.free}%"></div>
                 </div>
-                <span class="week-free">${reserve.free}% free</span>
+                <span class="week-free">${reserve.free}% remaining</span>
                 <span class="week-reset" title="${escapeHtml(Number.isFinite(reserve.resetsAt) ? `Luna Reserve resets ${formatUnixSeconds(reserve.resetsAt)}` : "Luna Reserve reset not reported")}">${reserveMode}${win.reserve.model ? ` · ${escapeHtml(win.reserve.model)}` : ""}${Number.isFinite(reserve.resetsAt) ? ` · resets ${escapeHtml(fmtWeeklyReset(reserve.resetsAt * 1000))}` : " · reset unknown"}</span>
               </div>` : ""}
             </div>`;
           metaCell = current ? `
             <div class="strip-meta">
-              <span class="free-num">${current.free}<small>${fresh ? "% free" : "% last reported"}</small></span>
+              <span class="free-num">${current.free}<small>${fresh ? "% remaining" : "% last reported"}</small></span>
               <span class="reset-line">${
                 current.resetsAt
                   ? `<span data-resets="${current.resetsAt}" title="${

@@ -111,11 +111,11 @@
                 <div id="windowUsageBar" class="meter-bar"></div>
               </div>
               <div class="meter-scale" aria-hidden="true">
-                <span>0h</span><span>1h</span><span>2h</span><span>3h</span><span>4h</span><span>5h</span>
+                <span>0%</span><span>20%</span><span>40%</span><span>60%</span><span>80%</span><span>100%</span>
               </div>
             </div>
             <dl class="facts">
-              <div><dt>Usage</dt><dd id="windowUsage">Unknown</dd></div>
+              <div><dt>Remaining</dt><dd id="windowUsage">Unknown</dd></div>
               <div><dt>Reset</dt><dd id="windowReset">Unknown</dd></div>
               <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
               <div><dt>Reserve</dt><dd id="windowReserve">Unavailable</dd></div>
@@ -196,11 +196,11 @@
         <div class="fleet-stats">
           <div class="fleet-stat">
             <span id="fleetMeanFree" class="stat-value">&mdash;</span>
-            <span class="stat-label">5h mean usable</span>
+            <span class="stat-label">5h mean remaining</span>
           </div>
           <div class="fleet-stat">
             <span id="fleetWeeklyMeanFree" class="stat-value">&mdash;</span>
-            <span class="stat-label">weekly mean free</span>
+            <span class="stat-label">weekly mean remaining</span>
           </div>
           <div class="fleet-stat">
             <span id="fleetReserveReady" class="stat-value">&mdash;</span>
@@ -218,8 +218,8 @@
         <div class="strip-chart" aria-label="Available quota per account">
           <div class="strip-head" aria-hidden="true">
             <span>account</span>
-            <span>quota used</span>
-            <span class="strip-head-meta">free &middot; window reset</span>
+            <span>quota remaining</span>
+            <span class="strip-head-meta">remaining &middot; window reset</span>
           </div>
           <div id="fleetRows">
             <p class="board-empty">Waiting for account data...</p>
@@ -240,7 +240,7 @@
           <div id="fleetTimetable"></div>
         </div>
         <p class="hint fleet-hint">
-          Segments show ordinary and Reserve quota separately; red marks fresh ordinary readings at 80% or more.
+          Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
           Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
           Live quota reads run every five minutes while this page is visible and never start a Codex turn.
         </p>
@@ -330,7 +330,7 @@
             </label>
             <div class="grid-2">
               <label>
-                Quota warning threshold (%)
+                Used quota warning threshold (%)
                 <input id="telegramQuotaThresholdInput" name="telegramQuotaWarningPercent" type="number" min="1" max="100" step="1">
               </label>
               <label>
