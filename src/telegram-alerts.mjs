@@ -56,7 +56,7 @@ export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.
       if (before.usedPercent < threshold && after.usedPercent >= threshold) {
         events.push({
           type: "quota-threshold",
-          text: `${entry.label} reached ${after.usedPercent}% used (${100 - after.usedPercent}% free; crossed ${threshold}%)`
+          text: `${entry.label} reached ${100 - after.usedPercent}% free (crossed ${100 - threshold}% free)`
         });
       }
     }
@@ -69,7 +69,7 @@ export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.
       && resetAdvanceSeconds >= minimumCycleAdvanceSeconds) {
       events.push({
         type: "quota-reset",
-        text: `${entry.label} reset to ${after.usedPercent}% used; next reset ${formatTimestamp(after.resetsAt, settings.timezone)}`
+        text: `${entry.label} reset to ${100 - after.usedPercent}% free; next reset ${formatTimestamp(after.resetsAt, settings.timezone)}`
       });
     }
   }

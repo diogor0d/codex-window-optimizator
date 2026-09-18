@@ -45,7 +45,11 @@ test("reports every quota threshold crossed between polls", () => {
 
   const quotaEvents = events.filter((event) => event.type === "quota-threshold");
   assert.equal(quotaEvents.length, 3);
-  assert.deepEqual(quotaEvents.map((event) => event.text.match(/crossed (\d+)%/)[1]), ["80", "95", "100"]);
+  assert.deepEqual(quotaEvents.map((event) => event.text), [
+    "5-hour quota reached 0% free (crossed 20% free)",
+    "5-hour quota reached 0% free (crossed 5% free)",
+    "5-hour quota reached 0% free (crossed 0% free)"
+  ]);
 });
 
 test("alerts when a quota window resets", () => {
@@ -55,7 +59,8 @@ test("alerts when a quota window resets", () => {
     settings
   );
 
-  assert.ok(events.some((event) => event.type === "quota-reset" && /5-hour quota/.test(event.text)));
+  assert.ok(events.some((event) => event.type === "quota-reset"
+    && /5-hour quota reset to 95% free/.test(event.text)));
 });
 
 test("does not treat projected reset-time adjustments as quota resets", () => {
