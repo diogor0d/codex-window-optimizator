@@ -129,6 +129,34 @@
           </section>
         </div>
 
+        <section class="usage-history-panel" aria-labelledby="usageHistoryTitle">
+          <div class="usage-history-head">
+            <div>
+              <p class="eyebrow">Adaptive sampling</p>
+              <h3 id="usageHistoryTitle">Usage over time</h3>
+            </div>
+            <div id="usageHistoryRanges" class="usage-range-buttons" aria-label="Usage history range">
+              <button type="button" data-range="6h">6h</button>
+              <button type="button" data-range="24h" class="active">24h</button>
+              <button type="button" data-range="7d">7d</button>
+              <button type="button" data-range="30d">30d</button>
+            </div>
+          </div>
+          <div id="usageHistorySummary" class="usage-history-summary"></div>
+          <div id="usageHistoryChart" class="usage-history-chart">
+            <p class="board-empty">Loading usage history...</p>
+          </div>
+          <div class="usage-history-legend" aria-label="Chart legend">
+            <span><i class="usage-legend five-hour"></i>5-hour remaining</span>
+            <span><i class="usage-legend weekly"></i>Weekly remaining</span>
+            <span><i class="usage-legend reserve"></i>Reserve remaining</span>
+          </div>
+          <details class="usage-history-details">
+            <summary>Recent recorded changes</summary>
+            <div id="usageHistoryTable" class="usage-history-table"></div>
+          </details>
+        </section>
+
         <details class="account-management">
           <summary>
             <span>Manage selected account</span>
@@ -242,7 +270,7 @@
         <p class="hint fleet-hint">
           Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
           Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
-          Live quota reads run every five minutes while this page is visible and never start a Codex turn.
+          Adaptive server-side quota reads become more frequent after activity and never start a Codex turn.
         </p>
       </section>
 

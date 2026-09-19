@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { advanceAuthenticationFailure, interpretCodexLoginStatus, mergeAuthenticationProbe } from "./auth-status.mjs";
 import { recordRateLimitsNotification, recordRateLimitsRead } from "./rate-limits.mjs";
 import { buildQuotaAlertEvents, formatTelegramAlertMessages, withoutTelegramCredentials } from "./telegram-alerts.mjs";
+import { adaptivePollingInterval, appendUsageSample, latestUsageActivityAt, normalizeUsageHistory, observedUsageKeys } from "./usage-history.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -95,12 +96,14 @@ let saveChain = Promise.resolve();
 const sseClients = new Set();
 const authStatusCacheByAccount = new Map();
 const authStatusRefreshByAccount = new Map();
+const authStatusProbeAtByAccount = new Map();
 const appServers = new Map();
 const loginSessions = new Map();
 let stateRefreshPromise = null;
 let authStatusBroadcastPromise = null;
 let telegramFlushPromise = null;
 let telegramRetryTimer = null;
+let shuttingDown = false;
 
 function nowIso() {
   return new Date().toISOString();
@@ -120,7 +123,9 @@ function defaultAccount() {
     createdAt: nowIso(),
     updatedAt: nowIso(),
     threadState: clone(DEFAULT_THREAD_STATE),
-    dashboard: clone(DEFAULT_DASHBOARD)
+    dashboard: clone(DEFAULT_DASHBOARD),
+    usageHistory: [],
+    usageObservedAt: { fiveHourUsed: null, weeklyUsed: null, reserveUsed: null }
   };
 }
 
@@ -135,7 +140,9 @@ function createAccount(label = "New account") {
     createdAt: nowIso(),
     updatedAt: nowIso(),
     threadState: clone(DEFAULT_THREAD_STATE),
-    dashboard: clone(DEFAULT_DASHBOARD)
+    dashboard: clone(DEFAULT_DASHBOARD),
+    usageHistory: [],
+    usageObservedAt: { fiveHourUsed: null, weeklyUsed: null, reserveUsed: null }
   };
 }
 
@@ -182,6 +189,15 @@ function effectiveSettings(account) {
   return { ...store.settings, ...(account?.settings || {}) };
 }
 
+function normalizeUsageObservedAt(value) {
+  const legacy = Number.isFinite(Date.parse(typeof value === "string" ? value : "")) ? value : null;
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(["fiveHourUsed", "weeklyUsed", "reserveUsed"].map((key) => [
+    key,
+    Number.isFinite(Date.parse(source[key] || "")) ? source[key] : legacy
+  ]));
+}
+
 function normalizeAccount(account, fallback = defaultAccount()) {
   const normalized = {
     ...fallback,
@@ -192,7 +208,9 @@ function normalizeAccount(account, fallback = defaultAccount()) {
     codeHome: account?.codeHome || fallback.codeHome,
     settings: normalizeAccountSettings(account?.settings),
     threadState: mergeDefaults(account?.threadState || {}, DEFAULT_THREAD_STATE),
-    dashboard: mergeDefaults(account?.dashboard || {}, DEFAULT_DASHBOARD)
+    dashboard: mergeDefaults(account?.dashboard || {}, DEFAULT_DASHBOARD),
+    usageHistory: normalizeUsageHistory(account?.usageHistory),
+    usageObservedAt: normalizeUsageObservedAt(account?.usageObservedAt)
   };
   normalized.updatedAt ||= nowIso();
   normalized.createdAt ||= normalized.updatedAt;
@@ -434,6 +452,9 @@ function normalizeStore() {
 function saveStore() {
   const pending = saveChain.then(async () => {
     await ensureDirs();
+    for (const account of store.accounts) {
+      account.usageHistory = normalizeUsageHistory(account.usageHistory);
+    }
     const tmp = `${STORE_PATH}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
     await rename(tmp, STORE_PATH);
@@ -821,6 +842,7 @@ async function getAuthStatus(accountOrId = store.selectedAccountId, force = fals
   }
   const refresh = (async () => {
     const result = await runCodex(["login", "status"], { account, timeoutMs: 20000 });
+    authStatusProbeAtByAccount.set(account.id, Date.now());
     const interpreted = interpretCodexLoginStatus(result);
     const previous = authStatusCacheByAccount.get(account.id)?.status;
     const status = mergeAuthenticationProbe(previous, interpreted);
@@ -1098,13 +1120,20 @@ function recordRateLimits(account, payload, merge = false) {
   }
   const updatedAt = nowIso();
   account.dashboard ||= structuredClone(DEFAULT_DASHBOARD);
+  const previousDashboard = account.dashboard;
   account.dashboard = merge
     ? recordRateLimitsNotification(account.dashboard, redact(payload), updatedAt)
     : recordRateLimitsRead(account.dashboard, redact(payload), updatedAt);
+  const usage = appendUsageSample(account.usageHistory, account.dashboard, updatedAt);
+  account.usageHistory = usage.history;
+  account.usageObservedAt = normalizeUsageObservedAt(account.usageObservedAt);
+  for (const key of observedUsageKeys(previousDashboard, account.dashboard, payload, merge)) {
+    account.usageObservedAt[key] = updatedAt;
+  }
   if (account.id === store.selectedAccountId) {
     store.dashboard = account.dashboard;
   }
-  return updatedAt;
+  return { updatedAt, historyChanged: usage.changed, activityDetected: usage.activityDetected };
 }
 
 async function refreshAccountState(account) {
@@ -1119,7 +1148,11 @@ async function refreshAccountState(account) {
     error: null
   };
   try {
-    const auth = await getAuthStatus(account, true);
+    const cachedAuth = authStatusCacheByAccount.get(account.id);
+    const authProbeFresh = Date.now() - (authStatusProbeAtByAccount.get(account.id) || 0) < 10 * 60 * 1000;
+    const auth = cachedAuth?.status.loggedIn && authProbeFresh
+      ? cachedAuth.status
+      : await getAuthStatus(account, true);
     outcome.authChecked = !auth.probeUnavailable;
     outcome.loggedIn = auth.loggedIn;
     if (auth.probeUnavailable && !auth.loggedIn) {
@@ -1138,7 +1171,8 @@ async function refreshAccountState(account) {
       throw new Error("Codex returned no rate-limit data");
     }
     const previousDashboard = account.dashboard;
-    outcome.updatedAt = recordRateLimits(account, result);
+    const recorded = recordRateLimits(account, result);
+    outcome.updatedAt = recorded.updatedAt;
     outcome.rateLimits = "updated";
     outcome.loggedIn = true;
     markAuthValidated(account);
@@ -1195,9 +1229,12 @@ function updateDashboardState(accountId, message) {
 
   if (message.method === "account/rateLimits/updated" && params.rateLimits) {
     const previousDashboard = account.dashboard;
-    recordRateLimits(account, params.rateLimits, true);
+    const recorded = recordRateLimits(account, params.rateLimits, true);
     queueAccountQuotaAlerts(account, previousDashboard);
     void saveStore();
+    if (recorded.activityDetected) {
+      scheduleNextStateRefresh(true);
+    }
   }
 
   if (message.method === "item/completed" && params.item?.type === "userMessage") {
@@ -1560,6 +1597,8 @@ async function schedulerTick() {
 
 let schedulerTimer = null;
 let stateRefreshTimer = null;
+let stateRefreshNextAt = null;
+let lastStateRefreshFailed = false;
 
 function startScheduler() {
   if (schedulerTimer) {
@@ -1571,22 +1610,67 @@ function startScheduler() {
   void schedulerTick();
 }
 
+function stateRefreshSchedule(nowMs = Date.now()) {
+  const activityTimes = store.accounts
+    .map((account) => latestUsageActivityAt(account.usageHistory))
+    .filter(Boolean)
+    .sort();
+  const lastActivityAt = activityTimes.at(-1) || null;
+  const adaptiveIntervalMs = adaptivePollingInterval(lastActivityAt, nowMs);
+  const intervalMs = lastStateRefreshFailed ? Math.max(adaptiveIntervalMs, 2 * 60 * 1000) : adaptiveIntervalMs;
+  return {
+    lastActivityAt,
+    intervalMs,
+    nextAt: new Date(nowMs + intervalMs).toISOString()
+  };
+}
+
+function scheduleNextStateRefresh(soonerOnly = false) {
+  if (shuttingDown) {
+    return;
+  }
+  const schedule = stateRefreshSchedule();
+  const nextMs = Date.parse(schedule.nextAt);
+  if (soonerOnly && stateRefreshTimer && Number.isFinite(Date.parse(stateRefreshNextAt || ""))
+    && Date.parse(stateRefreshNextAt) <= nextMs) {
+    return;
+  }
+  clearTimeout(stateRefreshTimer);
+  stateRefreshNextAt = schedule.nextAt;
+  stateRefreshTimer = setTimeout(async () => {
+    stateRefreshTimer = null;
+    stateRefreshNextAt = null;
+    try {
+      const result = await refreshAllAccountStates("adaptive");
+      lastStateRefreshFailed = result.failed > 0;
+    } catch (error) {
+      lastStateRefreshFailed = true;
+      addActivity("refresh", "error", "Adaptive state refresh failed", { error: error.message });
+    } finally {
+      scheduleNextStateRefresh();
+    }
+  }, Math.max(1000, nextMs - Date.now()));
+}
+
 function startStateRefresh() {
+  if (!telegramRetryTimer) {
+    telegramRetryTimer = setInterval(() => {
+      void flushTelegramOutbox();
+    }, 60 * 1000);
+    void flushTelegramOutbox();
+  }
   if (stateRefreshTimer) {
     return;
   }
-  stateRefreshTimer = setInterval(() => {
-    void refreshAllAccountStates("periodic").catch((error) => {
-      addActivity("refresh", "error", "Periodic state refresh failed", { error: error.message });
-    });
-  }, 5 * 60 * 1000);
-  telegramRetryTimer = setInterval(() => {
-    void flushTelegramOutbox();
-  }, 60 * 1000);
-  void flushTelegramOutbox();
-  void refreshAllAccountStates("startup").catch((error) => {
-    addActivity("refresh", "error", "Startup state refresh failed", { error: error.message });
-  });
+  void refreshAllAccountStates("startup")
+    .then((result) => {
+      lastStateRefreshFailed = result.failed > 0;
+    })
+    .catch((error) => {
+      lastStateRefreshFailed = true;
+      addActivity("refresh", "error", "Startup state refresh failed", { error: error.message });
+    })
+    .finally(() => scheduleNextStateRefresh());
 }
 
 function parseAdminEmails() {
@@ -1845,7 +1929,35 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/refresh") {
-    return sendJson(res, 200, await refreshAllAccountStates("request"));
+    const result = await refreshAllAccountStates("request");
+    lastStateRefreshFailed = result.failed > 0;
+    scheduleNextStateRefresh();
+    return sendJson(res, 200, result);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/usage-history") {
+    const account = requireAccount(url.searchParams.get("accountId"));
+    const ranges = { "6h": 6 * 60 * 60 * 1000, "24h": 24 * 60 * 60 * 1000, "7d": 7 * 24 * 60 * 60 * 1000, "30d": 30 * 24 * 60 * 60 * 1000 };
+    const range = Object.hasOwn(ranges, url.searchParams.get("range")) ? url.searchParams.get("range") : "24h";
+    const cutoff = Date.now() - ranges[range];
+    const history = normalizeUsageHistory(account.usageHistory);
+    const firstInRange = history.findIndex((sample) => Date.parse(sample.ts) >= cutoff);
+    const baseline = firstInRange > 0
+      ? history[firstInRange - 1]
+      : firstInRange === -1 ? history.at(-1) || null : null;
+    const schedule = stateRefreshSchedule();
+    return sendJson(res, 200, {
+      accountId: account.id,
+      range,
+      baseline,
+      samples: firstInRange === -1 ? [] : history.slice(Math.max(0, firstInRange)),
+      observedAt: account.usageObservedAt,
+      polling: {
+        intervalMs: schedule.intervalMs,
+        lastActivityAt: schedule.lastActivityAt,
+        nextAt: stateRefreshNextAt || schedule.nextAt
+      }
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/api/events") {
@@ -1967,6 +2079,7 @@ async function handleApi(req, res, url) {
     appServers.delete(account.id);
     loginSessions.delete(account.id);
     authStatusCacheByAccount.delete(account.id);
+    authStatusProbeAtByAccount.delete(account.id);
     delete store.telegramAlertState.authIssues[account.id];
     delete store.telegramAlertState.authFailureCounts[account.id];
     delete store.telegramAlertState.intentionalLogouts[account.id];
@@ -2184,15 +2297,22 @@ async function bootstrap() {
   startStateRefresh();
 
   const shutdown = async () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
     addActivity("server", "info", "Shutting down");
     for (const serverInstance of appServers.values()) {
       serverInstance.stop();
     }
     clearInterval(schedulerTimer);
-    clearInterval(stateRefreshTimer);
+    clearTimeout(stateRefreshTimer);
     clearInterval(telegramRetryTimer);
     server.close();
+    await telegramFlushPromise?.catch(() => {});
+    await stateRefreshPromise?.catch(() => {});
     await saveStore();
+    await saveChain;
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

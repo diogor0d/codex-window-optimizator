@@ -706,6 +706,204 @@ button:disabled {
   font-size: 10.5px;
 }
 
+.usage-history-panel {
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px;
+}
+
+.usage-history-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.usage-history-head h3 {
+  margin: 2px 0 0;
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 15px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.usage-range-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.usage-range-buttons button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.usage-range-buttons button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.usage-history-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.usage-summary-item {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  background: var(--panel-sunken);
+  padding: 8px 10px;
+}
+
+.usage-summary-item b {
+  overflow: hidden;
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-summary-item small {
+  color: var(--muted);
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.usage-history-chart {
+  min-height: 220px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-sunken);
+  padding: 6px;
+  overflow-x: auto;
+}
+
+.usage-history-chart svg {
+  display: block;
+  width: 100%;
+  min-width: 640px;
+  height: auto;
+  min-height: 210px;
+}
+
+.usage-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-axis-x,
+.usage-axis-y {
+  fill: var(--muted);
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.usage-axis-y {
+  text-anchor: end;
+}
+
+.usage-line {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-line.five-hour {
+  stroke: var(--accent);
+}
+
+.usage-line.weekly {
+  stroke: var(--ok);
+}
+
+.usage-line.reserve {
+  stroke: var(--text);
+  stroke-dasharray: 7 5;
+}
+
+.usage-history-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-history-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.usage-legend {
+  width: 18px;
+  height: 2px;
+  background: var(--accent);
+}
+
+.usage-legend.weekly {
+  background: var(--ok);
+}
+
+.usage-legend.reserve {
+  height: 0;
+  border-top: 2px dashed var(--text);
+  background: none;
+}
+
+.usage-history-details {
+  margin-top: 10px;
+}
+
+.usage-history-details summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.usage-history-table {
+  margin-top: 8px;
+  overflow-x: auto;
+}
+
+.usage-history-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: "Spline Sans Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-history-table th,
+.usage-history-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.usage-history-table th:first-child,
+.usage-history-table td:first-child {
+  text-align: left;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -2362,6 +2560,35 @@ textarea:focus {
 
   .flap-day {
     display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .usage-history-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .usage-range-buttons {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .usage-range-buttons button {
+    min-height: 44px;
+  }
+
+  .usage-history-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage-history-chart {
+    min-height: 190px;
+    padding: 3px;
+  }
+
+  .usage-history-chart svg {
+    min-height: 180px;
   }
 }
 
