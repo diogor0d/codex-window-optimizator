@@ -9,6 +9,26 @@ function reserveSnapshot(dashboard) {
     .sort((a, b) => (Date.parse(b.updatedAt || "") || 0) - (Date.parse(a.updatedAt || "") || 0))[0] || null;
 }
 
+function hasReserveAllowance(dashboard) {
+  const window = windowByDuration(reserveSnapshot(dashboard), 10080);
+  if (!Number.isFinite(Number(window?.usedPercent))) {
+    return false;
+  }
+  return Number(window.usedPercent) < 100;
+}
+
+function hasCurrentReserveAllowance(dashboard, nowMs) {
+  if (!hasReserveAllowance(dashboard)) {
+    return false;
+  }
+  const window = windowByDuration(reserveSnapshot(dashboard), 10080);
+  if (window.resetsAt == null) {
+    return true;
+  }
+  const resetsAt = Number(window.resetsAt);
+  return Number.isFinite(resetsAt) && resetsAt * 1000 > nowMs;
+}
+
 function alertWindows(dashboard) {
   return [
     { key: "5h", label: "5-hour quota", window: windowByDuration(dashboard?.rateLimits, 300) },
@@ -75,9 +95,14 @@ export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.
   }
 
   if (settings.telegramAlertReserve) {
-    if (previous?.ordinaryUsageAllowed !== false && current?.ordinaryUsageAllowed === false) {
+    if (previous?.ordinaryUsageAllowed !== false
+      && current?.ordinaryUsageAllowed === false
+      && hasCurrentReserveAllowance(current, nowMs)) {
       events.push({ type: "reserve-active", text: "Ordinary usage is blocked; Luna Reserve fallback is active" });
-    } else if (previous?.ordinaryUsageAllowed === false && current?.ordinaryUsageAllowed === true) {
+    } else if (previous?.ordinaryUsageAllowed === false
+      && current?.ordinaryUsageAllowed === true
+      && hasReserveAllowance(previous)
+      && hasCurrentReserveAllowance(current, nowMs)) {
       events.push({ type: "reserve-recovered", text: "Ordinary usage recovered; Luna Reserve returned to standby" });
     }
   }

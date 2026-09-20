@@ -25,8 +25,8 @@ test("removes Telegram secrets from child-process environments", () => {
   }), { PATH: "bin" });
 });
 
-function dashboard({ used = 20, weekly = 30, reset = 2_000_000_000, ordinaryUsageAllowed = true } = {}) {
-  return {
+function dashboard({ used = 20, weekly = 30, reset = 2_000_000_000, ordinaryUsageAllowed = true, reserve = false } = {}) {
+  const value = {
     ordinaryUsageAllowed,
     rateLimits: {
       primary: { usedPercent: used, windowDurationMins: 300, resetsAt: reset },
@@ -38,6 +38,15 @@ function dashboard({ used = 20, weekly = 30, reset = 2_000_000_000, ordinaryUsag
       updatedAt: "2026-09-08T10:00:00.000Z"
     }
   };
+  if (reserve) {
+    value.rateLimitsByLimitId = {
+      reserve: {
+        limitName: "gpt-reserve",
+        primary: { usedPercent: 40, windowDurationMins: 10080, resetsAt: reset + 20_000 }
+      }
+    };
+  }
+  return value;
 }
 
 test("reports every quota threshold crossed between polls", () => {
@@ -93,18 +102,59 @@ test("recognizes a reset when a sparse update already lowered usage", () => {
 
 test("alerts on Luna Reserve activation and recovery", () => {
   const active = buildQuotaAlertEvents(
-    dashboard({ ordinaryUsageAllowed: true }),
-    dashboard({ ordinaryUsageAllowed: false }),
-    settings
+    dashboard({ ordinaryUsageAllowed: true, reserve: true }),
+    dashboard({ ordinaryUsageAllowed: false, reserve: true }),
+    settings,
+    1_900_000_000_000
   );
   const recovered = buildQuotaAlertEvents(
-    dashboard({ ordinaryUsageAllowed: false }),
-    dashboard({ ordinaryUsageAllowed: true }),
-    settings
+    dashboard({ ordinaryUsageAllowed: false, reserve: true }),
+    dashboard({ ordinaryUsageAllowed: true, reserve: true }),
+    settings,
+    1_900_000_000_000
   );
 
   assert.ok(active.some((event) => event.type === "reserve-active"));
   assert.ok(recovered.some((event) => event.type === "reserve-recovered"));
+});
+
+test("does not infer Luna Reserve activation when no allowance is reported", () => {
+  const events = buildQuotaAlertEvents(
+    dashboard({ ordinaryUsageAllowed: true }),
+    dashboard({ ordinaryUsageAllowed: false }),
+    settings
+  );
+
+  assert.equal(events.some((event) => event.type === "reserve-active"), false);
+});
+
+test("does not report exhausted Reserve as active or missing Reserve as standby", () => {
+  const exhausted = dashboard({ ordinaryUsageAllowed: false, reserve: true });
+  exhausted.rateLimitsByLimitId.reserve.primary.usedPercent = 100;
+  const active = buildQuotaAlertEvents(
+    dashboard({ ordinaryUsageAllowed: true, reserve: true }),
+    exhausted,
+    settings,
+    1_900_000_000_000
+  );
+  const recoveredWithoutReserve = buildQuotaAlertEvents(
+    dashboard({ ordinaryUsageAllowed: false, reserve: true }),
+    dashboard({ ordinaryUsageAllowed: true }),
+    settings,
+    1_900_000_000_000
+  );
+
+  assert.equal(active.some((event) => event.type === "reserve-active"), false);
+  assert.equal(recoveredWithoutReserve.some((event) => event.type === "reserve-recovered"), false);
+});
+
+test("reports recovery when a Reserve allowance rolls into a new window", () => {
+  const previous = dashboard({ ordinaryUsageAllowed: false, reserve: true });
+  previous.rateLimitsByLimitId.reserve.primary.resetsAt = 1_899_999_999;
+  const current = dashboard({ ordinaryUsageAllowed: true, reserve: true });
+
+  const events = buildQuotaAlertEvents(previous, current, settings, 1_900_000_000_000);
+  assert.ok(events.some((event) => event.type === "reserve-recovered"));
 });
 
 test("disables all Luna Reserve alerts with the Reserve category", () => {

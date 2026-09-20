@@ -129,34 +129,6 @@
           </section>
         </div>
 
-        <section class="usage-history-panel" aria-labelledby="usageHistoryTitle">
-          <div class="usage-history-head">
-            <div>
-              <p class="eyebrow">Adaptive sampling</p>
-              <h3 id="usageHistoryTitle">Usage over time</h3>
-            </div>
-            <div id="usageHistoryRanges" class="usage-range-buttons" aria-label="Usage history range">
-              <button type="button" data-range="6h">6h</button>
-              <button type="button" data-range="24h" class="active">24h</button>
-              <button type="button" data-range="7d">7d</button>
-              <button type="button" data-range="30d">30d</button>
-            </div>
-          </div>
-          <div id="usageHistorySummary" class="usage-history-summary"></div>
-          <div id="usageHistoryChart" class="usage-history-chart">
-            <p class="board-empty">Loading usage history...</p>
-          </div>
-          <div class="usage-history-legend" aria-label="Chart legend">
-            <span><i class="usage-legend five-hour"></i>5-hour remaining</span>
-            <span><i class="usage-legend weekly"></i>Weekly remaining</span>
-            <span><i class="usage-legend reserve"></i>Reserve remaining</span>
-          </div>
-          <details class="usage-history-details">
-            <summary>Recent recorded changes</summary>
-            <div id="usageHistoryTable" class="usage-history-table"></div>
-          </details>
-        </section>
-
         <details class="account-management">
           <summary>
             <span>Manage selected account</span>
@@ -243,6 +215,41 @@
             <span class="stat-label">near limit</span>
           </div>
         </div>
+        <section class="usage-history-panel fleet-usage-history" aria-labelledby="usageHistoryTitle">
+          <div class="usage-history-head">
+            <div>
+              <p class="eyebrow">Adaptive sampling &middot; all accounts</p>
+              <h3 id="usageHistoryTitle">Usage over time</h3>
+            </div>
+            <div id="usageHistoryRanges" class="usage-range-buttons" aria-label="Usage history range">
+              <button type="button" data-range="6h">6h</button>
+              <button type="button" data-range="24h" class="active">24h</button>
+              <button type="button" data-range="7d">7d</button>
+              <button type="button" data-range="30d">30d</button>
+            </div>
+          </div>
+          <div id="usageHistorySummary" class="usage-history-summary"></div>
+          <div class="fleet-history-charts">
+            <div class="fleet-history-chart-group">
+              <h4>5-hour remaining</h4>
+              <div id="usageHistoryFiveHourChart" class="usage-history-chart">
+                <p class="board-empty">Loading fleet usage history...</p>
+              </div>
+            </div>
+            <div class="fleet-history-chart-group">
+              <h4>Weekly remaining</h4>
+              <div id="usageHistoryWeeklyChart" class="usage-history-chart">
+                <p class="board-empty">Loading fleet usage history...</p>
+              </div>
+            </div>
+          </div>
+          <div id="usageHistoryLegend" class="usage-history-legend" aria-label="Account chart legend"></div>
+          <div id="usageHistoryLatest" class="fleet-history-latest" aria-label="Latest fleet usage values"></div>
+          <details class="fleet-history-changes">
+            <summary>Recent fleet changes</summary>
+            <div id="usageHistoryChanges"></div>
+          </details>
+        </section>
         <div class="strip-chart" aria-label="Available quota per account">
           <div class="strip-head" aria-hidden="true">
             <span>account</span>

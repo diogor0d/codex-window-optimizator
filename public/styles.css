@@ -822,17 +822,8 @@ button:disabled {
   vector-effect: non-scaling-stroke;
 }
 
-.usage-line.five-hour {
-  stroke: var(--accent);
-}
-
-.usage-line.weekly {
-  stroke: var(--ok);
-}
-
-.usage-line.reserve {
-  stroke: var(--text);
-  stroke-dasharray: 7 5;
+.usage-line.account-line {
+  opacity: 0.9;
 }
 
 .usage-history-legend {
@@ -853,37 +844,65 @@ button:disabled {
 .usage-legend {
   width: 18px;
   height: 2px;
-  background: var(--accent);
+  background: var(--account-color, var(--accent));
 }
 
-.usage-legend.weekly {
-  background: var(--ok);
+.usage-legend.pattern-1 {
+  background: repeating-linear-gradient(to right, var(--account-color) 0 7px, transparent 7px 11px);
 }
 
-.usage-legend.reserve {
-  height: 0;
-  border-top: 2px dashed var(--text);
-  background: none;
+.usage-legend.pattern-2 {
+  background: repeating-linear-gradient(to right, var(--account-color) 0 2px, transparent 2px 5px);
 }
 
-.usage-history-details {
-  margin-top: 10px;
+.usage-history-legend .unavailable {
+  opacity: 0.55;
 }
 
-.usage-history-details summary {
-  width: fit-content;
+.fleet-usage-history {
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-sunken);
+}
+
+.fleet-history-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.fleet-history-chart-group {
+  min-width: 0;
+}
+
+.fleet-history-chart-group h4 {
+  margin: 0 0 6px;
   color: var(--muted);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
-.usage-history-table {
-  margin-top: 8px;
+.fleet-usage-history .usage-history-chart {
+  min-height: 190px;
+  background: var(--panel);
+}
+
+.fleet-usage-history .usage-history-chart svg {
+  min-width: 480px;
+  min-height: 180px;
+}
+
+.fleet-history-latest,
+.fleet-history-changes > div {
+  margin-top: 10px;
   overflow-x: auto;
 }
 
-.usage-history-table table {
+.fleet-history-latest table,
+.fleet-history-changes table {
   width: 100%;
   border-collapse: collapse;
   font-family: "Spline Sans Mono", ui-monospace, monospace;
@@ -891,16 +910,48 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.usage-history-table th,
-.usage-history-table td {
-  border-bottom: 1px solid var(--line);
-  padding: 6px 8px;
+.fleet-history-latest th,
+.fleet-history-latest td,
+.fleet-history-changes th,
+.fleet-history-changes td {
+  border-top: 1px solid var(--line);
+  padding: 7px 8px;
   text-align: right;
   white-space: nowrap;
 }
 
-.usage-history-table th:first-child,
-.usage-history-table td:first-child {
+.fleet-history-latest th:first-child {
+  text-align: left;
+}
+
+.fleet-history-latest th:first-child .usage-legend {
+  display: inline-block;
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+.fleet-history-latest thead th {
+  color: var(--muted);
+  font-family: "Saira Condensed", "Saira", sans-serif;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fleet-history-changes {
+  margin-top: 10px;
+}
+
+.fleet-history-changes summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fleet-history-changes th:first-child,
+.fleet-history-changes td:first-child {
   text-align: left;
 }
 
@@ -2580,6 +2631,10 @@ textarea:focus {
 
   .usage-history-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fleet-history-charts {
+    grid-template-columns: 1fr;
   }
 
   .usage-history-chart {

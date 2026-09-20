@@ -11,6 +11,7 @@ const state = {
   refreshInFlight: false,
   fleetSignature: null,
   usageHistory: new Map(),
+  usageHistoryErrors: new Map(),
   usageHistoryRequests: new Map(),
   usageHistoryRefreshQueued: new Set(),
   usageHistoryGeneration: new Map(),
@@ -489,87 +490,120 @@ function usageStepPath(samples, key, startMs, endMs, observedAt) {
   return active ? `${path} H ${x(new Date(observedMs).toISOString()).toFixed(2)}` : path;
 }
 
-function renderUsageHistory(data = null) {
-  const chart = $("#usageHistoryChart");
+const USAGE_ACCOUNT_COLORS = ["#e07a2f", "#27896d", "#5879d6", "#9a62c7", "#c84f67", "#8a751f"];
+const USAGE_ACCOUNT_DASHES = ["none", "10 5", "2 4"];
+
+function renderUsageHistory() {
+  const fiveHourChart = $("#usageHistoryFiveHourChart");
+  const weeklyChart = $("#usageHistoryWeeklyChart");
   const summary = $("#usageHistorySummary");
-  const table = $("#usageHistoryTable");
-  if (!chart || !summary || !table) {
+  const legend = $("#usageHistoryLegend");
+  const latestHost = $("#usageHistoryLatest");
+  const changesHost = $("#usageHistoryChanges");
+  if (!fiveHourChart || !weeklyChart || !summary || !legend || !latestHost || !changesHost) {
     return;
   }
   document.querySelectorAll("#usageHistoryRanges [data-range]").forEach((button) => {
     button.classList.toggle("active", button.dataset.range === state.usageHistoryRange);
     button.setAttribute("aria-pressed", String(button.dataset.range === state.usageHistoryRange));
   });
-  if (!data) {
-    chart.innerHTML = '<p class="board-empty">Loading usage history...</p>';
-    summary.innerHTML = "";
-    table.innerHTML = "";
-    return;
-  }
-  const samples = [...(data.samples || [])].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
-  const plotSamples = [data.baseline, ...samples].filter(Boolean);
-  const latest = samples.at(-1) || data.baseline;
-  const rangeMs = USAGE_HISTORY_RANGES[data.range] || USAGE_HISTORY_RANGES["24h"];
+  const histories = state.accounts.map((account, index) => {
+    const cached = state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`);
+    return cached?.data ? { account, index, data: cached.data } : null;
+  }).filter(Boolean);
+  const rangeMs = USAGE_HISTORY_RANGES[state.usageHistoryRange] || USAGE_HISTORY_RANGES["24h"];
   const endMs = Date.now();
   const startMs = endMs - rangeMs;
-  const polling = data.polling || {};
+  const tracked = histories.filter(({ data }) => data.baseline || data.samples?.length);
+  const failedAccounts = state.accounts.filter((account) =>
+    state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`));
+  const recordedChanges = histories.reduce((sum, { data }) => sum + (data.samples?.length || 0), 0);
+  const polling = histories.map(({ data }) => data.polling).filter(Boolean)
+    .sort((a, b) => (a.intervalMs || Infinity) - (b.intervalMs || Infinity))[0] || {};
   const nextCheck = Number.isFinite(Date.parse(polling.nextAt || ""))
     ? fmtCountdown(Date.parse(polling.nextAt) - endMs)
     : "pending";
-  const observationLabel = (label, key) => {
-    const observedMs = Date.parse(data.observedAt?.[key] || "");
-    const staleAfterMs = Math.max(15 * 60 * 1000, (polling.intervalMs || 0) * 2);
-    return Number.isFinite(observedMs) && endMs - observedMs <= staleAfterMs ? `${label} remaining` : `${label} last known`;
-  };
   summary.innerHTML = [
-    [observationLabel("5h", "fiveHourUsed"), usageFree(latest, "fiveHourUsed")],
-    [observationLabel("Weekly", "weeklyUsed"), usageFree(latest, "weeklyUsed")],
-    ["Recorded changes", samples.length],
-    ["Polling", data.savedSnapshot ? "Saved snapshot" : Number.isFinite(polling.intervalMs) ? `${formatPollingInterval(polling.intervalMs)} · ${nextCheck}` : "Adaptive"]
+    ["Accounts tracked", `${tracked.length}/${state.accounts.length}${failedAccounts.length ? ` · ${failedAccounts.length} failed` : ""}`],
+    ["Recorded changes", recordedChanges],
+    ["Visible range", state.usageHistoryRange],
+    ["Polling", histories.some(({ data }) => data.savedSnapshot) ? "Saved snapshot" : Number.isFinite(polling.intervalMs) ? `${formatPollingInterval(polling.intervalMs)} · ${nextCheck}` : "Adaptive"]
   ].map(([label, value]) => `
     <span class="usage-summary-item">
-      <b>${typeof value === "number" && label !== "Recorded changes" ? `${value}%` : escapeHtml(String(value ?? "—"))}</b>
+      <b>${escapeHtml(String(value ?? "—"))}</b>
       <small>${escapeHtml(label)}</small>
     </span>`).join("");
 
-  if (!latest) {
-    chart.innerHTML = '<p class="board-empty">No usage changes recorded yet. The next successful quota read will establish a baseline.</p>';
-    table.innerHTML = '<p class="board-empty">No recorded changes.</p>';
-    return;
-  }
-
-  const paths = [
-    ["five-hour", "fiveHourUsed"],
-    ["weekly", "weeklyUsed"],
-    ["reserve", "reserveUsed"]
-  ].map(([className, key]) => {
-    const path = usageStepPath(plotSamples, key, startMs, endMs, data.observedAt?.[key]);
-    return path ? `<path class="usage-line ${className}" d="${path}"></path>` : "";
-  }).join("");
   const startLabel = new Date(startMs).toLocaleString([], rangeMs <= USAGE_HISTORY_RANGES["24h"]
     ? { hour: "2-digit", minute: "2-digit" }
     : { month: "short", day: "numeric" });
   const endLabel = new Date(endMs).toLocaleString([], { hour: "2-digit", minute: "2-digit" });
-  chart.innerHTML = `
-    <svg viewBox="0 0 1000 240" role="img" aria-labelledby="usageChartTitle usageChartDescription">
-      <title id="usageChartTitle">Remaining quota over ${escapeHtml(data.range)}</title>
-      <desc id="usageChartDescription">Step chart of five-hour, weekly, and Reserve quota remaining. Lines change only when a new value is observed.</desc>
-      ${[0, 25, 50, 75, 100].map((free) => {
-        const y = 202 - (free / 100) * 184;
-        return `<line class="usage-grid" x1="52" x2="982" y1="${y}" y2="${y}"></line><text class="usage-axis-y" x="45" y="${y + 4}">${free}%</text>`;
-      }).join("")}
-      ${paths}
-      <text class="usage-axis-x" x="52" y="229">${escapeHtml(startLabel)}</text>
-      <text class="usage-axis-x" x="982" y="229" text-anchor="end">${escapeHtml(endLabel)}</text>
-    </svg>`;
-
-  table.innerHTML = samples.length ? `
+  const renderChart = (host, key, label) => {
+    const paths = histories.map(({ account, index, data }) => {
+      const samples = [data.baseline, ...(data.samples || [])].filter(Boolean)
+        .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+      const path = usageStepPath(samples, key, startMs, endMs, data.observedAt?.[key]);
+      const color = USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length];
+      const dash = USAGE_ACCOUNT_DASHES[Math.floor(index / USAGE_ACCOUNT_COLORS.length) % USAGE_ACCOUNT_DASHES.length];
+      return path ? `<path class="usage-line account-line" style="stroke:${color};stroke-dasharray:${dash}" d="${path}"><title>${escapeHtml(`${account.label}: ${label}`)}</title></path>` : "";
+    }).join("");
+    if (!paths) {
+      const loading = state.accounts.some((account) =>
+        state.usageHistoryRequests.has(`${account.id}:${state.usageHistoryRange}`));
+      host.innerHTML = `<p class="board-empty">${loading
+        ? "Loading fleet usage history..."
+        : failedAccounts.length ? `History unavailable for ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"}.` : "No readings recorded for this window yet."}</p>`;
+      return;
+    }
+    host.innerHTML = `
+      <svg viewBox="0 0 1000 240" role="img" aria-label="${escapeHtml(`${label} by account over ${state.usageHistoryRange}`)}" aria-describedby="usageHistoryChanges">
+        <title>${escapeHtml(`${label} by account over ${state.usageHistoryRange}`)}</title>
+        <desc>Each colored step line represents one account. Lines change only when a new value is observed.</desc>
+        ${[0, 25, 50, 75, 100].map((free) => {
+          const y = 202 - (free / 100) * 184;
+          return `<line class="usage-grid" x1="52" x2="982" y1="${y}" y2="${y}"></line><text class="usage-axis-y" x="45" y="${y + 4}">${free}%</text>`;
+        }).join("")}
+        ${paths}
+        <text class="usage-axis-x" x="52" y="229">${escapeHtml(startLabel)}</text>
+        <text class="usage-axis-x" x="982" y="229" text-anchor="end">${escapeHtml(endLabel)}</text>
+      </svg>`;
+  };
+  renderChart(fiveHourChart, "fiveHourUsed", "5-hour quota remaining");
+  renderChart(weeklyChart, "weeklyUsed", "Weekly quota remaining");
+  legend.innerHTML = state.accounts.map((account, index) => `
+    <span class="${state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`) ? "unavailable" : ""}"><i class="usage-legend pattern-${Math.floor(index / USAGE_ACCOUNT_COLORS.length) % USAGE_ACCOUNT_DASHES.length}" style="--account-color:${USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length]}"></i>${escapeHtml(account.label)}</span>
+  `).join("") || '<span>No accounts configured.</span>';
+  const latestRows = state.accounts.map((account, index) => {
+    const data = state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`)?.data;
+    const latest = data?.samples?.at(-1) || data?.baseline;
+    const value = (key) => {
+      const free = usageFree(latest, key);
+      return Number.isFinite(free) ? `${free}%` : "—";
+    };
+    return `
+      <tr>
+        <th><i class="usage-legend pattern-${Math.floor(index / USAGE_ACCOUNT_COLORS.length) % USAGE_ACCOUNT_DASHES.length}" style="--account-color:${USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length]}"></i>${escapeHtml(account.label)}</th>
+        <td>${value("fiveHourUsed")}</td>
+        <td>${value("weeklyUsed")}</td>
+        <td>${latest?.ts ? escapeHtml(new Date(latest.ts).toLocaleString()) : state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`) ? "Unavailable" : "Waiting"}</td>
+      </tr>`;
+  }).join("");
+  latestHost.innerHTML = state.accounts.length ? `
     <table>
-      <thead><tr><th>Observed</th><th>5h</th><th>Weekly</th><th>Reserve</th></tr></thead>
-      <tbody>${samples.slice(-20).reverse().map((sample) => `
+      <thead><tr><th>Account</th><th>5h remaining</th><th>Weekly remaining</th><th>Last change</th></tr></thead>
+      <tbody>${latestRows}</tbody>
+    </table>` : "";
+  const recentChanges = histories.flatMap(({ account, data }) => (data.samples || []).map((sample) => ({ account, sample })))
+    .sort((a, b) => Date.parse(b.sample.ts) - Date.parse(a.sample.ts))
+    .slice(0, 40);
+  changesHost.innerHTML = recentChanges.length ? `
+    <table>
+      <thead><tr><th>Account</th><th>Observed</th><th>5h remaining</th><th>Weekly remaining</th></tr></thead>
+      <tbody>${recentChanges.map(({ account, sample }) => `
         <tr>
+          <th>${escapeHtml(account.label)}</th>
           <td><time datetime="${escapeHtml(sample.ts)}">${escapeHtml(new Date(sample.ts).toLocaleString())}</time></td>
-          ${["fiveHourUsed", "weeklyUsed", "reserveUsed"].map((key) => {
+          ${["fiveHourUsed", "weeklyUsed"].map((key) => {
             const free = usageFree(sample, key);
             return `<td>${Number.isFinite(free) ? `${free}%` : "—"}</td>`;
           }).join("")}
@@ -609,7 +643,7 @@ function saveUsageHistorySnapshot(accountId, data) {
 
 async function loadUsageHistory(accountId = selectedAccountId(), force = false) {
   if (!accountId) {
-    renderUsageHistory({ range: state.usageHistoryRange, samples: [] });
+    renderUsageHistory();
     return;
   }
   const key = `${accountId}:${state.usageHistoryRange}`;
@@ -620,11 +654,11 @@ async function loadUsageHistory(accountId = selectedAccountId(), force = false) 
     if (snapshot) {
       cached = { fetchedAt: 0, data: snapshot };
       state.usageHistory.set(key, cached);
-      renderUsageHistory(snapshot);
+      renderUsageHistory();
     }
   }
   if (!force && cached && Date.now() - cached.fetchedAt < 55_000) {
-    renderUsageHistory(cached.data);
+    renderUsageHistory();
     return;
   }
   if (!cached) {
@@ -645,30 +679,33 @@ async function loadUsageHistory(accountId = selectedAccountId(), force = false) 
         return;
       }
       state.usageHistory.set(key, { fetchedAt: Date.now(), data });
+      state.usageHistoryErrors.delete(key);
       saveUsageHistorySnapshot(accountId, data);
-      if (accountId === selectedAccountId() && requestedRange === state.usageHistoryRange) {
-        renderUsageHistory(data);
+      if (requestedRange === state.usageHistoryRange) {
+        renderUsageHistory();
       }
     } catch (error) {
-      if (accountId === selectedAccountId() && requestedRange === state.usageHistoryRange
-        && state.usageHistoryGeneration.get(key) === generation) {
-        if (cached) {
-          renderUsageHistory({ ...cached.data, savedSnapshot: true });
-        } else {
-          $("#usageHistoryChart").innerHTML = `<p class="board-empty">${escapeHtml(error.message)}</p>`;
-        }
+      state.usageHistoryErrors.set(key, error.message);
+      if (requestedRange === state.usageHistoryRange && state.usageHistoryGeneration.get(key) === generation) {
+        renderUsageHistory();
       }
     } finally {
       if (state.usageHistoryRequests.get(key) === request) {
         state.usageHistoryRequests.delete(key);
       }
       if (state.usageHistoryRefreshQueued.delete(key)) {
-        void loadUsageHistory(accountId, true);
+        return loadUsageHistory(accountId, true);
       }
     }
   })();
   state.usageHistoryRequests.set(key, request);
   return request;
+}
+
+async function loadFleetUsageHistory(force = false) {
+  const requests = state.accounts.map((account) => loadUsageHistory(account.id, force));
+  renderUsageHistory();
+  await Promise.allSettled(requests);
 }
 
 function fmtHorizonDay(ms) {
@@ -755,6 +792,7 @@ function updateStatus(status) {
   badge($("#schedulerBadge"), status.scheduler.enabled ? "Enabled" : "Paused", status.scheduler.enabled ? "ok" : "warn");
   updateWindowSummary(status.dashboard || {});
   renderFleet();
+  renderUsageHistory();
 
   $("#pauseBtn").disabled = !status.scheduler.enabled;
   $("#resumeBtn").disabled = status.scheduler.enabled;
@@ -852,7 +890,7 @@ async function refreshAllState({ interactive = true } = {}) {
       ]
     : [refreshStatus(), refreshActivity()]);
   const reloadFailures = reloads.filter((result) => result.status === "rejected").length;
-  await loadUsageHistory(accountId, true);
+  await loadFleetUsageHistory(true);
 
   if (interactive) {
     if (upstreamError) {
@@ -890,7 +928,7 @@ async function refreshVisibleState() {
     return;
   }
   await Promise.allSettled([refreshStatus(), refreshActivity()]);
-  await loadUsageHistory(selectedAccountId());
+  await loadFleetUsageHistory();
 }
 
 function startAutoRefresh() {
@@ -905,7 +943,7 @@ function startAutoRefresh() {
 async function selectAccount(accountId) {
   await api("/api/accounts/select", { method: "POST", body: JSON.stringify({ accountId }) });
   await refreshStatus();
-  await loadUsageHistory(accountId, true);
+  await loadFleetUsageHistory();
   renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId)}`));
 }
 
@@ -1889,7 +1927,7 @@ function connectEvents() {
     addActivity(event, true);
     if (event.message === "account/rateLimits/updated") {
       void refreshStatus();
-      if (event.payload?.accountId === selectedAccountId()) {
+      if (event.payload?.accountId) {
         void loadUsageHistory(event.payload.accountId, true);
       }
     }
@@ -1900,7 +1938,7 @@ function connectEvents() {
   });
   events.addEventListener("status", async () => {
     await refreshStatus();
-    await loadUsageHistory(selectedAccountId(), true);
+    await loadFleetUsageHistory(true);
   });
   events.addEventListener("run", async () => {
     await Promise.allSettled([refreshStatus(), refreshActivity()]);
@@ -1968,7 +2006,7 @@ function bindActions() {
     }
     state.usageHistoryRange = button.dataset.range;
     renderUsageHistory();
-    void loadUsageHistory(selectedAccountId(), true);
+    void loadFleetUsageHistory(true);
   });
   $("#refreshBtn").addEventListener("click", () => {
     void refreshAllState();
@@ -2098,6 +2136,7 @@ function bindActions() {
     state.selectedAccountId = result.selectedAccountId;
     renderAccounts();
     await refreshStatus();
+    await loadFleetUsageHistory();
   });
 }
 
@@ -2148,11 +2187,11 @@ async function init() {
   startClock();
   const hydrated = hydrateStatusSnapshot();
   if (hydrated) {
-    void loadUsageHistory(selectedAccountId());
+    void loadFleetUsageHistory();
   }
   connectEvents();
   await Promise.all([refreshSettings(), refreshStatus(), refreshActivity()]);
-  await loadUsageHistory(selectedAccountId());
+  await loadFleetUsageHistory();
   renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
   setInterval(tickFleet, 1000);
   startAutoRefresh();

@@ -67,8 +67,8 @@ Then log in: **Account console → Manage selected account → Start device logi
 - Additional credentials live under `/data/codex-accounts/<account-id>/`.
 - Enabled accounts are pinged at every configured time; disabled accounts stay logged in but are skipped.
 - The server is the sole automatic quota poller and continues when no browser is open. It checks every minute for 10 minutes after detected consumption, then backs off to 2, 5, and finally 10 minutes as the account fleet stays idle. A manual refresh remains available.
-- Meaningful 5-hour, weekly, and Reserve changes are retained per account for 30 days plus one boundary baseline, capped at 5,000 samples, and shown under **Usage over time**. Unchanged reads are not stored.
-- Reserve is shown separately from ordinary quota, including its weekly reset date. Its state becomes **active** only when Codex explicitly reports that ordinary usage is unavailable; percentages are never used to infer activation. Available usage-reset credits and every reported expiration are shown for each account.
+- Meaningful 5-hour, weekly, and Reserve changes are retained per account for 30 days plus one boundary baseline, capped at 5,000 samples. **Usage over time** appears in **Fleet windows** as separate 5-hour and weekly charts with one line per account. Unchanged reads are not stored.
+- Reserve is shown separately from ordinary quota, including its weekly reset date. Its state becomes **active** only when Codex explicitly reports that ordinary usage is unavailable and a current Reserve allowance exists; percentages are never used to infer activation. Available usage-reset credits and every reported expiration are shown for each account.
 - **Remove** stops the account's app-server and permanently deletes its Codex home, including `auth.json`. The last remaining account cannot be removed.
 - Login, logout, and run-now controls all apply to the selected account.
 
