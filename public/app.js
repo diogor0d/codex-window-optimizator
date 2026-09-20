@@ -443,6 +443,9 @@ function fmtWeeklyReset(ms) {
 }
 
 function usageFree(sample, key) {
+  if (key === "fiveHourUsed" && sample?.weeklyUsed >= 100) {
+    return 0;
+  }
   return Number.isFinite(sample?.[key]) ? clampPercent(100 - sample[key]) : null;
 }
 
@@ -493,6 +496,101 @@ function usageStepPath(samples, key, startMs, endMs, observedAt) {
 const USAGE_ACCOUNT_COLORS = ["#e07a2f", "#27896d", "#5879d6", "#9a62c7", "#c84f67", "#8a751f"];
 const USAGE_ACCOUNT_DASHES = ["none", "10 5", "2 4"];
 
+function usageObservationAt(data, key) {
+  if (key !== "fiveHourUsed") {
+    return data.observedAt?.[key];
+  }
+  return [data.observedAt?.fiveHourUsed, data.observedAt?.weeklyUsed]
+    .filter((value) => Number.isFinite(Date.parse(value || "")))
+    .sort()
+    .at(-1);
+}
+
+function usagePointData(samples, key, account, color, startMs, endMs, observedAt) {
+  const observedMs = Math.min(endMs, Date.parse(observedAt || ""));
+  if (!Number.isFinite(observedMs)) {
+    return [];
+  }
+  return samples.filter((sample) => {
+    const sampleMs = Date.parse(sample.ts);
+    return sampleMs >= startMs && sampleMs <= observedMs && Number.isFinite(usageFree(sample, key));
+  }).map((sample) => {
+    const free = usageFree(sample, key);
+    const x = 52 + ((Date.parse(sample.ts) - startMs) / (endMs - startMs)) * 930;
+    const y = 202 - (free / 100) * 184;
+    return { x, y, color, detail: `${account.label} · ${free}% remaining · ${new Date(sample.ts).toLocaleString()}` };
+  });
+}
+
+function bindUsageChartTooltips(host, points) {
+  const svg = host.querySelector("svg");
+  const target = host.querySelector(".usage-hover-layer");
+  const marker = host.querySelector(".usage-hover-marker");
+  if (!svg || !target || !marker || !points.length) {
+    return;
+  }
+  const tooltip = document.createElement("div");
+  tooltip.className = "usage-chart-tooltip";
+  tooltip.id = `${host.id}Tooltip`;
+  tooltip.setAttribute("role", "status");
+  tooltip.setAttribute("aria-live", "polite");
+  tooltip.hidden = true;
+  host.append(tooltip);
+  target.setAttribute("aria-describedby", tooltip.id);
+  let selectedIndex = points.length - 1;
+  const show = (index, anchorX, anchorY) => {
+    selectedIndex = index;
+    const point = points[index];
+    tooltip.textContent = point.detail;
+    tooltip.hidden = false;
+    marker.setAttribute("cx", point.x);
+    marker.setAttribute("cy", point.y);
+    marker.style.setProperty("--point-color", point.color);
+    marker.removeAttribute("hidden");
+    const placeLeft = anchorX + tooltip.offsetWidth + 20 > window.innerWidth;
+    const placeBelow = anchorY - tooltip.offsetHeight - 10 < 0;
+    tooltip.style.left = `${anchorX}px`;
+    tooltip.style.top = `${anchorY}px`;
+    tooltip.style.transform = `translate(${placeLeft ? "calc(-100% - 10px)" : "10px"}, ${placeBelow ? "10px" : "calc(-100% - 10px)"})`;
+  };
+  const hide = () => {
+    tooltip.hidden = true;
+    marker.setAttribute("hidden", "");
+  };
+  const nearestPoint = (event) => {
+    const screenPoint = svg.createSVGPoint();
+    screenPoint.x = event.clientX;
+    screenPoint.y = event.clientY;
+    const cursor = screenPoint.matrixTransform(svg.getScreenCTM().inverse());
+    return points.reduce((best, point, index) => {
+      const distance = (point.x - cursor.x) ** 2 + (point.y - cursor.y) ** 2;
+      return distance < best.distance ? { index, distance } : best;
+    }, { index: 0, distance: Infinity }).index;
+  };
+  target.addEventListener("pointermove", (event) => show(nearestPoint(event), event.clientX, event.clientY));
+  target.addEventListener("pointerdown", (event) => show(nearestPoint(event), event.clientX, event.clientY));
+  target.addEventListener("pointerleave", () => {
+    if (document.activeElement !== target) {
+      hide();
+    }
+  });
+  target.addEventListener("focus", () => {
+    const rect = target.getBoundingClientRect();
+    show(selectedIndex, rect.left + rect.width / 2, rect.top + rect.height / 2);
+  });
+  target.addEventListener("blur", hide);
+  target.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const next = Math.max(0, Math.min(points.length - 1, selectedIndex + direction));
+    const rect = target.getBoundingClientRect();
+    show(next, rect.left + rect.width / 2, rect.top + rect.height / 2);
+  });
+}
+
 function renderUsageHistory() {
   const fiveHourChart = $("#usageHistoryFiveHourChart");
   const weeklyChart = $("#usageHistoryWeeklyChart");
@@ -539,12 +637,15 @@ function renderUsageHistory() {
     : { month: "short", day: "numeric" });
   const endLabel = new Date(endMs).toLocaleString([], { hour: "2-digit", minute: "2-digit" });
   const renderChart = (host, key, label) => {
+    const plotted = [];
     const paths = histories.map(({ account, index, data }) => {
       const samples = [data.baseline, ...(data.samples || [])].filter(Boolean)
         .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
-      const path = usageStepPath(samples, key, startMs, endMs, data.observedAt?.[key]);
+      const observedAt = usageObservationAt(data, key);
+      const path = usageStepPath(samples, key, startMs, endMs, observedAt);
       const color = USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length];
       const dash = USAGE_ACCOUNT_DASHES[Math.floor(index / USAGE_ACCOUNT_COLORS.length) % USAGE_ACCOUNT_DASHES.length];
+      plotted.push(...usagePointData(samples, key, account, color, startMs, endMs, observedAt));
       return path ? `<path class="usage-line account-line" style="stroke:${color};stroke-dasharray:${dash}" d="${path}"><title>${escapeHtml(`${account.label}: ${label}`)}</title></path>` : "";
     }).join("");
     if (!paths) {
@@ -556,7 +657,7 @@ function renderUsageHistory() {
       return;
     }
     host.innerHTML = `
-      <svg viewBox="0 0 1000 240" role="img" aria-label="${escapeHtml(`${label} by account over ${state.usageHistoryRange}`)}" aria-describedby="usageHistoryChanges">
+      <svg viewBox="0 0 1000 240" role="group" aria-label="${escapeHtml(`${label} by account over ${state.usageHistoryRange}`)}" aria-describedby="usageHistoryChanges">
         <title>${escapeHtml(`${label} by account over ${state.usageHistoryRange}`)}</title>
         <desc>Each colored step line represents one account. Lines change only when a new value is observed.</desc>
         ${[0, 25, 50, 75, 100].map((free) => {
@@ -564,9 +665,12 @@ function renderUsageHistory() {
           return `<line class="usage-grid" x1="52" x2="982" y1="${y}" y2="${y}"></line><text class="usage-axis-y" x="45" y="${y + 4}">${free}%</text>`;
         }).join("")}
         ${paths}
+        <circle class="usage-hover-marker" cx="0" cy="0" r="6" hidden></circle>
+        <rect class="usage-hover-layer" x="52" y="18" width="930" height="184" tabindex="0" aria-label="Hover for the nearest recorded point. Use left and right arrow keys to inspect points."></rect>
         <text class="usage-axis-x" x="52" y="229">${escapeHtml(startLabel)}</text>
         <text class="usage-axis-x" x="982" y="229" text-anchor="end">${escapeHtml(endLabel)}</text>
       </svg>`;
+    bindUsageChartTooltips(host, plotted.sort((a, b) => a.x - b.x));
   };
   renderChart(fiveHourChart, "fiveHourUsed", "5-hour quota remaining");
   renderChart(weeklyChart, "weeklyUsed", "Weekly quota remaining");
@@ -2210,4 +2314,4 @@ if (typeof document !== "undefined") {
   });
 }
 
-export { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, snapshotDashboard };
+export { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, snapshotDashboard, usageFree, usageObservationAt };

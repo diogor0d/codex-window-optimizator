@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, snapshotDashboard } from "../public/app.js";
+import { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, snapshotDashboard, usageFree, usageObservationAt } from "../public/app.js";
 
 const future = 2_000_000_000;
 
@@ -23,6 +23,20 @@ test("weekly exhaustion forces five-hour usable quota to zero", () => {
   assert.equal(effective.used, 100);
   assert.equal(effective.free, 0);
   assert.equal(effective.windowDurationMins, 10080);
+});
+
+test("weekly exhaustion forces five-hour history remaining to zero", () => {
+  assert.equal(usageFree({ fiveHourUsed: 25, weeklyUsed: 100 }, "fiveHourUsed"), 0);
+  assert.equal(usageFree({ fiveHourUsed: 25, weeklyUsed: 99 }, "fiveHourUsed"), 75);
+});
+
+test("weekly observations extend the derived five-hour history line", () => {
+  const observedAt = {
+    fiveHourUsed: "2026-09-20T10:00:00.000Z",
+    weeklyUsed: "2026-09-20T10:05:00.000Z"
+  };
+  assert.equal(usageObservationAt({ observedAt }, "fiveHourUsed"), observedAt.weeklyUsed);
+  assert.equal(usageObservationAt({ observedAt }, "weeklyUsed"), observedAt.weeklyUsed);
 });
 
 test("keeps partly consumed weekly quota separate from the five-hour window", () => {

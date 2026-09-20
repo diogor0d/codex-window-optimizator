@@ -215,6 +215,16 @@
             <span class="stat-label">near limit</span>
           </div>
         </div>
+        <div class="strip-chart" aria-label="Available quota per account">
+          <div class="strip-head" aria-hidden="true">
+            <span>account</span>
+            <span>quota remaining</span>
+            <span class="strip-head-meta">remaining &middot; window reset</span>
+          </div>
+          <div id="fleetRows">
+            <p class="board-empty">Waiting for account data...</p>
+          </div>
+        </div>
         <section class="usage-history-panel fleet-usage-history" aria-labelledby="usageHistoryTitle">
           <div class="usage-history-head">
             <div>
@@ -250,16 +260,6 @@
             <div id="usageHistoryChanges"></div>
           </details>
         </section>
-        <div class="strip-chart" aria-label="Available quota per account">
-          <div class="strip-head" aria-hidden="true">
-            <span>account</span>
-            <span>quota remaining</span>
-            <span class="strip-head-meta">remaining &middot; window reset</span>
-          </div>
-          <div id="fleetRows">
-            <p class="board-empty">Waiting for account data...</p>
-          </div>
-        </div>
         <div class="weekly-horizon" role="group" aria-labelledby="weeklyHorizonTitle">
           <div class="weekly-horizon-head">
             <p id="weeklyHorizonTitle" class="eyebrow">Weekly reset horizon &middot; next 7 days</p>
