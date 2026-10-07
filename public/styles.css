@@ -2790,10 +2790,12 @@ summary { border-radius: 12px; }
   .account-overview-grid { padding: 0 16px 16px; gap: 12px; }
   .account-snapshot { padding: 16px; }
   .account-management > summary { padding: 16px 46px 16px 16px; }
-  .mobile-dock { position: fixed; top: auto; bottom: calc(12px + env(safe-area-inset-bottom)); left: 12px; right: 12px; transform: none; width: auto; max-width: none; margin: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--glass-edge); border-radius: 28px; padding: 5px; min-height: 64px; box-shadow: 0 8px 30px rgba(20, 35, 65, .22), inset 0 1px 0 var(--glass-edge); }
+  .board-wrap { width: 100%; margin: 0; padding: 0; }
+}
+@media (max-width: 600px), (max-width: 900px) and (pointer: coarse) {
+  .mobile-dock { position: fixed; top: auto; bottom: 0; left: 0; right: 0; transform: none; width: auto; max-width: none; margin: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--glass-edge); border-width: 1px 0 0; border-radius: 24px 24px 0 0; padding: 5px max(5px, env(safe-area-inset-right)) calc(5px + env(safe-area-inset-bottom)) max(5px, env(safe-area-inset-left)); min-height: 64px; box-shadow: 0 -4px 24px rgba(20, 35, 65, .12), inset 0 1px 0 var(--glass-edge); }
   .mobile-dock a { display: grid; gap: 5px; padding: 8px 2px; min-height: 54px; font-size: 10px; border-radius: 22px; }
   .mobile-dock svg { width: 20px; height: 20px; }
-  .board-wrap { width: 100%; margin: 0; padding: 0; }
 }
 @media (prefers-reduced-transparency: reduce) {
   :root, :root[data-theme="dark"] { --glass: var(--panel); }
