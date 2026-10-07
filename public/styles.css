@@ -2602,6 +2602,9 @@ button:hover { box-shadow: 0 3px 12px color-mix(in srgb, var(--accent) 12%, tran
 button.primary { box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 20%, transparent); }
 .topbar {
   max-width: 1480px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px 154px auto;
+  align-items: start;
   margin: 8px auto;
   padding: 12px 24px;
   border: 0;
@@ -2611,14 +2614,15 @@ button.primary { box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 20%, tr
 .brand-mark { width: 42px; height: 42px; filter: drop-shadow(0 3px 6px rgba(40, 70, 120, .18)); }
 .brand-name h1 { font-size: 21px; letter-spacing: -.025em; white-space: normal; }
 .brand-sub { font-size: 12px; margin-top: 3px; }
-.station-clock { margin-left: auto; min-width: 0; }
+.station-clock { margin-left: 0; min-width: 0; }
 .station-clock .eyebrow { max-width: 210px; font-size: 10px; }
 .clock-digits { font-family: var(--font-ui); font-size: 26px; letter-spacing: -.035em; }
-.next-module { min-width: 150px; border-left: 1px solid var(--line-strong); padding-left: 24px; }
+.next-module { min-width: 0; border-left: 1px solid var(--line-strong); padding-left: 16px; }
 .flap-strip { gap: 0; }
 .flap-line { margin-top: 2px; }
+.next-module .flap-line { flex-wrap: wrap; }
 .flap-day { font-size: 10px; padding: 4px 8px; background: var(--glass); border-radius: 999px; letter-spacing: .02em; }
-.topbar-actions { margin-left: 0; gap: 6px; }
+.topbar-actions { margin-left: 0; gap: 6px; flex-wrap: nowrap; justify-self: end; }
 .mobile-dock {
   position: fixed;
   top: auto;
@@ -2736,13 +2740,13 @@ summary { border-radius: 12px; }
 .terminal { border-radius: 16px; }
 .connection-banner { border-radius: 18px; margin-bottom: 16px; }
 @media (max-width: 1100px) {
-  .topbar { flex-wrap: wrap; gap: 10px 16px; }
-  .brand { flex: 1; }
-  .station-clock { margin-left: 0; }
-  .topbar-actions { width: 100%; justify-content: flex-end; }
+  .topbar { gap: 10px 12px; }
+  .topbar-actions { width: auto; justify-content: flex-end; }
   .layout { padding: 0 16px; gap: 16px; }
 }
 @media (max-width: 900px) {
+  .topbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .brand { grid-column: 1 / -1; }
   .layout { grid-template-columns: minmax(0, 1fr); }
   .account-overview-grid { grid-template-columns: minmax(0, 1fr); }
   .fleet-history-charts { grid-template-columns: minmax(0, 1fr); }
@@ -2753,15 +2757,16 @@ summary { border-radius: 12px; }
   html { scroll-padding-top: 14px; }
   .topbar { display: grid; grid-template-columns: 1fr 1fr; margin: 0; padding: calc(14px + env(safe-area-inset-top)) 16px 14px; gap: 12px; }
   .brand { grid-column: 1 / -1; }
+  .station-clock { grid-column: 1; grid-row: 2; }
   .brand-name h1 { font-size: 20px; }
   .brand-mark { width: 36px; height: 36px; }
   .station-clock .eyebrow { font-size: 9px; }
-  .next-module { min-width: 0; padding-left: 16px; }
+  .next-module { grid-column: 1; grid-row: 3; min-width: 0; padding-left: 0; border-left: 0; }
   .clock-digits, .flap-cell span, .flap-colon { font-size: 25px; }
   .flap-cell { width: auto; }
   .flap-day { font-size: 9px; }
-  .topbar-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .topbar-actions button { font-size: 12px; letter-spacing: 0; }
+  .topbar-actions { grid-column: 2; grid-row: 2 / 4; align-self: start; width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); }
+  .topbar-actions button { min-height: 44px; font-size: 12px; letter-spacing: 0; }
   .layout { padding: 0 max(12px, env(safe-area-inset-left)) 0 max(12px, env(safe-area-inset-right)); gap: 16px; }
   .layout > section { scroll-margin-top: 14px; }
   .panel { padding: 16px; border-radius: 22px; }
