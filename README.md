@@ -4,7 +4,7 @@
 
 # Codex Window Runner
 
-**A station timetable for your Codex fleet.**
+**A clear view of your Codex account windows.**
 
 Four departures a day. Every account on its own five-hour window.
 One private, self-hosted console.
@@ -23,7 +23,7 @@ It cannot see OpenAI's internal reset clock. What it does is simple and predicta
 
 ## The console
 
-A signal-box dashboard: a live station clock, a split-flap **next send** module, per-account usage windows with reset times, distinct weekly `gpt-reserve` fallback allowances, a fleet-wide quota strip with a 24-hour reset timetable, and a departures board built from actual run history.
+A Liquid Glass-inspired dashboard with translucent floating navigation, native system typography, light and dark themes, and clear data surfaces. Fleet quota, history, reset horizons, account controls, schedules, and activity share one responsive layout. Reduced motion, reduced transparency, keyboard focus, and mobile safe areas are respected.
 
 ```
 TODAY'S SENDS                        ✓ done   ✕ failed   ⏸ skipped   ● running
@@ -67,7 +67,7 @@ Then log in: **Account console → Manage selected account → Start device logi
 - Additional credentials live under `/data/codex-accounts/<account-id>/`.
 - Enabled accounts are pinged at every configured time; disabled accounts stay logged in but are skipped.
 - The server is the sole automatic quota poller and continues when no browser is open. It checks every minute for 10 minutes after detected consumption, then backs off to 2, 5, and finally 10 minutes as the account fleet stays idle. A manual refresh remains available.
-- Meaningful 5-hour, weekly, and Reserve changes are retained per account for 30 days plus one boundary baseline, capped at 5,000 samples. **Usage over time** appears in **Fleet windows** as separate 5-hour and weekly charts with one line per account. Unchanged reads are not stored.
+- Meaningful 5-hour, weekly, and Reserve changes are retained per account for 30 days plus one boundary baseline, capped at 5,000 samples. **Quota history** appears in **Fleet overview** as separate 5-hour and weekly charts with one line per account. The plots resize without horizontal scrolling; date-aware ticks adapt to the available width. Hover or tap a chart to inspect every account at the same time, including overlapping lines, or focus it and use the arrow keys and Home/End. Account buttons toggle series for comparisons. Missing observations remain gaps; cached snapshots and observations outside their reported observation boundary are labeled. Range summaries show observed lows, changes, and replenishments without claiming an exact historical reset time. Unchanged reads are not stored.
 - Reserve is shown separately from ordinary quota, including its weekly reset date. Its state becomes **active** only when Codex explicitly reports that ordinary usage is unavailable and a current Reserve allowance exists; percentages are never used to infer activation. Available usage-reset credits and every reported expiration are shown for each account.
 - **Remove** stops the account's app-server and permanently deletes its Codex home, including `auth.json`. The last remaining account cannot be removed.
 - Login, logout, and run-now controls all apply to the selected account.

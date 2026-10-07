@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Codex Window Runner</title>
     <meta name="description" content="Private mobile operations console for Codex account windows and scheduled sends.">
-    <meta name="theme-color" content="#161e28">
+    <meta name="theme-color" content="#eef2f8">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15,23 +15,20 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="icon" href="/favicon.ico" sizes="32x32">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Saira:wght@400;500;600&family=Saira+Condensed:wght@500;600&family=Spline+Sans+Mono:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
         <svg class="brand-mark" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="21" height="21" rx="5.5" fill="#10161d"/>
-          <rect x="4.5" y="7" width="3.4" height="10" rx="1.7" fill="#94a9bd"/>
-          <rect x="10.3" y="5.3" width="3.4" height="13.4" rx="1.7" fill="#f5a83c"/>
-          <rect x="16.1" y="7" width="3.4" height="10" rx="1.7" fill="#94a9bd"/>
+          <rect x="1.5" y="1.5" width="21" height="21" rx="5.5" fill="#315edb"/>
+          <rect x="4.5" y="7" width="3.4" height="10" rx="1.7" fill="#ffffff"/>
+          <rect x="10.3" y="5.3" width="3.4" height="13.4" rx="1.7" fill="#b8ccff"/>
+          <rect x="16.1" y="7" width="3.4" height="10" rx="1.7" fill="#ffffff"/>
         </svg>
         <div class="brand-name">
           <h1>Codex Window Runner</h1>
-          <p class="brand-sub">scheduled sends · private ops console</p>
+          <p class="brand-sub">Account windows, in sync</p>
         </div>
       </div>
       <div class="station-clock">
@@ -52,6 +49,29 @@
       </div>
     </header>
 
+    <nav class="mobile-dock" aria-label="Console sections">
+      <a href="#fleet" data-section="fleet">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m6 13v-7m5 7V7"/></svg>
+        <span>Fleet</span>
+      </a>
+      <a href="#account" data-section="account">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19c.7-3.5 2.8-5.3 6.5-5.3s5.8 1.8 6.5 5.3"/></svg>
+        <span>Account</span>
+      </a>
+      <a href="#schedule" data-section="schedule">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"/><path d="M8 3.5v4m8-4v4M4 10h16m-8 3v3l2 1"/></svg>
+        <span>Schedule</span>
+      </a>
+      <a href="#send" data-section="send">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5.5 16-3.1-6.1L4 12Z"/><path d="m11.4 13.9 4-4"/></svg>
+        <span>Send</span>
+      </a>
+      <a href="#activity" data-section="activity">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="7" cy="6" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="10" cy="18" r="1"/></svg>
+        <span>Activity</span>
+      </a>
+    </nav>
+
     <div id="connectionBanner" class="connection-banner" role="status" hidden>
       <div>
         <strong>Server unavailable</strong>
@@ -66,6 +86,102 @@
     </div>
 
     <main class="layout">
+      <section id="fleet" class="panel fleet-panel" aria-labelledby="fleetTitle">
+        <div class="section-header">
+          <div><p class="eyebrow">Your accounts at a glance</p><h2 id="fleetTitle">Fleet overview</h2></div>
+          <div class="fleet-header-state">
+            <time id="fleetUpdated" class="fleet-updated">No live reading</time>
+            <span id="fleetBadge" class="badge neutral">No data</span>
+          </div>
+        </div>
+        <div class="fleet-stats">
+          <div class="fleet-stat">
+            <span id="fleetMeanFree" class="stat-value">&mdash;</span>
+            <span class="stat-label">5h mean remaining</span>
+          </div>
+          <div class="fleet-stat">
+            <span id="fleetWeeklyMeanFree" class="stat-value">&mdash;</span>
+            <span class="stat-label">weekly mean remaining</span>
+          </div>
+          <div class="fleet-stat">
+            <span id="fleetReserveReady" class="stat-value">&mdash;</span>
+            <span id="fleetReserveLabel" class="stat-label">reserve ready</span>
+          </div>
+          <div class="fleet-stat">
+            <span id="fleetNextReset" class="stat-value">&mdash;</span>
+            <span id="fleetNextResetLabel" class="stat-label">next reset</span>
+          </div>
+          <div class="fleet-stat">
+            <span id="fleetNearLimit" class="stat-value">&mdash;</span>
+            <span class="stat-label">near limit</span>
+          </div>
+        </div>
+        <div class="strip-chart" aria-label="Available quota per account">
+          <div class="strip-head" aria-hidden="true">
+            <span>account</span>
+            <span>quota remaining</span>
+            <span class="strip-head-meta">remaining &middot; window reset</span>
+          </div>
+          <div id="fleetRows">
+            <p class="board-empty">Waiting for account data...</p>
+          </div>
+        </div>
+        <section class="usage-history-panel fleet-usage-history" aria-labelledby="usageHistoryTitle">
+          <div class="usage-history-head">
+            <div>
+              <p class="eyebrow">Compare accounts &middot; recorded readings</p>
+              <h3 id="usageHistoryTitle">Quota history</h3>
+            </div>
+            <div id="usageHistoryRanges" class="usage-range-buttons" aria-label="Usage history range">
+              <button type="button" data-range="6h">6h</button>
+              <button type="button" data-range="24h" class="active">24h</button>
+              <button type="button" data-range="7d">7d</button>
+              <button type="button" data-range="30d">30d</button>
+            </div>
+          </div>
+          <div id="usageHistorySummary" class="usage-history-summary"></div>
+          <div class="fleet-history-charts">
+            <div class="fleet-history-chart-group">
+              <h4>5-hour window</h4>
+              <div id="usageHistoryFiveHourChart" class="usage-history-chart">
+                <p class="board-empty">Loading fleet usage history...</p>
+              </div>
+            </div>
+            <div class="fleet-history-chart-group">
+              <h4>Weekly allowance</h4>
+              <div id="usageHistoryWeeklyChart" class="usage-history-chart">
+                <p class="board-empty">Loading fleet usage history...</p>
+              </div>
+            </div>
+          </div>
+          <div id="usageHistoryLegend" class="usage-history-legend" aria-label="Account chart legend"></div>
+          <div id="usageHistoryLatest" class="fleet-history-latest" aria-label="Latest fleet usage values"></div>
+          <details class="fleet-history-changes">
+            <summary>Recent fleet changes</summary>
+            <div id="usageHistoryChanges"></div>
+          </details>
+        </section>
+        <div class="weekly-horizon" role="group" aria-labelledby="weeklyHorizonTitle">
+          <div class="weekly-horizon-head">
+            <p id="weeklyHorizonTitle" class="eyebrow">Weekly reset horizon &middot; next 7 days</p>
+            <span class="weekly-horizon-legend" aria-label="Marker legend">
+              <span><i class="weekly-legend-marker ordinary"></i>Weekly</span>
+              <span><i class="weekly-legend-marker reserve"></i>Reserve</span>
+            </span>
+          </div>
+          <div id="fleetWeeklyHorizon"></div>
+        </div>
+        <div class="reset-timetable">
+          <p class="eyebrow tt-title">Reset timetable &middot; next 24h</p>
+          <div id="fleetTimetable"></div>
+        </div>
+        <p class="hint fleet-hint">
+          Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
+          Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
+          Adaptive server-side quota reads become more frequent after activity and never start a Codex turn.
+        </p>
+      </section>
+
       <section id="account" class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
         <div class="section-header account-console-header">
           <div>
@@ -185,102 +301,6 @@
         </details>
       </section>
 
-      <section id="fleet" class="panel fleet-panel" aria-labelledby="fleetTitle">
-        <div class="section-header">
-          <h2 id="fleetTitle">Fleet windows</h2>
-          <div class="fleet-header-state">
-            <time id="fleetUpdated" class="fleet-updated">No live reading</time>
-            <span id="fleetBadge" class="badge neutral">No data</span>
-          </div>
-        </div>
-        <div class="fleet-stats">
-          <div class="fleet-stat">
-            <span id="fleetMeanFree" class="stat-value">&mdash;</span>
-            <span class="stat-label">5h mean remaining</span>
-          </div>
-          <div class="fleet-stat">
-            <span id="fleetWeeklyMeanFree" class="stat-value">&mdash;</span>
-            <span class="stat-label">weekly mean remaining</span>
-          </div>
-          <div class="fleet-stat">
-            <span id="fleetReserveReady" class="stat-value">&mdash;</span>
-            <span id="fleetReserveLabel" class="stat-label">reserve ready</span>
-          </div>
-          <div class="fleet-stat">
-            <span id="fleetNextReset" class="stat-value">&mdash;</span>
-            <span id="fleetNextResetLabel" class="stat-label">next reset</span>
-          </div>
-          <div class="fleet-stat">
-            <span id="fleetNearLimit" class="stat-value">&mdash;</span>
-            <span class="stat-label">near limit</span>
-          </div>
-        </div>
-        <div class="strip-chart" aria-label="Available quota per account">
-          <div class="strip-head" aria-hidden="true">
-            <span>account</span>
-            <span>quota remaining</span>
-            <span class="strip-head-meta">remaining &middot; window reset</span>
-          </div>
-          <div id="fleetRows">
-            <p class="board-empty">Waiting for account data...</p>
-          </div>
-        </div>
-        <section class="usage-history-panel fleet-usage-history" aria-labelledby="usageHistoryTitle">
-          <div class="usage-history-head">
-            <div>
-              <p class="eyebrow">Adaptive sampling &middot; all accounts</p>
-              <h3 id="usageHistoryTitle">Usage over time</h3>
-            </div>
-            <div id="usageHistoryRanges" class="usage-range-buttons" aria-label="Usage history range">
-              <button type="button" data-range="6h">6h</button>
-              <button type="button" data-range="24h" class="active">24h</button>
-              <button type="button" data-range="7d">7d</button>
-              <button type="button" data-range="30d">30d</button>
-            </div>
-          </div>
-          <div id="usageHistorySummary" class="usage-history-summary"></div>
-          <div class="fleet-history-charts">
-            <div class="fleet-history-chart-group">
-              <h4>5-hour remaining</h4>
-              <div id="usageHistoryFiveHourChart" class="usage-history-chart">
-                <p class="board-empty">Loading fleet usage history...</p>
-              </div>
-            </div>
-            <div class="fleet-history-chart-group">
-              <h4>Weekly remaining</h4>
-              <div id="usageHistoryWeeklyChart" class="usage-history-chart">
-                <p class="board-empty">Loading fleet usage history...</p>
-              </div>
-            </div>
-          </div>
-          <div id="usageHistoryLegend" class="usage-history-legend" aria-label="Account chart legend"></div>
-          <div id="usageHistoryLatest" class="fleet-history-latest" aria-label="Latest fleet usage values"></div>
-          <details class="fleet-history-changes">
-            <summary>Recent fleet changes</summary>
-            <div id="usageHistoryChanges"></div>
-          </details>
-        </section>
-        <div class="weekly-horizon" role="group" aria-labelledby="weeklyHorizonTitle">
-          <div class="weekly-horizon-head">
-            <p id="weeklyHorizonTitle" class="eyebrow">Weekly reset horizon &middot; next 7 days</p>
-            <span class="weekly-horizon-legend" aria-label="Marker legend">
-              <span><i class="weekly-legend-marker ordinary"></i>Weekly</span>
-              <span><i class="weekly-legend-marker reserve"></i>Reserve</span>
-            </span>
-          </div>
-          <div id="fleetWeeklyHorizon"></div>
-        </div>
-        <div class="reset-timetable">
-          <p class="eyebrow tt-title">Reset timetable &middot; next 24h</p>
-          <div id="fleetTimetable"></div>
-        </div>
-        <p class="hint fleet-hint">
-          Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
-          Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
-          Adaptive server-side quota reads become more frequent after activity and never start a Codex turn.
-        </p>
-      </section>
-
       <section id="board" class="panel board-panel">
         <div class="section-header">
           <h2>Today’s sends</h2>
@@ -397,7 +417,7 @@
 
       <section id="send" class="panel manual-panel">
         <div class="section-header">
-          <h2>Manual Send</h2>
+          <h2>Send a message</h2>
         </div>
         <label>
           Optional one-off prompt
@@ -425,28 +445,7 @@
       </section>
     </main>
 
-    <nav class="mobile-dock" aria-label="Console sections">
-      <a href="#fleet" data-section="fleet">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m6 13v-7m5 7V7"/></svg>
-        <span>Fleet</span>
-      </a>
-      <a href="#account" data-section="account">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19c.7-3.5 2.8-5.3 6.5-5.3s5.8 1.8 6.5 5.3"/></svg>
-        <span>Account</span>
-      </a>
-      <a href="#schedule" data-section="schedule">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"/><path d="M8 3.5v4m8-4v4M4 10h16m-8 3v3l2 1"/></svg>
-        <span>Schedule</span>
-      </a>
-      <a href="#send" data-section="send">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5.5 16-3.1-6.1L4 12Z"/><path d="m11.4 13.9 4-4"/></svg>
-        <span>Send</span>
-      </a>
-      <a href="#activity" data-section="activity">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="7" cy="6" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="10" cy="18" r="1"/></svg>
-        <span>Activity</span>
-      </a>
-    </nav>
+
 
     <script type="module" src="/app.js"></script>
   </body>

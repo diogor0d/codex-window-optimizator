@@ -15,7 +15,9 @@ const state = {
   usageHistoryRequests: new Map(),
   usageHistoryRefreshQueued: new Set(),
   usageHistoryGeneration: new Map(),
-  usageHistoryRange: "24h"
+  usageHistoryRange: "24h",
+  usageHistoryVisibleAccounts: null,
+  usageHistoryCursorByChart: new Map()
 };
 
 async function api(path, options = {}) {
@@ -49,7 +51,7 @@ function preferredTheme() {
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("theme", theme);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#161e28" : "#ffffff");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#101725" : "#eef2f8");
   const button = $("#themeToggleBtn");
   if (button) {
     const isDark = theme === "dark";
@@ -457,44 +459,12 @@ function formatPollingInterval(ms) {
   return `${minutes} min`;
 }
 
-function usageStepPath(samples, key, startMs, endMs, observedAt) {
-  const left = 52;
-  const right = 982;
-  const top = 18;
-  const bottom = 202;
-  const x = (ts) => left + clampPercent(((Date.parse(ts) - startMs) / (endMs - startMs)) * 100) / 100 * (right - left);
-  const y = (free) => bottom - (free / 100) * (bottom - top);
-  const observedMs = Math.min(endMs, Date.parse(observedAt || ""));
-  if (!Number.isFinite(observedMs) || observedMs <= startMs) {
-    return "";
-  }
-  let path = "";
-  let active = false;
-  for (const sample of samples) {
-    if (Date.parse(sample.ts) > observedMs) {
-      continue;
-    }
-    const pointX = x(sample.ts);
-    const free = usageFree(sample, key);
-    if (!Number.isFinite(free)) {
-      if (active) {
-        path += ` H ${pointX.toFixed(2)}`;
-        active = false;
-      }
-      continue;
-    }
-    if (!active) {
-      path += ` M ${pointX.toFixed(2)} ${y(free).toFixed(2)}`;
-      active = true;
-    } else {
-      path += ` H ${pointX.toFixed(2)} V ${y(free).toFixed(2)}`;
-    }
-  }
-  return active ? `${path} H ${x(new Date(observedMs).toISOString()).toFixed(2)}` : path;
-}
-
-const USAGE_ACCOUNT_COLORS = ["#e07a2f", "#27896d", "#5879d6", "#9a62c7", "#c84f67", "#8a751f"];
-const USAGE_ACCOUNT_DASHES = ["none", "10 5", "2 4"];
+const USAGE_ACCOUNT_COLORS = ["#e07a2f", "#27896d", "#5879d6", "#9a62c7", "#c84f67", "#8a751f", "#1685a5", "#b34e9b"];
+const USAGE_ACCOUNT_DASHES = ["", "9 4", "2 3"];
+const USAGE_CHART_LAYOUT = { height: 214, left: 43, right: 12, top: 13, bottom: 178 };
+const usageChartModels = new WeakMap();
+const usageChartResizeObservers = new WeakMap();
+const usageChartWidths = new WeakMap();
 
 function usageObservationAt(data, key) {
   if (key !== "fiveHourUsed") {
@@ -506,92 +476,281 @@ function usageObservationAt(data, key) {
     .at(-1);
 }
 
-function usagePointData(samples, key, account, color, startMs, endMs, observedAt) {
-  const observedMs = Math.min(endMs, Date.parse(observedAt || ""));
-  if (!Number.isFinite(observedMs)) {
-    return [];
+function buildUsageChartModel(histories, key, startMs, endMs) {
+  const series = histories.map(({ account, index, data }) => {
+    const samples = [data.baseline, ...(data.samples || [])].filter((sample) => sample && Number.isFinite(Date.parse(sample.ts)))
+      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    const observedAt = usageObservationAt(data, key);
+    const observedMs = Date.parse(observedAt || "");
+    const observations = samples.filter((sample) => Date.parse(sample.ts) <= observedMs);
+    const validSamples = observations.filter((sample) => Number.isFinite(usageFree(sample, key)));
+    return { account, index, data, samples, observations, validSamples, observedAt, observedMs };
+  });
+  const timestampSet = new Set(series.flatMap((item) => item.observations.map((sample) => Date.parse(sample.ts))
+    .filter((time) => time >= startMs && time <= endMs)));
+  for (const item of series) {
+    const beforeRange = item.observations.filter((sample) => Date.parse(sample.ts) < startMs).at(-1);
+    if (beforeRange && Number.isFinite(usageFree(beforeRange, key)) && item.observedMs >= startMs) timestampSet.add(startMs);
+    if (Number.isFinite(item.observedMs) && item.observedMs >= startMs && item.observedMs <= endMs
+      && item.observations.some((sample) => Date.parse(sample.ts) <= item.observedMs)) {
+      timestampSet.add(item.observedMs);
+    }
   }
-  return samples.filter((sample) => {
-    const sampleMs = Date.parse(sample.ts);
-    return sampleMs >= startMs && sampleMs <= observedMs && Number.isFinite(usageFree(sample, key));
-  }).map((sample) => {
-    const free = usageFree(sample, key);
-    const x = 52 + ((Date.parse(sample.ts) - startMs) / (endMs - startMs)) * 930;
-    const y = 202 - (free / 100) * 184;
-    return { x, y, color, detail: `${account.label} · ${free}% remaining · ${new Date(sample.ts).toLocaleString()}` };
+  const timestamps = [...timestampSet].sort((a, b) => a - b);
+  return { key, startMs, endMs, series, timestamps };
+}
+
+function usageChartValueAt(series, key, timeMs) {
+  const { observations, observedMs, data } = series;
+  if (!Number.isFinite(observedMs)) return { value: null, status: "unavailable", sample: null };
+  if (timeMs > observedMs) return { value: null, status: "stale", sample: null };
+  let low = 0;
+  let high = observations.length - 1;
+  let selected = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (Date.parse(observations[middle].ts) <= timeMs) {
+      selected = observations[middle];
+      low = middle + 1;
+    } else high = middle - 1;
+  }
+  if (!selected) return { value: null, status: "unavailable", sample: null };
+  const value = usageFree(selected, key);
+  return Number.isFinite(value)
+    ? { value, status: data.savedSnapshot ? "cached" : "available", sample: selected }
+    : { value: null, status: "unavailable", sample: selected };
+}
+
+function usageChartTicks(startMs, endMs, width, rangeMs) {
+  const { left, right } = USAGE_CHART_LAYOUT;
+  const longRange = rangeMs >= USAGE_HISTORY_RANGES["24h"];
+  const count = Math.max(2, Math.min(5, Math.floor((width - left - right) / (longRange ? 110 : 84)) + 1));
+  return Array.from({ length: count }, (_, index) => {
+    const time = startMs + ((endMs - startMs) * index) / (count - 1);
+    const date = new Date(time);
+    return {
+      time,
+      dateLabel: date.toLocaleDateString([], { month: "short", day: "numeric" }),
+      clockLabel: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      includeDate: longRange
+    };
   });
 }
 
-function bindUsageChartTooltips(host, points) {
-  const svg = host.querySelector("svg");
-  const target = host.querySelector(".usage-hover-layer");
-  const marker = host.querySelector(".usage-hover-marker");
-  if (!svg || !target || !marker || !points.length) {
-    return;
+function nearestUsageTimestamp(timestamps, targetMs) {
+  if (!timestamps.length) return -1;
+  let low = 0;
+  let high = timestamps.length - 1;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (timestamps[mid] < targetMs) low = mid + 1;
+    else high = mid;
   }
-  const tooltip = document.createElement("div");
-  tooltip.className = "usage-chart-tooltip";
-  tooltip.id = `${host.id}Tooltip`;
-  tooltip.setAttribute("role", "status");
-  tooltip.setAttribute("aria-live", "polite");
-  tooltip.hidden = true;
-  host.append(tooltip);
-  target.setAttribute("aria-describedby", tooltip.id);
-  let selectedIndex = points.length - 1;
-  const show = (index, anchorX, anchorY) => {
-    selectedIndex = index;
-    const point = points[index];
-    tooltip.textContent = point.detail;
-    tooltip.hidden = false;
-    marker.setAttribute("cx", point.x);
-    marker.setAttribute("cy", point.y);
-    marker.style.setProperty("--point-color", point.color);
-    marker.removeAttribute("hidden");
-    const placeLeft = anchorX + tooltip.offsetWidth + 20 > window.innerWidth;
-    const placeBelow = anchorY - tooltip.offsetHeight - 10 < 0;
-    tooltip.style.left = `${anchorX}px`;
-    tooltip.style.top = `${anchorY}px`;
-    tooltip.style.transform = `translate(${placeLeft ? "calc(-100% - 10px)" : "10px"}, ${placeBelow ? "10px" : "calc(-100% - 10px)"})`;
-  };
-  const hide = () => {
-    tooltip.hidden = true;
-    marker.setAttribute("hidden", "");
-  };
-  const nearestPoint = (event) => {
-    const screenPoint = svg.createSVGPoint();
-    screenPoint.x = event.clientX;
-    screenPoint.y = event.clientY;
-    const cursor = screenPoint.matrixTransform(svg.getScreenCTM().inverse());
-    return points.reduce((best, point, index) => {
-      const distance = (point.x - cursor.x) ** 2 + (point.y - cursor.y) ** 2;
-      return distance < best.distance ? { index, distance } : best;
-    }, { index: 0, distance: Infinity }).index;
-  };
-  target.addEventListener("pointermove", (event) => show(nearestPoint(event), event.clientX, event.clientY));
-  target.addEventListener("pointerdown", (event) => show(nearestPoint(event), event.clientX, event.clientY));
-  target.addEventListener("pointerleave", () => {
-    if (document.activeElement !== target) {
-      hide();
+  if (low > 0 && targetMs - timestamps[low - 1] <= timestamps[low] - targetMs) return low - 1;
+  return low;
+}
+
+function nextUsageCursorIndex(current, key, length) {
+  if (!length) return -1;
+  if (key === "Home") return 0;
+  if (key === "End") return length - 1;
+  if (key === "ArrowLeft") return Math.max(0, current - 1);
+  if (key === "ArrowRight") return Math.min(length - 1, current + 1);
+  return null;
+}
+
+function usageInsightStats(series, key, startMs, endMs) {
+  return series.map((item) => {
+    const inRange = item.observations.filter((sample) => Date.parse(sample.ts) >= startMs
+      && Date.parse(sample.ts) <= Math.min(endMs, item.observedMs));
+    const baseline = item.observations.filter((sample) => Date.parse(sample.ts) < startMs).at(-1);
+    const samples = baseline && item.observedMs >= startMs ? [baseline, ...inRange] : inRange;
+    const points = samples.filter((sample) => Number.isFinite(usageFree(sample, key)))
+      .map((sample) => ({ sample, remaining: usageFree(sample, key) }));
+    if (!points.length) return { account: item.account, summary: "No observations" };
+    const first = points[0];
+    const last = points.at(-1);
+    const minimum = Math.min(...points.map((point) => point.remaining));
+    const change = last.remaining - first.remaining;
+    let consumptionPoints = 0;
+    let fullResets = 0;
+    let partialRefills = 0;
+    let previousUsed = null;
+    for (const sample of samples) {
+      const remaining = usageFree(sample, key);
+      if (!Number.isFinite(remaining)) {
+        previousUsed = null;
+        continue;
+      }
+      const currentUsed = 100 - remaining;
+      if (previousUsed === null) {
+        previousUsed = currentUsed;
+        continue;
+      }
+      if (currentUsed > previousUsed) consumptionPoints += currentUsed - previousUsed;
+      else if (currentUsed < previousUsed) {
+        if (remaining === 100 && previousUsed > 0) fullResets += 1;
+        else partialRefills += 1;
+      }
+      previousUsed = currentUsed;
     }
+    const sign = change > 0 ? "+" : "";
+    const replenishments = fullResets + partialRefills;
+    return {
+      account: item.account,
+      summary: `${last.remaining}% latest · low ${minimum}% · ${sign}${change} pts net · ${consumptionPoints} pp observed use · ${replenishments} replenishment${replenishments === 1 ? "" : "s"}`,
+      consumptionPoints,
+      fullReplenishments: fullResets,
+      partialReplenishments: partialRefills
+    };
+  });
+}
+
+function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
+  const restoreFocus = host.contains(document.activeElement) && document.activeElement?.classList.contains("usage-hover-layer");
+  const width = Math.max(240, Math.floor(host.clientWidth || host.getBoundingClientRect().width || 640) - 14);
+  const { height, left, right, top, bottom } = USAGE_CHART_LAYOUT;
+  const plotRight = width - right;
+  const x = (time) => left + ((time - model.startMs) / (model.endMs - model.startMs)) * (plotRight - left);
+  const y = (value) => bottom - (value / 100) * (bottom - top);
+  const rangeMs = model.endMs - model.startMs;
+  const ticks = usageChartTicks(model.startMs, model.endMs, width, rangeMs);
+  const tickMarkup = ticks.map((tick, index) => {
+    const tickX = x(tick.time);
+    const anchor = index === 0 ? "start" : index === ticks.length - 1 ? "end" : "middle";
+    const label = tick.includeDate
+      ? `<tspan x="${tickX.toFixed(1)}" dy="0">${escapeHtml(tick.dateLabel)}</tspan><tspan x="${tickX.toFixed(1)}" dy="12">${escapeHtml(tick.clockLabel)}</tspan>`
+      : escapeHtml(tick.clockLabel);
+    return `<line class="usage-grid usage-grid-vertical" x1="${tickX.toFixed(1)}" x2="${tickX.toFixed(1)}" y1="${top}" y2="${bottom}"></line><text class="usage-axis-x" x="${tickX.toFixed(1)}" y="${bottom + 16}" text-anchor="${anchor}">${label}</text>`;
+  }).join("");
+  const visible = model.series.filter(({ account }) => !visibleAccounts || visibleAccounts.has(account.id));
+  const paths = visible.map((item) => {
+    const samples = item.samples.filter((sample) => Date.parse(sample.ts) <= item.observedMs && Date.parse(sample.ts) <= model.endMs);
+    const color = USAGE_ACCOUNT_COLORS[item.index % USAGE_ACCOUNT_COLORS.length];
+    const dash = USAGE_ACCOUNT_DASHES[item.index % USAGE_ACCOUNT_DASHES.length];
+    let path = "";
+    let active = false;
+    let previousValue = null;
+    let baselineValue = null;
+    for (const sample of samples) {
+      const time = Date.parse(sample.ts);
+      const value = usageFree(sample, model.key);
+      if (time < model.startMs) {
+        baselineValue = Number.isFinite(value) ? value : null;
+        continue;
+      }
+      if (!Number.isFinite(value)) {
+        if (active) path += ` H ${x(time).toFixed(1)}`;
+        else if (!path && Number.isFinite(baselineValue)) {
+          path = ` M ${x(model.startMs).toFixed(1)} ${y(baselineValue).toFixed(1)} H ${x(time).toFixed(1)}`;
+        }
+        active = false;
+        previousValue = null;
+        baselineValue = null;
+        continue;
+      }
+      if (!active) {
+        if (Number.isFinite(baselineValue)) {
+          path += ` M ${x(model.startMs).toFixed(1)} ${y(baselineValue).toFixed(1)} H ${x(time).toFixed(1)} V ${y(value).toFixed(1)}`;
+        } else path += ` M ${x(time).toFixed(1)} ${y(value).toFixed(1)}`;
+        active = true;
+      } else path += ` H ${x(time).toFixed(1)} V ${y(value).toFixed(1)}`;
+      previousValue = value;
+    }
+    if (!path && Number.isFinite(baselineValue)) {
+      path = ` M ${x(model.startMs).toFixed(1)} ${y(baselineValue).toFixed(1)}`;
+      active = true;
+      previousValue = baselineValue;
+    }
+    if (active && previousValue !== null && Number.isFinite(item.observedMs)) {
+      const end = Math.min(model.endMs, item.observedMs);
+      if (end >= model.startMs) path += ` H ${x(end).toFixed(1)}`;
+    }
+    return path ? `<path class="usage-line account-line" data-account-id="${escapeHtml(item.account.id)}" style="stroke:${color};${dash ? `stroke-dasharray:${dash};` : ""}" d="${path}"></path>` : "";
+  }).join("");
+  const savedIndex = state.usageHistoryCursorByChart.get(host.id);
+  const cursorIndex = model.timestamps.length ? Math.min(savedIndex ?? model.timestamps.length - 1, model.timestamps.length - 1) : -1;
+  const timeMs = cursorIndex < 0 ? null : model.timestamps[cursorIndex];
+  const markers = visible.map((item, markerIndex) => {
+    const reading = timeMs === null ? { value: null } : usageChartValueAt(item, model.key, timeMs);
+    const color = USAGE_ACCOUNT_COLORS[item.index % USAGE_ACCOUNT_COLORS.length];
+    return `<circle class="usage-cursor-point" data-account-id="${escapeHtml(item.account.id)}" cx="${timeMs === null ? left : x(timeMs).toFixed(1)}" cy="${Number.isFinite(reading.value) ? y(reading.value).toFixed(1) : top}" r="${3 + markerIndex * 0.8}" style="--point-color:${color};fill:none;stroke:${color};stroke-width:1.5" ${Number.isFinite(reading.value) ? "" : "display=\"none\""}></circle>`;
+  }).join("");
+  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="group" aria-label="${escapeHtml(`${model.key === "fiveHourUsed" ? "5-hour" : "Weekly"} quota remaining over ${range}`)}">
+    ${[0, 25, 50, 75, 100].map((value) => `<line class="usage-grid" x1="${left}" x2="${plotRight}" y1="${y(value)}" y2="${y(value)}"></line><text class="usage-axis-y" x="${left - 5}" y="${y(value) + 4}">${value}%</text>`).join("")}
+    ${tickMarkup}${paths}
+    <line class="usage-cursor-line" x1="${timeMs === null ? left : x(timeMs)}" x2="${timeMs === null ? left : x(timeMs)}" y1="${top}" y2="${bottom}" ${timeMs === null ? "display=\"none\"" : ""}></line>${markers}
+    <rect class="usage-hover-layer" x="${left}" y="${top}" width="${plotRight - left}" height="${bottom - top}" tabindex="0" aria-label="Quota history cursor. Use left and right arrows to move between observed times, Home for first, End for latest." aria-controls="${inspectorId}" aria-describedby="${inspectorId}"></rect>
+  </svg><p class="usage-inspector-hint">Hover or tap to move the shared time cursor. Use ←/→ to step through observed times, Home/End for the range edges. Each account row shows its latest valid observation at or before the cursor.</p><div class="usage-inspector" id="${inspectorId}" aria-live="polite"></div>`;
+  const target = host.querySelector(".usage-hover-layer");
+  if (!target || !model.timestamps.length) return;
+  const markerByAccount = new Map([...host.querySelectorAll(".usage-cursor-point")]
+    .map((marker) => [marker.dataset.accountId, marker]));
+  const updateCursor = (index) => {
+    const clamped = Math.max(0, Math.min(model.timestamps.length - 1, index));
+    if (state.usageHistoryCursorByChart.get(host.id) === clamped) return;
+    state.usageHistoryCursorByChart.set(host.id, clamped);
+    const selectedTime = model.timestamps[clamped];
+    const cursorX = x(selectedTime).toFixed(1);
+    const cursorLine = host.querySelector(".usage-cursor-line");
+    cursorLine?.setAttribute("x1", cursorX);
+    cursorLine?.setAttribute("x2", cursorX);
+    cursorLine?.removeAttribute("display");
+    for (const item of visible) {
+      const marker = markerByAccount.get(item.account.id);
+      if (!marker) continue;
+      const reading = usageChartValueAt(item, model.key, selectedTime);
+      if (!Number.isFinite(reading.value)) {
+        marker.setAttribute("display", "none");
+        continue;
+      }
+      marker.setAttribute("cx", cursorX);
+      marker.setAttribute("cy", y(reading.value).toFixed(1));
+      marker.removeAttribute("display");
+    }
+    renderUsageInspector(model, selectedTime, inspectorId, visibleAccounts);
+  };
+  const indexAtPointer = (event) => {
+    const rect = target.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1)));
+    return nearestUsageTimestamp(model.timestamps, model.startMs + fraction * rangeMs);
+  };
+  target.addEventListener("pointermove", (event) => { if (event.pointerType === "mouse") updateCursor(indexAtPointer(event)); });
+  target.addEventListener("pointerdown", (event) => updateCursor(indexAtPointer(event)));
+  target.addEventListener("keydown", (event) => {
+    const current = state.usageHistoryCursorByChart.get(host.id) ?? model.timestamps.length - 1;
+    const next = nextUsageCursorIndex(current, event.key, model.timestamps.length);
+    if (next === null) return;
+    event.preventDefault();
+    updateCursor(next);
   });
   target.addEventListener("focus", () => {
-    const rect = target.getBoundingClientRect();
-    show(selectedIndex, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const index = state.usageHistoryCursorByChart.get(host.id) ?? model.timestamps.length - 1;
+    renderUsageInspector(model, model.timestamps[index], inspectorId, visibleAccounts);
   });
-  target.addEventListener("blur", hide);
-  target.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-      return;
-    }
-    event.preventDefault();
-    const direction = event.key === "ArrowRight" ? 1 : -1;
-    const next = Math.max(0, Math.min(points.length - 1, selectedIndex + direction));
-    const rect = target.getBoundingClientRect();
-    show(next, rect.left + rect.width / 2, rect.top + rect.height / 2);
-  });
+  renderUsageInspector(model, timeMs, inspectorId, visibleAccounts);
+  if (restoreFocus) target.focus({ preventScroll: true });
+}
+
+function renderUsageInspector(model, timeMs, inspectorId, visibleAccounts) {
+  const inspector = document.getElementById(inspectorId);
+  if (!inspector || timeMs === null) return;
+  const rows = model.series.map((item) => {
+    const reading = usageChartValueAt(item, model.key, timeMs);
+    const hidden = visibleAccounts && !visibleAccounts.has(item.account.id);
+    const label = reading.status === "stale" ? "Stale · observation passed"
+      : reading.status === "cached" ? "Cached snapshot"
+        : reading.status === "unavailable" ? "Unavailable" : hidden ? "Hidden" : "Observed";
+    const observedMs = timeMs === item.observedMs ? item.observedMs : Date.parse(reading.sample?.ts || "");
+    const observed = Number.isFinite(observedMs) ? new Date(observedMs).toLocaleString() : "No reading at or before this time";
+    const color = USAGE_ACCOUNT_COLORS[item.index % USAGE_ACCOUNT_COLORS.length];
+    return `<tr><th><i class="usage-legend" style="--account-color:${color}"></i>${escapeHtml(item.account.label)}</th><td>${Number.isFinite(reading.value) ? `${reading.value}%` : "—"}<small>${escapeHtml(observed)}</small></td><td>${label}${hidden ? " · hidden from chart" : ""}</td></tr>`;
+  }).join("");
+  inspector.innerHTML = `<div class="usage-inspector-heading"><strong>${escapeHtml(new Date(timeMs).toLocaleString())}</strong><small>${escapeHtml(model.key === "fiveHourUsed" ? "5-hour" : "Weekly")} remaining across all accounts</small></div><table><thead><tr><th>Account</th><th>Remaining · recorded at</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderUsageHistory() {
+  const focusedSeriesId = document.activeElement?.closest(".usage-series-toggle")?.dataset.accountId;
   const fiveHourChart = $("#usageHistoryFiveHourChart");
   const weeklyChart = $("#usageHistoryWeeklyChart");
   const summary = $("#usageHistorySummary");
@@ -609,9 +768,15 @@ function renderUsageHistory() {
     const cached = state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`);
     return cached?.data ? { account, index, data: cached.data } : null;
   }).filter(Boolean);
+  const chartHistories = state.accounts.map((account, index) => ({
+    account,
+    index,
+    data: state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`)?.data || { samples: [], baseline: null, observedAt: {} }
+  }));
   const rangeMs = USAGE_HISTORY_RANGES[state.usageHistoryRange] || USAGE_HISTORY_RANGES["24h"];
   const endMs = Date.now();
   const startMs = endMs - rangeMs;
+  const chartModels = {};
   const tracked = histories.filter(({ data }) => data.baseline || data.samples?.length);
   const failedAccounts = state.accounts.filter((account) =>
     state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`));
@@ -632,69 +797,92 @@ function renderUsageHistory() {
       <small>${escapeHtml(label)}</small>
     </span>`).join("");
 
-  const startLabel = new Date(startMs).toLocaleString([], rangeMs <= USAGE_HISTORY_RANGES["24h"]
-    ? { hour: "2-digit", minute: "2-digit" }
-    : { month: "short", day: "numeric" });
-  const endLabel = new Date(endMs).toLocaleString([], { hour: "2-digit", minute: "2-digit" });
-  const renderChart = (host, key, label) => {
-    const plotted = [];
-    const paths = histories.map(({ account, index, data }) => {
-      const samples = [data.baseline, ...(data.samples || [])].filter(Boolean)
-        .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
-      const observedAt = usageObservationAt(data, key);
-      const path = usageStepPath(samples, key, startMs, endMs, observedAt);
-      const color = USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length];
-      const dash = USAGE_ACCOUNT_DASHES[Math.floor(index / USAGE_ACCOUNT_COLORS.length) % USAGE_ACCOUNT_DASHES.length];
-      plotted.push(...usagePointData(samples, key, account, color, startMs, endMs, observedAt));
-      return path ? `<path class="usage-line account-line" style="stroke:${color};stroke-dasharray:${dash}" d="${path}"><title>${escapeHtml(`${account.label}: ${label}`)}</title></path>` : "";
-    }).join("");
-    if (!paths) {
-      const loading = state.accounts.some((account) =>
-        state.usageHistoryRequests.has(`${account.id}:${state.usageHistoryRange}`));
-      host.innerHTML = `<p class="board-empty">${loading
-        ? "Loading fleet usage history..."
-        : failedAccounts.length ? `History unavailable for ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"}.` : "No readings recorded for this window yet."}</p>`;
+  const renderChart = (host, key) => {
+    const model = buildUsageChartModel(chartHistories, key, startMs, endMs);
+    chartModels[key] = model;
+    const loading = state.accounts.some((account) => state.usageHistoryRequests.has(`${account.id}:${state.usageHistoryRange}`));
+    if (!model.timestamps.length) {
+      usageChartModels.delete(host);
+      host.innerHTML = `<p class="board-empty">${loading ? "Loading fleet usage history..." : failedAccounts.length ? `History unavailable for ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"}.` : "No readings recorded for this window yet."}</p>`;
       return;
     }
-    host.innerHTML = `
-      <svg viewBox="0 0 1000 240" role="group" aria-label="${escapeHtml(`${label} by account over ${state.usageHistoryRange}`)}" aria-describedby="usageHistoryChanges">
-        <title>${escapeHtml(`${label} by account over ${state.usageHistoryRange}`)}</title>
-        <desc>Each colored step line represents one account. Lines change only when a new value is observed.</desc>
-        ${[0, 25, 50, 75, 100].map((free) => {
-          const y = 202 - (free / 100) * 184;
-          return `<line class="usage-grid" x1="52" x2="982" y1="${y}" y2="${y}"></line><text class="usage-axis-y" x="45" y="${y + 4}">${free}%</text>`;
-        }).join("")}
-        ${paths}
-        <circle class="usage-hover-marker" cx="0" cy="0" r="6" hidden></circle>
-        <rect class="usage-hover-layer" x="52" y="18" width="930" height="184" tabindex="0" aria-label="Hover for the nearest recorded point. Use left and right arrow keys to inspect points."></rect>
-        <text class="usage-axis-x" x="52" y="229">${escapeHtml(startLabel)}</text>
-        <text class="usage-axis-x" x="982" y="229" text-anchor="end">${escapeHtml(endLabel)}</text>
-      </svg>`;
-    bindUsageChartTooltips(host, plotted.sort((a, b) => a.x - b.x));
+    const inspectorId = `${host.id}Inspector`;
+    usageChartModels.set(host, { model, range: state.usageHistoryRange, visibleAccounts: state.usageHistoryVisibleAccounts, inspectorId });
+    if (!state.usageHistoryCursorByChart.has(host.id) || state.usageHistoryCursorByChart.get(host.id) >= model.timestamps.length) {
+      state.usageHistoryCursorByChart.set(host.id, Math.max(0, model.timestamps.length - 1));
+    }
+    renderUsageChart(host, model, state.usageHistoryRange, state.usageHistoryVisibleAccounts, inspectorId);
+    if (model.timestamps.length) {
+      renderUsageInspector(model, model.timestamps[state.usageHistoryCursorByChart.get(host.id)], inspectorId, state.usageHistoryVisibleAccounts);
+    } else {
+      host.querySelector(`#${inspectorId}`)?.replaceChildren();
+    }
+    if (typeof ResizeObserver !== "undefined" && !usageChartResizeObservers.has(host)) {
+      let redrawFrame = 0;
+      const observer = new ResizeObserver((entries) => {
+        const width = entries[0]?.contentRect.width || host.clientWidth;
+        const previousWidth = usageChartWidths.get(host);
+        if (Number.isFinite(previousWidth) && Math.abs(width - previousWidth) < 1) return;
+        usageChartWidths.set(host, width);
+        if (redrawFrame) return;
+        redrawFrame = requestAnimationFrame(() => {
+          redrawFrame = 0;
+          const current = usageChartModels.get(host);
+          if (current) renderUsageChart(host, current.model, current.range, current.visibleAccounts, current.inspectorId);
+        });
+      });
+      observer.observe(host);
+      usageChartResizeObservers.set(host, observer);
+    }
   };
-  renderChart(fiveHourChart, "fiveHourUsed", "5-hour quota remaining");
-  renderChart(weeklyChart, "weeklyUsed", "Weekly quota remaining");
-  legend.innerHTML = state.accounts.map((account, index) => `
-    <span class="${state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`) ? "unavailable" : ""}"><i class="usage-legend pattern-${Math.floor(index / USAGE_ACCOUNT_COLORS.length) % USAGE_ACCOUNT_DASHES.length}" style="--account-color:${USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length]}"></i>${escapeHtml(account.label)}</span>
-  `).join("") || '<span>No accounts configured.</span>';
+  renderChart(fiveHourChart, "fiveHourUsed");
+  renderChart(weeklyChart, "weeklyUsed");
+  legend.innerHTML = state.accounts.map((account, index) => {
+    const selected = !state.usageHistoryVisibleAccounts || state.usageHistoryVisibleAccounts.has(account.id);
+    const color = USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length];
+    const dashClass = `pattern-${index % USAGE_ACCOUNT_DASHES.length}`;
+    return `<button type="button" class="usage-series-toggle ${selected ? "" : "is-muted"} ${state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`) ? "unavailable" : ""}" data-account-id="${escapeHtml(account.id)}" aria-pressed="${selected}" style="--account-color:${color}"><i class="usage-legend ${dashClass}"></i>${escapeHtml(account.label)}</button>`;
+  }).join("") || '<span>No accounts configured.</span>';
+  legend.querySelectorAll("[data-account-id]").forEach((button) => button.addEventListener("click", () => {
+    if (!state.usageHistoryVisibleAccounts) state.usageHistoryVisibleAccounts = new Set(state.accounts.map((account) => account.id));
+    const id = button.dataset.accountId;
+    if (state.usageHistoryVisibleAccounts.has(id)) {
+      if (state.usageHistoryVisibleAccounts.size > 1) state.usageHistoryVisibleAccounts.delete(id);
+    } else state.usageHistoryVisibleAccounts.add(id);
+    renderUsageHistory();
+  }));
+  if (focusedSeriesId) {
+    [...legend.querySelectorAll(".usage-series-toggle")].find((button) => button.dataset.accountId === focusedSeriesId)?.focus({ preventScroll: true });
+  }
   const latestRows = state.accounts.map((account, index) => {
-    const data = state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`)?.data;
+    const historyKey = `${account.id}:${state.usageHistoryRange}`;
+    const data = state.usageHistory.get(historyKey)?.data;
     const latest = data?.samples?.at(-1) || data?.baseline;
+    const sourceLabel = data?.savedSnapshot ? "Cached snapshot · "
+      : state.usageHistoryErrors.has(historyKey) ? "Refresh failed · " : "";
     const value = (key) => {
       const free = usageFree(latest, key);
       return Number.isFinite(free) ? `${free}%` : "—";
     };
     return `
       <tr>
-        <th><i class="usage-legend pattern-${Math.floor(index / USAGE_ACCOUNT_COLORS.length) % USAGE_ACCOUNT_DASHES.length}" style="--account-color:${USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length]}"></i>${escapeHtml(account.label)}</th>
+        <th><i class="usage-legend pattern-${index % USAGE_ACCOUNT_DASHES.length}" style="--account-color:${USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length]}"></i>${escapeHtml(account.label)}</th>
         <td>${value("fiveHourUsed")}</td>
         <td>${value("weeklyUsed")}</td>
-        <td>${latest?.ts ? escapeHtml(new Date(latest.ts).toLocaleString()) : state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`) ? "Unavailable" : "Waiting"}</td>
+        <td>${latest?.ts ? escapeHtml(`${sourceLabel}${new Date(latest.ts).toLocaleString()}`) : state.usageHistoryErrors.has(historyKey) ? "Unavailable" : data?.savedSnapshot ? "Cached snapshot · no reading" : "Waiting"}</td>
       </tr>`;
   }).join("");
+  const fiveHourInsights = new Map(usageInsightStats(chartModels.fiveHourUsed?.series || [], "fiveHourUsed", startMs, endMs)
+    .map((item) => [item.account.id, item.summary]));
+  const weeklyInsights = new Map(usageInsightStats(chartModels.weeklyUsed?.series || [], "weeklyUsed", startMs, endMs)
+    .map((item) => [item.account.id, item.summary]));
+  const insights = `<table><thead><tr><th>Account</th><th>5-hour changes</th><th>Weekly changes</th></tr></thead><tbody>${state.accounts.map((account) => `
+    <tr><th>${escapeHtml(account.label)}</th><td>${escapeHtml(fiveHourInsights.get(account.id) || "No observations")}</td><td>${escapeHtml(weeklyInsights.get(account.id) || "No observations")}</td></tr>
+  `).join("")}</tbody></table>`;
   latestHost.innerHTML = state.accounts.length ? `
+    <div class="usage-history-insights"><p><strong>Range insights</strong> · low remaining, net change, observed use and replenishments</p>${insights}</div>
     <table>
-      <thead><tr><th>Account</th><th>5h remaining</th><th>Weekly remaining</th><th>Last change</th></tr></thead>
+      <thead><tr><th>Account</th><th>5h remaining</th><th>Weekly remaining</th><th>Last change / source</th></tr></thead>
       <tbody>${latestRows}</tbody>
     </table>` : "";
   const recentChanges = histories.flatMap(({ account, data }) => (data.samples || []).map((sample) => ({ account, sample })))
@@ -2109,6 +2297,7 @@ function bindActions() {
       return;
     }
     state.usageHistoryRange = button.dataset.range;
+    state.usageHistoryCursorByChart.clear();
     renderUsageHistory();
     void loadFleetUsageHistory(true);
   });
@@ -2314,4 +2503,19 @@ if (typeof document !== "undefined") {
   });
 }
 
-export { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, snapshotDashboard, usageFree, usageObservationAt };
+export {
+  accountResetCredits,
+  accountWindow,
+  buildUsageChartModel,
+  effectiveWindow,
+  nearestUsageTimestamp,
+  nextUsageCursorIndex,
+  reserveState,
+  resetCreditExpiry,
+  snapshotDashboard,
+  usageChartTicks,
+  usageChartValueAt,
+  usageFree,
+  usageInsightStats,
+  usageObservationAt
+};
