@@ -2593,20 +2593,20 @@ body {
     radial-gradient(ellipse at 100% 28%, color-mix(in srgb, #859bda 16%, transparent), transparent 50%), var(--bg);
   background-attachment: fixed;
   font-size: 14px;
-  padding-bottom: 28px;
+  padding-bottom: calc(92px + env(safe-area-inset-bottom));
 }
-html { scroll-padding-top: 100px; }
+html { scroll-padding-top: 16px; scroll-padding-bottom: calc(92px + env(safe-area-inset-bottom)); }
 button { min-height: 42px; border-radius: 999px; letter-spacing: 0; font-size: 13px; padding-inline: 18px; }
 button:not(.primary):not(.danger) { background: var(--glass); }
 button:hover { box-shadow: 0 3px 12px color-mix(in srgb, var(--accent) 12%, transparent); }
 button.primary { box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 20%, transparent); }
 .topbar {
   max-width: 1480px;
-  margin: 24px auto 12px;
-  padding: 20px 32px;
+  margin: 8px auto;
+  padding: 12px 24px;
   border: 0;
   background: transparent;
-  gap: 24px;
+  gap: 12px 18px;
 }
 .brand-mark { width: 42px; height: 42px; filter: drop-shadow(0 3px 6px rgba(40, 70, 120, .18)); }
 .brand-name h1 { font-size: 21px; letter-spacing: -.025em; white-space: normal; }
@@ -2620,13 +2620,17 @@ button.primary { box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 20%, tr
 .flap-day { font-size: 10px; padding: 4px 8px; background: var(--glass); border-radius: 999px; letter-spacing: .02em; }
 .topbar-actions { margin-left: 0; gap: 6px; }
 .mobile-dock {
-  position: sticky;
-  top: 12px;
+  position: fixed;
+  top: auto;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
   z-index: 40;
   display: flex;
   width: fit-content;
   max-width: calc(100% - 24px);
-  margin: 0 auto 26px;
+  margin: 0;
   padding: 5px;
   border: 1px solid var(--glass-edge);
   border-radius: 999px;
@@ -2652,29 +2656,29 @@ button.primary { box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 20%, tr
 .mobile-dock a:hover { color: var(--text); }
 .mobile-dock a[aria-current="location"] { background: var(--panel); color: var(--accent); box-shadow: 0 2px 8px rgba(30, 50, 90, .08); }
 .mobile-dock svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.layout { max-width: 1480px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; padding: 0 32px; }
-.layout > section { scroll-margin-top: 90px; }
-.panel { padding: 28px; border-radius: 28px; border-color: var(--glass-edge); background: var(--glass); box-shadow: var(--shadow); }
+.layout { max-width: 1480px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; padding: 0 24px; }
+.layout > section { scroll-margin-top: 16px; }
+.panel { padding: 20px; border-radius: 24px; border-color: var(--glass-edge); background: var(--glass); box-shadow: var(--shadow); }
 .settings-panel, .activity-panel { grid-row: auto; }
-.section-header { border: 0; padding: 0; margin-bottom: 24px; }
+.section-header { border: 0; padding: 0; margin-bottom: 16px; }
 .section-header h2 { font-size: 22px; letter-spacing: -.035em; font-weight: 650; }
 .section-header .eyebrow { margin-bottom: 5px; }
 .eyebrow { font-size: 11px; letter-spacing: .025em; }
 .badge, .mini-badge { border-radius: 999px; letter-spacing: 0; }
-.fleet-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; padding: 8px 0 24px; border-bottom: 1px solid var(--line); }
+.fleet-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; padding: 4px 0 16px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
 .fleet-stat { border: 0; border-radius: 0; background: transparent; padding: 4px 20px; border-left: 1px solid var(--line); }
 .fleet-stat:first-child { border-left: 0; padding-left: 0; }
 .stat-value { font-family: var(--font-ui); font-size: clamp(24px, 2.8vw, 38px); font-weight: 600; letter-spacing: -.045em; }
 .stat-label { font-size: 11px; font-weight: 500; letter-spacing: 0; }
-.strip-chart { margin-block: 24px; }
-.strip-row { padding-block: 16px; }
+.strip-chart { margin-block: 16px; }
+.strip-row { padding-block: 12px; }
 .strip-label { font-family: var(--font-ui); font-weight: 600; font-size: 14px; letter-spacing: 0; }
 .strip-track, .meter-track, .week-track { border: 0; border-radius: 999px; background: color-mix(in srgb, var(--accent) 9%, var(--panel-sunken)); }
 .strip-fill, .meter-bar, .week-fill { border-radius: inherit; }
 .strip-track { height: 10px; }
 .strip-fill { background: var(--accent); }
 .reset-credit-card { border: 0; background: var(--panel-sunken); border-radius: 10px; }
-.fleet-usage-history { padding: 0; background: transparent; border: 0; border-radius: 0; margin-block: 32px; }
+.fleet-usage-history { padding: 0; background: transparent; border: 0; border-radius: 0; margin-block: 24px; }
 .usage-history-head { margin-bottom: 18px; }
 .usage-history-head h3 { font-size: 20px; letter-spacing: -.03em; font-weight: 600; }
 .usage-range-buttons { padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--glass); gap: 2px; }
@@ -2731,11 +2735,11 @@ summary { border-radius: 12px; }
 .terminal { border-radius: 16px; }
 .connection-banner { border-radius: 18px; margin-bottom: 16px; }
 @media (max-width: 1100px) {
-  .topbar { flex-wrap: wrap; gap: 20px; }
+  .topbar { flex-wrap: wrap; gap: 10px 16px; }
   .brand { flex: 1; }
   .station-clock { margin-left: 0; }
   .topbar-actions { width: 100%; justify-content: flex-end; }
-  .layout { padding: 0 20px; gap: 20px; }
+  .layout { padding: 0 16px; gap: 16px; }
 }
 @media (max-width: 900px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
@@ -2746,7 +2750,7 @@ summary { border-radius: 12px; }
 @media (max-width: 600px) {
   body { padding-bottom: calc(100px + env(safe-area-inset-bottom)); overflow-x: visible; }
   html { scroll-padding-top: 14px; }
-  .topbar { display: grid; grid-template-columns: 1fr 1fr; margin: 0; padding: calc(22px + env(safe-area-inset-top)) 20px 22px; gap: 18px; }
+  .topbar { display: grid; grid-template-columns: 1fr 1fr; margin: 0; padding: calc(14px + env(safe-area-inset-top)) 16px 14px; gap: 12px; }
   .brand { grid-column: 1 / -1; }
   .brand-name h1 { font-size: 20px; }
   .brand-mark { width: 36px; height: 36px; }
@@ -2759,10 +2763,10 @@ summary { border-radius: 12px; }
   .topbar-actions button { font-size: 12px; letter-spacing: 0; }
   .layout { padding: 0 max(12px, env(safe-area-inset-left)) 0 max(12px, env(safe-area-inset-right)); gap: 16px; }
   .layout > section { scroll-margin-top: 14px; }
-  .panel { padding: 20px 16px; border-radius: 24px; }
-  .section-header { gap: 10px; margin-bottom: 20px; }
+  .panel { padding: 16px; border-radius: 22px; }
+  .section-header { gap: 10px; margin-bottom: 16px; }
   .section-header h2 { font-size: 21px; }
-  .fleet-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 0; }
+  .fleet-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 0; }
   .fleet-stat { padding: 0 12px; min-height: 54px; }
   .fleet-stat:nth-child(odd) { border-left: 0; padding-left: 0; }
   .stat-value { font-size: 30px; }
@@ -2780,7 +2784,7 @@ summary { border-radius: 12px; }
   .account-overview-grid { padding: 0 16px 16px; gap: 12px; }
   .account-snapshot { padding: 16px; }
   .account-management > summary { padding: 16px 46px 16px 16px; }
-  .mobile-dock { position: fixed; top: auto; bottom: calc(12px + env(safe-area-inset-bottom)); left: 12px; right: 12px; width: auto; max-width: none; margin: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--glass-edge); border-radius: 28px; padding: 5px; min-height: 64px; box-shadow: 0 8px 30px rgba(20, 35, 65, .22), inset 0 1px 0 var(--glass-edge); }
+  .mobile-dock { position: fixed; top: auto; bottom: calc(12px + env(safe-area-inset-bottom)); left: 12px; right: 12px; transform: none; width: auto; max-width: none; margin: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--glass-edge); border-radius: 28px; padding: 5px; min-height: 64px; box-shadow: 0 8px 30px rgba(20, 35, 65, .22), inset 0 1px 0 var(--glass-edge); }
   .mobile-dock a { display: grid; gap: 5px; padding: 8px 2px; min-height: 54px; font-size: 10px; border-radius: 22px; }
   .mobile-dock svg { width: 20px; height: 20px; }
   .board-wrap { width: 100%; margin: 0; padding: 0; }
