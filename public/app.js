@@ -2441,15 +2441,31 @@ function bindActions() {
   });
 }
 
+function visibleDockSection(bounds, currentId, viewportBottom, anchor = 16) {
+  const visible = bounds.filter((section) => section.bottom > anchor && section.top < viewportBottom);
+  if (!visible.length) return currentId;
+  const covering = visible.filter((section) => section.top <= anchor);
+  const candidates = covering.length ? covering : visible;
+  const top = covering.length ? Math.max(...candidates.map((section) => section.top))
+    : Math.min(...candidates.map((section) => section.top));
+  const row = candidates.filter((section) => Math.abs(section.top - top) < 2);
+  return row.find((section) => section.id === currentId)?.id || row[0].id;
+}
+
 function initMobileDock() {
   const links = [...document.querySelectorAll(".mobile-dock a")];
   const sections = links
     .map((link) => document.getElementById(link.dataset.section))
     .filter(Boolean);
-  if (!links.length || !sections.length || !("IntersectionObserver" in window)) {
+  if (!links.length || !sections.length) {
     return;
   }
+  let currentId;
+  let navigationId = null;
+  let destinationSeen = false;
+  let frame = 0;
   const setCurrent = (id) => {
+    currentId = id;
     for (const link of links) {
       if (link.dataset.section === id) {
         link.setAttribute("aria-current", "location");
@@ -2458,16 +2474,46 @@ function initMobileDock() {
       }
     }
   };
-  setCurrent(location.hash.slice(1) || "fleet");
-  const observer = new IntersectionObserver((entries) => {
-    const visible = entries
-      .filter((entry) => entry.isIntersecting)
-      .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
-    if (visible) {
-      setCurrent(visible.target.id);
+  const selectDestination = (id) => {
+    if (!sections.some((section) => section.id === id)) return;
+    navigationId = id;
+    destinationSeen = false;
+    setCurrent(id);
+  };
+  const update = () => {
+    frame = 0;
+    const viewportBottom = document.querySelector(".mobile-dock").getBoundingClientRect().top;
+    const bounds = sections.map((section) => {
+      const rect = section.getBoundingClientRect();
+      return { id: section.id, top: rect.top, bottom: rect.bottom };
+    });
+    if (navigationId) {
+      const destination = bounds.find((section) => section.id === navigationId);
+      const visible = destination.bottom > 16 && destination.top < viewportBottom;
+      if (visible) destinationSeen = true;
+      if (visible || !destinationSeen) return;
+      navigationId = null;
     }
-  }, { rootMargin: "-15% 0px -65%", threshold: [0, 0.25, 0.5] });
-  sections.forEach((section) => observer.observe(section));
+    setCurrent(visibleDockSection(bounds, currentId, viewportBottom));
+  };
+  const scheduleUpdate = () => { if (!frame) frame = requestAnimationFrame(update); };
+  const resumeTracking = () => { navigationId = null; scheduleUpdate(); };
+  links.forEach((link) => link.addEventListener("click", (event) => {
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    selectDestination(link.dataset.section);
+    scheduleUpdate();
+  }));
+  window.addEventListener("hashchange", () => { selectDestination(location.hash.slice(1)); scheduleUpdate(); });
+  window.addEventListener("scroll", scheduleUpdate, { passive: true });
+  window.addEventListener("resize", scheduleUpdate);
+  window.addEventListener("wheel", resumeTracking, { passive: true });
+  window.addEventListener("touchmove", resumeTracking, { passive: true });
+  window.addEventListener("keydown", (event) => {
+    if (event.target.closest("input, select, textarea, [contenteditable], .usage-hover-layer")) return;
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) resumeTracking();
+  });
+  selectDestination(location.hash.slice(1) || "fleet");
+  scheduleUpdate();
 }
 
 function registerServiceWorker() {
@@ -2526,5 +2572,6 @@ export {
   usageChartValueAt,
   usageFree,
   usageInsightStats,
-  usageObservationAt
+  usageObservationAt,
+  visibleDockSection
 };
