@@ -5,6 +5,7 @@ import {
   buildUsageChartModel,
   nearestUsageTimestamp,
   nextUsageCursorIndex,
+  reconcileUsageCursorIndex,
   usageChartTicks,
   usageChartValueAt,
   usageInsightStats
@@ -116,6 +117,17 @@ test("chooses the nearest shared cursor timestamp and supports keyboard edge nav
   assert.equal(nextUsageCursorIndex(1, "Home", timeline.length), 0);
   assert.equal(nextUsageCursorIndex(1, "End", timeline.length), 2);
   assert.equal(nextUsageCursorIndex(1, "Tab", timeline.length), null);
+});
+
+test("preserves a selected time as other accounts load and follows the latest poll at the range end", () => {
+  const previous = [10, 30];
+  const loaded = [5, 10, 20, 30, 40];
+  assert.equal(reconcileUsageCursorIndex(previous, 0, loaded), 1);
+  assert.equal(reconcileUsageCursorIndex(previous, 1, loaded), 4);
+  assert.equal(reconcileUsageCursorIndex(undefined, undefined, loaded), 4);
+  assert.equal(reconcileUsageCursorIndex(previous, undefined, loaded), 4);
+  assert.equal(reconcileUsageCursorIndex(previous, 0, [20, 30, 40]), 0);
+  assert.equal(reconcileUsageCursorIndex(previous, 0, []), -1);
 });
 
 test("uses responsive tick counts and date plus time labels for ranges over one day", () => {

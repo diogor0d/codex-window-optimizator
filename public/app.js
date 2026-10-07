@@ -558,6 +558,14 @@ function nextUsageCursorIndex(current, key, length) {
   return null;
 }
 
+function reconcileUsageCursorIndex(previousTimestamps, currentIndex, timestamps) {
+  if (!timestamps.length) return -1;
+  if (!previousTimestamps?.length || currentIndex === undefined || currentIndex >= previousTimestamps.length - 1) {
+    return timestamps.length - 1;
+  }
+  return nearestUsageTimestamp(timestamps, previousTimestamps[currentIndex]);
+}
+
 function usageInsightStats(series, key, startMs, endMs) {
   return series.map((item) => {
     const inRange = item.observations.filter((sample) => Date.parse(sample.ts) >= startMs
@@ -806,10 +814,11 @@ function renderUsageHistory() {
       return;
     }
     const inspectorId = `${host.id}Inspector`;
+    const previousModel = usageChartModels.get(host)?.model;
+    const cursorIndex = reconcileUsageCursorIndex(previousModel?.timestamps,
+      state.usageHistoryCursorByChart.get(host.id), model.timestamps);
+    state.usageHistoryCursorByChart.set(host.id, cursorIndex);
     usageChartModels.set(host, { model, range: state.usageHistoryRange, visibleAccounts: state.usageHistoryVisibleAccounts, inspectorId });
-    if (!state.usageHistoryCursorByChart.has(host.id) || state.usageHistoryCursorByChart.get(host.id) >= model.timestamps.length) {
-      state.usageHistoryCursorByChart.set(host.id, Math.max(0, model.timestamps.length - 1));
-    }
     renderUsageChart(host, model, state.usageHistoryRange, state.usageHistoryVisibleAccounts, inspectorId);
     if (model.timestamps.length) {
       renderUsageInspector(model, model.timestamps[state.usageHistoryCursorByChart.get(host.id)], inspectorId, state.usageHistoryVisibleAccounts);
@@ -2509,6 +2518,7 @@ export {
   effectiveWindow,
   nearestUsageTimestamp,
   nextUsageCursorIndex,
+  reconcileUsageCursorIndex,
   reserveState,
   resetCreditExpiry,
   snapshotDashboard,
