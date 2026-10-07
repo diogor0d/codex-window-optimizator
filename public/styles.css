@@ -2761,11 +2761,11 @@ summary { border-radius: 12px; }
   .brand-name h1 { font-size: 20px; }
   .brand-mark { width: 36px; height: 36px; }
   .station-clock .eyebrow { font-size: 9px; }
-  .next-module { grid-column: 1; grid-row: 3; min-width: 0; padding-left: 0; border-left: 0; }
+  .next-module { grid-column: 2; grid-row: 2; min-width: 0; padding-left: 16px; }
   .clock-digits, .flap-cell span, .flap-colon { font-size: 25px; }
   .flap-cell { width: auto; }
   .flap-day { font-size: 9px; }
-  .topbar-actions { grid-column: 2; grid-row: 2 / 4; align-self: start; width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); }
+  .topbar-actions { grid-column: 1 / -1; grid-row: 3; align-self: start; width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .topbar-actions button { min-height: 44px; font-size: 12px; letter-spacing: 0; }
   .layout { padding: 0 max(12px, env(safe-area-inset-left)) 0 max(12px, env(safe-area-inset-right)); gap: 16px; }
   .layout > section { scroll-margin-top: 14px; }
