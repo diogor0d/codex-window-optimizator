@@ -503,7 +503,6 @@ function buildUsageChartModel(histories, key, startMs, endMs) {
 function usageChartValueAt(series, key, timeMs) {
   const { observations, observedMs, data } = series;
   if (!Number.isFinite(observedMs)) return { value: null, status: "unavailable", sample: null };
-  if (timeMs > observedMs) return { value: null, status: "stale", sample: null };
   let low = 0;
   let high = observations.length - 1;
   let selected = null;
@@ -517,7 +516,7 @@ function usageChartValueAt(series, key, timeMs) {
   if (!selected) return { value: null, status: "unavailable", sample: null };
   const value = usageFree(selected, key);
   return Number.isFinite(value)
-    ? { value, status: data.savedSnapshot ? "cached" : "available", sample: selected }
+    ? { value, status: data.savedSnapshot ? "cached" : timeMs > observedMs ? "last-known" : "available", sample: selected }
     : { value: null, status: "unavailable", sample: selected };
 }
 
@@ -674,14 +673,14 @@ function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
   const markers = visible.map((item, markerIndex) => {
     const reading = timeMs === null ? { value: null } : usageChartValueAt(item, model.key, timeMs);
     const color = USAGE_ACCOUNT_COLORS[item.index % USAGE_ACCOUNT_COLORS.length];
-    return `<circle class="usage-cursor-point" data-account-id="${escapeHtml(item.account.id)}" cx="${timeMs === null ? left : x(timeMs).toFixed(1)}" cy="${Number.isFinite(reading.value) ? y(reading.value).toFixed(1) : top}" r="${3 + markerIndex * 0.8}" style="--point-color:${color};fill:none;stroke:${color};stroke-width:1.5" ${Number.isFinite(reading.value) ? "" : "display=\"none\""}></circle>`;
+    return `<circle class="usage-cursor-point" data-account-id="${escapeHtml(item.account.id)}" cx="${timeMs === null ? left : x(Math.max(model.startMs, Math.min(timeMs, item.observedMs))).toFixed(1)}" cy="${Number.isFinite(reading.value) ? y(reading.value).toFixed(1) : top}" r="${3 + markerIndex * 0.8}" style="--point-color:${color};fill:none;stroke:${color};stroke-width:1.5" ${Number.isFinite(reading.value) ? "" : "display=\"none\""}></circle>`;
   }).join("");
   host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="group" aria-label="${escapeHtml(`${model.key === "fiveHourUsed" ? "5-hour" : "Weekly"} quota remaining over ${range}`)}">
     ${[0, 25, 50, 75, 100].map((value) => `<line class="usage-grid" x1="${left}" x2="${plotRight}" y1="${y(value)}" y2="${y(value)}"></line><text class="usage-axis-y" x="${left - 5}" y="${y(value) + 4}">${value}%</text>`).join("")}
     ${tickMarkup}${paths}
     <line class="usage-cursor-line" x1="${timeMs === null ? left : x(timeMs)}" x2="${timeMs === null ? left : x(timeMs)}" y1="${top}" y2="${bottom}" ${timeMs === null ? "display=\"none\"" : ""}></line>${markers}
     <rect class="usage-hover-layer" x="${left}" y="${top}" width="${plotRight - left}" height="${bottom - top}" tabindex="0" aria-label="Quota history cursor. Use left and right arrows to move between observed times, Home for first, End for latest." aria-controls="${inspectorId}" aria-describedby="${inspectorId}"></rect>
-  </svg><p class="usage-inspector-hint">Hover or tap to move the shared time cursor. Use ←/→ to step through observed times, Home/End for the range edges. Each account row shows its latest valid observation at or before the cursor.</p><div class="usage-inspector" id="${inspectorId}" aria-live="polite"></div>`;
+  </svg><p class="usage-inspector-hint">Hover or tap to move the shared time cursor. Use ←/→ to step through observed times, Home/End for the range edges. Each row shows the last recorded value at or before the cursor. Lines stop at the last poll; earlier readings are labeled.</p><div class="usage-inspector" id="${inspectorId}" aria-live="polite"></div>`;
   const target = host.querySelector(".usage-hover-layer");
   if (!target || !model.timestamps.length) return;
   const markerByAccount = new Map([...host.querySelectorAll(".usage-cursor-point")]
@@ -704,7 +703,7 @@ function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
         marker.setAttribute("display", "none");
         continue;
       }
-      marker.setAttribute("cx", cursorX);
+      marker.setAttribute("cx", x(Math.max(model.startMs, Math.min(selectedTime, item.observedMs))).toFixed(1));
       marker.setAttribute("cy", y(reading.value).toFixed(1));
       marker.removeAttribute("display");
     }
@@ -738,10 +737,10 @@ function renderUsageInspector(model, timeMs, inspectorId, visibleAccounts) {
   const rows = model.series.map((item) => {
     const reading = usageChartValueAt(item, model.key, timeMs);
     const hidden = visibleAccounts && !visibleAccounts.has(item.account.id);
-    const label = reading.status === "stale" ? "Stale · observation passed"
+    const label = reading.status === "last-known" ? "Last recorded · earlier poll"
       : reading.status === "cached" ? "Cached snapshot"
         : reading.status === "unavailable" ? "Unavailable" : hidden ? "Hidden" : "Observed";
-    const observedMs = timeMs === item.observedMs ? item.observedMs : Date.parse(reading.sample?.ts || "");
+    const observedMs = reading.sample && timeMs >= item.observedMs ? item.observedMs : Date.parse(reading.sample?.ts || "");
     const observed = Number.isFinite(observedMs) ? new Date(observedMs).toLocaleString() : "No reading at or before this time";
     const color = USAGE_ACCOUNT_COLORS[item.index % USAGE_ACCOUNT_COLORS.length];
     return `<tr><th><i class="usage-legend" style="--account-color:${color}"></i>${escapeHtml(item.account.label)}</th><td>${Number.isFinite(reading.value) ? `${reading.value}%` : "—"}<small>${escapeHtml(observed)}</small></td><td>${label}${hidden ? " · hidden from chart" : ""}</td></tr>`;

@@ -48,7 +48,7 @@ test("retains each account when readings coincide at the shared timestamp", () =
   assert.deepEqual(model.series.map((item) => usageChartValueAt(item, key, model.timestamps[0]).value), [80, 80]);
 });
 
-test("keeps missing metric observations as gaps and never carries values past observedAt", () => {
+test("keeps missing metric observations as gaps and labels last-known values beyond a poll", () => {
   const history = {
     account: { id: "a", label: "A" },
     index: 0,
@@ -67,9 +67,9 @@ test("keeps missing metric observations as gaps and never carries values past ob
   assert.equal(usageChartValueAt(model.series[0], key, Date.parse(ts(20))).status, "unavailable");
   assert.equal(usageChartValueAt(model.series[0], key, Date.parse(ts(25))).status, "unavailable");
   assert.deepEqual(usageChartValueAt(model.series[0], key, Date.parse(ts(31))), {
-    value: null,
-    status: "stale",
-    sample: null
+    value: 65,
+    status: "last-known",
+    sample: history.data.samples[2]
   });
 });
 
@@ -99,13 +99,13 @@ test("exposes in-range baseline and latest observation boundaries for a quiet hi
   assert.equal(usageChartValueAt(model.series[0], key, model.timestamps[1]).value, 75);
 });
 
-test("labels saved readings as cached while refusing values after their observation time", () => {
+test("labels saved readings as cached beyond their observation time", () => {
   const history = accountHistory("a", [[10, 20]], ts(10));
   history.data.savedSnapshot = true;
   const model = buildUsageChartModel([history], key, startMs, startMs + 60 * 60_000);
   assert.equal(usageChartValueAt(model.series[0], key, Date.parse(ts(10))).status, "cached");
-  assert.equal(usageChartValueAt(model.series[0], key, Date.parse(ts(11))).value, null);
-  assert.equal(usageChartValueAt(model.series[0], key, Date.parse(ts(11))).status, "stale");
+  assert.equal(usageChartValueAt(model.series[0], key, Date.parse(ts(11))).value, 80);
+  assert.equal(usageChartValueAt(model.series[0], key, Date.parse(ts(11))).status, "cached");
 });
 
 test("chooses the nearest shared cursor timestamp and supports keyboard edge navigation", () => {
@@ -181,4 +181,15 @@ test("includes the range-start baseline in consumption and quiet-range insights"
   const quietInsight = usageInsightStats(quiet.series, key, startMs, Date.parse(ts(60)))[0];
   assert.equal(quietInsight.consumptionPoints, 0);
   assert.match(quietInsight.summary, /80% latest/);
+});
+
+
+test("compares accounts polled at different times without hiding their recorded values", () => {
+  const model = buildUsageChartModel([
+    accountHistory("a", [[10, 20]], ts(30)),
+    accountHistory("b", [[10, 20]], ts(29))
+  ], key, startMs, Date.parse(ts(60)));
+  const latest = model.timestamps.at(-1);
+  assert.deepEqual(model.series.map((series) => usageChartValueAt(series, key, latest).value), [80, 80]);
+  assert.equal(usageChartValueAt(model.series[1], key, latest).status, "last-known");
 });
