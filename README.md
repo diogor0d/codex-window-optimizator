@@ -113,6 +113,10 @@ Environment variables (defaults shown are the in-container values):
 
 Managed in the web UI under Settings: timezone, schedule times, workspace directory, model, effort, summary, approval policy, network access for scheduled turns, skip-if-active, and the scheduled prompt template. Network access is off by default; the default approval policy is `on-request`.
 
+The **Model** dropdown in Schedule settings defaults to **Automatic · prefer lowest cost**. It selects from each account's Codex `model/list` catalog, preferring GPT-6 Luna, then GPT-5.6 Luna when the newer model is absent. Remaining known models follow published Standard credit rates; unknown catalogs fall back to their default model. Catalogs are cached for five minutes, and a listed model's account access is confirmed only by a completed turn. The dropdown in account overrides can select a different model or inherit the global setting. An explicit model missing from an account's catalog fails with an actionable message instead of silently choosing another model.
+
+The selected model is sent explicitly when creating/resuming threads and starting turns, so an old thread or CLI default cannot restore retired GPT-5.5. Scheduled and manual turns use Standard speed to avoid inherited Fast pricing. GPT-5.5 is excluded from the picker following its October 14, 2026 retirement for ChatGPT sign-in. Existing explicit overrides remain visible as unavailable until changed. Model availability depends on the pinned CLI and account; upgrading the CLI may expose newer choices. See [OpenAI's model guidance](https://learn.chatgpt.com/docs/models) and [Standard credit rates](https://learn.chatgpt.com/docs/pricing).
+
 ### Telegram alerts
 
 1. Create a dedicated bot with Telegram's `@BotFather` and start a conversation with it, or add it to the intended private group.

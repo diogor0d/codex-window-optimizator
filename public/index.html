@@ -280,8 +280,9 @@
                 <input id="accountWorkspaceInput" autocomplete="off" placeholder="Inherited">
               </label>
               <label>
-                Model override
-                <input id="accountModelInput" autocomplete="off" placeholder="Inherited">
+                Model
+                <select id="accountModelInput"><option value="">Use global model</option></select>
+                <small id="accountModelHint">Models load from the selected account's Codex catalog.</small>
               </label>
               <label>
                 Scheduled prompt template
@@ -347,8 +348,9 @@
           </label>
           <div class="grid-2">
             <label>
-              Model override
-              <input id="modelInput" name="model" autocomplete="off" placeholder="CLI default">
+              Model
+              <select id="modelInput" name="model"><option value="">Automatic · prefer lowest cost</option></select>
+              <small id="modelHint">Automatic prefers Luna from each account's Codex catalog.</small>
             </label>
             <label>
               Effort

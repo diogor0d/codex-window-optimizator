@@ -9,6 +9,7 @@ import { advanceAuthenticationFailure, interpretCodexLoginStatus, mergeAuthentic
 import { recordRateLimitsNotification, recordRateLimitsRead } from "./rate-limits.mjs";
 import { buildQuotaAlertEvents, formatTelegramAlertMessages, withoutTelegramCredentials } from "./telegram-alerts.mjs";
 import { adaptivePollingInterval, appendUsageSample, latestUsageActivityAt, normalizeUsageHistory, observedUsageKeys } from "./usage-history.mjs";
+import { chooseModel, readModelCatalog } from "./models.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -883,6 +884,8 @@ class CodexAppServer {
     this.buffer = "";
     this.threadStatuses = new Map();
     this.readyPromise = null;
+    this.modelCatalog = null;
+    this.modelCatalogAt = 0;
   }
 
   get running() {
@@ -932,6 +935,7 @@ class CodexAppServer {
         this.rejectAll(new Error(`app-server exited with code ${code ?? "unknown"}`));
         this.proc = null;
         this.readyPromise = null;
+        this.modelCatalog = null;
         this.threadStatuses.clear();
       }
     });
@@ -941,6 +945,7 @@ class CodexAppServer {
   }
 
   stop() {
+    this.modelCatalog = null;
     if (this.proc) {
       this.proc.kill("SIGTERM");
     }
@@ -1049,6 +1054,14 @@ class CodexAppServer {
       await this.readyPromise;
     }
     return this.rawRequest(method, params, timeoutMs);
+  }
+
+  async models() {
+    if (!this.modelCatalog || Date.now() - this.modelCatalogAt > 300000) {
+      this.modelCatalog = await readModelCatalog(this);
+      this.modelCatalogAt = Date.now();
+    }
+    return this.modelCatalog;
   }
 
   async initializeConnection() {
@@ -1275,7 +1288,7 @@ function updateDashboardState(accountId, message) {
   }
 }
 
-async function ensureThread(accountId = store.selectedAccountId) {
+async function ensureThread(accountId = store.selectedAccountId, selectedModel = null) {
   const account = requireAccount(accountId);
   const appServer = getAppServer(account.id);
   const auth = await getAuthStatus(account, true);
@@ -1284,13 +1297,12 @@ async function ensureThread(accountId = store.selectedAccountId) {
   }
 
   const settings = effectiveSettings(account);
+  const selection = selectedModel || chooseModel(await appServer.models(), settings.model);
   const common = {
     serviceName: SERVICE_NAME,
+    model: selection.model,
     cwd: settings.workspaceDir || DEFAULT_WORKSPACE_DIR
   };
-  if (settings.model) {
-    common.model = settings.model;
-  }
 
   if (account.threadState.threadId) {
     try {
@@ -1463,7 +1475,10 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
   addScheduledRun(run);
 
   try {
-    const threadId = await ensureThread(account.id);
+    const settings = effectiveSettings(account);
+    const selection = chooseModel(await appServer.models(), settings.model);
+    run.model = selection.model;
+    const threadId = await ensureThread(account.id, selection);
     run.threadId = threadId;
 
     if (store.settings.skipIfActive && appServer.isThreadActive(threadId)) {
@@ -1478,21 +1493,21 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
       return run;
     }
 
-    const settings = effectiveSettings(account);
     const inputText = prompt || renderPrompt(settings.promptTemplate, scheduledTime, reason);
     const params = {
       threadId,
+      model: selection.model,
+      serviceTier: "default",
       input: [{ type: "text", text: inputText }],
       cwd: settings.workspaceDir || DEFAULT_WORKSPACE_DIR,
       sandboxPolicy: buildSandboxPolicy(account),
       approvalPolicy: normalizeApprovalPolicy(store.settings.approvalPolicy),
       summary: store.settings.summary || "concise"
     };
-    if (settings.model) {
-      params.model = settings.model;
-    }
     if (store.settings.effort) {
-      params.effort = store.settings.effort;
+      const supported = selection.supportedReasoningEfforts?.map((entry) => entry.reasoningEffort) || [];
+      params.effort = !supported.length || supported.includes(store.settings.effort)
+        ? store.settings.effort : selection.defaultReasoningEffort;
     }
 
     const result = await appServer.send("turn/start", params);
@@ -2111,6 +2126,12 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/settings") {
     return sendJson(res, 200, publicSettings());
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/models") {
+    const account = requireAccount(url.searchParams.get("accountId"));
+    const data = await getAppServer(account.id).models();
+    return sendJson(res, 200, { accountId: account.id, data, recommendedModel: chooseModel(data).model });
   }
 
   if (req.method === "PATCH" && url.pathname === "/api/settings") {

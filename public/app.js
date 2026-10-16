@@ -2,6 +2,8 @@ const $ = (selector) => document.querySelector(selector);
 
 const state = {
   settings: null,
+  modelCatalogs: new Map(),
+  modelCatalogRequests: new Set(),
   activityIds: new Set(),
   activityEvents: [],
   showRawEvents: false,
@@ -1264,12 +1266,55 @@ function fillAccountOverrides(account) {
   const effective = account?.effectiveSettings || {};
   $("#accountScheduleInput").value = (overrides.scheduleTimes || []).join(", ");
   $("#accountWorkspaceInput").value = overrides.workspaceDir || "";
-  $("#accountModelInput").value = overrides.model || "";
+  fillModelSelect($("#accountModelInput"), overrides.model || "", "Use global model");
   $("#accountPromptInput").value = overrides.promptTemplate || "";
   $("#accountScheduleInput").placeholder = (effective.scheduleTimes || []).join(", ") || "Inherited";
   $("#accountWorkspaceInput").placeholder = effective.workspaceDir || "Inherited";
-  $("#accountModelInput").placeholder = effective.model || "CLI default";
+  void refreshModels(account?.id);
   $("#accountPromptInput").placeholder = "Inherited global template";
+}
+
+function fillModelSelect(select, value, defaultLabel) {
+  const catalog = state.modelCatalogs.get(selectedAccountId());
+  const models = catalog?.data || [];
+  select.replaceChildren(new Option(defaultLabel, ""));
+  for (const model of models) {
+    select.add(new Option(`${model.displayName}${model.model === catalog.recommendedModel ? " · lowest cost preference" : ""}`, model.model));
+  }
+  if (value && !models.some((model) => model.model === value)) {
+    select.add(new Option(`${value} · unavailable in catalog`, value));
+  }
+  select.value = value;
+}
+
+async function refreshModels(accountId) {
+  if (!accountId || state.modelCatalogRequests.has(accountId)) return;
+  const cached = state.modelCatalogs.get(accountId);
+  if (cached && Date.now() - cached.loadedAt < 300000) {
+    if (cached.data && selectedAccountId() === accountId) renderModelCatalog(cached);
+    return;
+  }
+  state.modelCatalogRequests.add(accountId);
+  try {
+    const catalog = await api(`/api/models?accountId=${encodeURIComponent(accountId)}`);
+    state.modelCatalogs.set(accountId, { ...catalog, loadedAt: Date.now() });
+    if (selectedAccountId() !== accountId) return;
+    renderModelCatalog(catalog);
+  } catch (error) {
+    state.modelCatalogs.set(accountId, { loadedAt: Date.now() });
+    if (selectedAccountId() === accountId) {
+      $("#modelHint").textContent = $("#accountModelHint").textContent = `Could not load models: ${error.message}`;
+    }
+  } finally {
+    state.modelCatalogRequests.delete(accountId);
+  }
+}
+
+function renderModelCatalog(catalog) {
+  fillModelSelect($("#modelInput"), $("#modelInput").value, "Automatic · prefer lowest cost");
+  fillModelSelect($("#accountModelInput"), $("#accountModelInput").value, "Use global model");
+  $("#modelHint").textContent = `Automatic prefers ${catalog.recommendedModel} for this account. Other accounts use their own catalogs.`;
+  $("#accountModelHint").textContent = "An empty override uses the global model. Model access is verified when a turn completes.";
 }
 
 function setAccountMessage(text) {
@@ -1308,7 +1353,7 @@ function fillSettings(settings) {
   $("#timezoneInput").value = settings.timezone || "";
   $("#scheduleInput").value = (settings.scheduleTimes || []).join(", ");
   $("#workspaceInput").value = settings.workspaceDir || "";
-  $("#modelInput").value = settings.model || "";
+  fillModelSelect($("#modelInput"), settings.model || "", "Automatic · prefer lowest cost");
   $("#effortInput").value = settings.effort || "";
   $("#approvalInput").value = settings.approvalPolicy || "";
   $("#summaryInput").value = settings.summary || "";
