@@ -1290,7 +1290,7 @@ function fillModelSelect(select, value, defaultLabel) {
 async function refreshModels(accountId) {
   if (!accountId || state.modelCatalogRequests.has(accountId)) return;
   const cached = state.modelCatalogs.get(accountId);
-  if (cached && Date.now() - cached.loadedAt < 300000) {
+  if (cached && Date.now() - cached.loadedAt < (cached.data ? 300000 : 10000)) {
     if (cached.data && selectedAccountId() === accountId) renderModelCatalog(cached);
     return;
   }
