@@ -1146,6 +1146,7 @@ function updateStatus(status) {
   badge($("#serviceBadge"), status.auth.probeUnavailable ? "Auth check unavailable" : status.auth.logoutConfirmationPending ? "Auth check pending" : status.auth.loggedIn ? "Ready" : status.auth.authIssue ? "Auth issue" : "Needs login", authUncertain ? "warn" : status.auth.loggedIn ? "ok" : status.auth.authIssue ? "bad" : "warn");
   badge($("#loginBadge"), status.auth.probeUnavailable ? "Check unavailable" : status.auth.logoutConfirmationPending ? "Confirmation pending" : status.auth.loggedIn ? "Logged in" : status.auth.authIssue ? "Authentication failed" : "Logged out", authUncertain ? "warn" : status.auth.loggedIn ? "ok" : "bad");
   badge($("#schedulerBadge"), status.scheduler.enabled ? "Enabled" : "Paused", status.scheduler.enabled ? "ok" : "warn");
+  renderScheduleSummary();
   updateWindowSummary(status.dashboard || {});
   renderFleet();
   renderUsageHistory();
@@ -1411,6 +1412,30 @@ function renderSchedulerToggle() {
   button.setAttribute("aria-busy", String(state.schedulerBusy));
 }
 
+function schedulePromptPreview(settings, now = new Date()) {
+  const template = settings.promptTemplate || "";
+  if (!/\{\{(?:local_time|scheduled_time|reason)\}\}/.test(template)) return template;
+  const timezone = settings.timezone || "Europe/Lisbon";
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+  }).formatToParts(now).map(part => [part.type, part.value]));
+  const localTime = `${parts.hour}:${parts.minute}`;
+  const times = [...(settings.scheduleTimes || [])].sort();
+  const todayNext = times.find(time => time > localTime);
+  const scheduledTime = todayNext || times[0] || "";
+  let date = timezoneDateKey(timezone, now);
+  if (!todayNext && scheduledTime) {
+    // Advance the local calendar date without applying the browser's timezone.
+    const tomorrow = new Date(`${date}T00:00:00Z`);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    date = tomorrow.toISOString().slice(0, 10);
+  }
+  return template
+    .replaceAll("{{local_time}}", `${date} ${scheduledTime || localTime} ${timezone}`)
+    .replaceAll("{{scheduled_time}}", scheduledTime)
+    .replaceAll("{{reason}}", "scheduled");
+}
+
 function renderScheduleSummary() {
   const settings = state.settings;
   if (!settings) return;
@@ -1421,7 +1446,8 @@ function renderScheduleSummary() {
     chip.textContent = time;
     return chip;
   }));
-  $("#schedulePrompt").textContent = settings.promptTemplate || "No scheduled message set.";
+  $("#schedulePrompt").textContent = schedulePromptPreview(settings) || "No scheduled message set.";
+  $("#schedulePromptHint").hidden = !/\{\{(?:local_time|scheduled_time|reason)\}\}/.test(settings.promptTemplate || "");
   $("#scheduleOptions").textContent = `${settings.model || "Automatic model"} · ${settings.effort || "Default"} effort · Telegram ${settings.telegramConfigured && settings.telegramAlertsEnabled ? "on" : "off"}`;
 }
 
@@ -2922,6 +2948,7 @@ if (typeof document !== "undefined") {
 }
 
 export {
+  schedulePromptPreview,
   loginPresentation,
   activityTone,
   shouldShowEvent,

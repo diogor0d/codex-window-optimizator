@@ -66,7 +66,7 @@ async function startFixture() {
     settings: {
       schedulerEnabled: false, model: "", effort: "medium", workspaceDir: temp,
       skipIfActive: false, timezone: "Europe/Lisbon", scheduleTimes: ["08:00", "20:00"],
-      promptTemplate: "Run a safe local E2E check", approvalPolicy: "on-request", summary: "concise",
+      promptTemplate: "Scheduled Codex window ping at {{local_time}}. Slot {{scheduled_time}} ({{reason}}).", approvalPolicy: "on-request", summary: "concise",
       networkAccess: false, telegramAlertsEnabled: false
     },
     selectedAccountId: "alpha",
@@ -293,6 +293,12 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.locator("#fleetRows .strip-row").first().waitFor();
     await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
     await page.waitForFunction(() => document.querySelector("#timezoneInput").value === "Europe/Lisbon");
+    await page.waitForFunction(() => /Scheduled Codex window ping at \d{4}-\d{2}-\d{2} \d{2}:\d{2} Europe\/Lisbon/.test(document.querySelector("#schedulePrompt").textContent));
+    assert.ok(!(await page.locator("#schedulePrompt").textContent()).includes("{{"));
+    assert.equal(await page.locator("#schedulePromptHint").isVisible(), true);
+    assert.ok((await page.locator("#promptInput").inputValue()).includes("{{local_time}}"));
+    await page.locator("#schedule").scrollIntoViewIfNeeded();
+    await screenshot(page, `${label}-rendered-message-preview`);
 
     // Theme switch persists across reload.
     await page.locator("#themeToggleBtn").click();
@@ -331,6 +337,7 @@ async function exercise(browserType, fixture, viewport, label) {
     await saveSchedule(page);
     assert.equal(await page.locator("#scheduleTimes").textContent(), "07:1519:45");
     assert.equal(await page.locator("#schedulePrompt").textContent(), "E2E saved prompt");
+    assert.equal(await page.locator("#schedulePromptHint").isVisible(), false);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector("#scheduleInput").value === "07:15, 19:45");
     assert.equal(await page.locator("#modelInput").inputValue(), "gpt-5.6-luna");

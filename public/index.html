@@ -348,7 +348,11 @@
         <p id="scheduleTimezone" class="hint"></p>
         <div id="scheduleTimes" class="schedule-times" aria-label="Daily send times"></div>
         <p id="scheduleNext" class="schedule-next"></p>
-        <div class="schedule-prompt"><p class="eyebrow">Scheduled message</p><p id="schedulePrompt"></p></div>
+        <div class="schedule-prompt">
+          <p class="eyebrow">Message preview</p>
+          <p id="schedulePrompt"></p>
+          <p id="schedulePromptHint" class="hint" hidden>Shared schedule preview · values update when sent.</p>
+        </div>
         <p id="scheduleOptions" class="hint"></p>
         <div class="schedule-actions">
           <button id="editScheduleBtn" type="button" class="primary" disabled>Edit schedule</button>
@@ -424,6 +428,7 @@
           <label>
             Scheduled prompt template
             <textarea id="promptInput" name="promptTemplate" rows="4"></textarea>
+            <small>Use {{local_time}}, {{scheduled_time}}, or {{reason}} for values filled in when sent.</small>
           </label>
           <details class="console-disclosure" id="advancedSettings">
             <summary>Advanced run settings</summary>
