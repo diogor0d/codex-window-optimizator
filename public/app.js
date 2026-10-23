@@ -7,6 +7,8 @@ const state = {
   accountDrafts: new Map(),
   accountBusy: false,
   removingAccountIds: new Set(),
+  removalTarget: null,
+  removalBusy: false,
   selectingAccountId: null,
   statusRequestId: 0,
   renderedAccountId: null,
@@ -1203,6 +1205,8 @@ function updateAccountControls() {
   $("#deviceLoginBtn").disabled = Boolean(state.accountBusy || signingIn || !account);
   $("#removeAccountBtn").disabled ||= state.accounts.length <= 1;
   $("#removeAccountBtn").title = state.accounts.length <= 1 ? "Keep at least one account in the console." : "";
+  $("#confirmRemoveAccountBtn").disabled = Boolean(state.accountBusy || state.sendBusy || !state.removalTarget || state.accounts.length <= 1);
+  for (const id of ["closeRemoveAccountBtn", "cancelRemoveAccountBtn"]) $("#" + id).disabled = state.removalBusy;
   for (const id of ["accountDetailsForm", "accountOverridesForm"]) $("#" + id).inert = state.accountBusy;
   if (!state.sendBusy) {
     $("#manualSendBtn").disabled = $("#runNowBtn").disabled = !account || !account.auth?.loggedIn;
@@ -2492,19 +2496,17 @@ function connectEvents() {
     const event = JSON.parse(message.data);
     addActivity(event, true);
     if (event.message === "account/rateLimits/updated") {
-      void refreshStatus();
+      void refreshStatus().catch(() => {});
       if (event.payload?.accountId) {
         void loadUsageHistory(event.payload.accountId, true);
       }
     }
   });
   events.addEventListener("login", async () => {
-    await refreshLoginSession();
-    await refreshStatus();
+    await Promise.allSettled([refreshLoginSession(), refreshStatus()]);
   });
   events.addEventListener("status", async () => {
-    await refreshStatus();
-    await loadFleetUsageHistory(true);
+    await Promise.allSettled([refreshStatus(), loadFleetUsageHistory(true)]);
   });
   events.addEventListener("run", async () => {
     await Promise.allSettled([refreshStatus(), refreshActivity()]);
@@ -2608,6 +2610,75 @@ async function setScheduler(enabled) {
   finally {
     state.schedulerBusy = false;
     renderSchedulerToggle();
+  }
+}
+
+async function removeConfirmedAccount() {
+  if (state.removalBusy) return;
+  if (state.accountBusy || state.sendBusy) {
+    feedback("removeAccountMessage", "Wait for the current action to finish, then try again.");
+    return;
+  }
+  const target = state.removalTarget;
+  if (!target) return;
+  if (!state.accounts.some(account => account.id === target.id) || state.accounts.length <= 1) {
+    feedback("removeAccountMessage", "This account can no longer be removed. Close this dialog and refresh the account list.", "error");
+    return;
+  }
+  state.removalBusy = state.accountBusy = true;
+  state.removingAccountIds.add(target.id);
+  state.statusRequestId += 1;
+  const button = $("#confirmRemoveAccountBtn");
+  button.textContent = "Removing…";
+  button.setAttribute("aria-busy", "true");
+  feedback("removeAccountMessage", `Removing ${target.label}…`);
+  updateAccountControls();
+  for (const [key, controller] of state.usageHistoryControllers) {
+    if (!key.startsWith(`${target.id}:`)) continue;
+    state.usageHistoryRefreshQueued.delete(key);
+    controller.abort();
+  }
+  let removed = false;
+  try {
+    let result;
+    try {
+      result = await api(`/api/accounts/${encodeURIComponent(target.id)}`, { method: "DELETE" });
+    } catch (error) {
+      // A lost response does not mean deletion failed. Reconcile before offering a retry.
+      const accounts = await api("/api/accounts").catch(() => null);
+      if (!accounts) throw new Error("Removal could not be confirmed. Refresh the account list before trying again.");
+      if (accounts.accounts.some(account => account.id === target.id)) throw error;
+      result = accounts;
+    }
+    state.statusRequestId += 1;
+    state.selectedAccountId = result.selectedAccountId;
+    state.accounts = result.accounts;
+    state.accountDrafts.delete(target.id);
+    try {
+      localStorage.removeItem(STATUS_SNAPSHOT_STORAGE_KEY);
+      const histories = JSON.parse(localStorage.getItem(USAGE_HISTORY_SNAPSHOT_STORAGE_KEY) || "{}");
+      delete histories[target.id];
+      localStorage.setItem(USAGE_HISTORY_SNAPSHOT_STORAGE_KEY, JSON.stringify(histories));
+    } catch {}
+    renderAccounts();
+    $("#removeAccountDialog").close();
+    feedback("accountMessage", `Removed ${target.label}.`, "success");
+    removed = true;
+  } catch (error) {
+    feedback("removeAccountMessage", error.message, "error");
+  } finally {
+    state.removingAccountIds.delete(target.id);
+    state.removalBusy = state.accountBusy = false;
+    button.textContent = "Remove account";
+    button.removeAttribute("aria-busy");
+    updateAccountControls();
+  }
+  if (removed) {
+    $("#accountSelect").focus({ preventScroll: true });
+    const results = await Promise.allSettled([refreshStatus(), refreshLoginSession(), refreshActivity()]);
+    if (results.some(result => result.status === "rejected") && $("#accountMessage").textContent === `Removed ${target.label}.`) {
+      feedback("accountMessage", `Removed ${target.label}. Some details could not refresh; use Refresh to update them.`);
+    }
   }
 }
 
@@ -2766,29 +2837,26 @@ function bindActions() {
   });
   $("#accountOverridesForm").addEventListener("submit", saveAccountOverrides);
   $("#removeAccountBtn").addEventListener("click", () => {
-    const accountId = selectedAccountId();
-    const account = state.accounts.find((item) => item.id === accountId);
-    if (!account || !window.confirm(`Remove "${account.label}"? Its saved Codex credentials and thread data will be deleted from this server.`)) return;
-    void accountAction($("#removeAccountBtn"), "accountDangerMessage", async () => {
-      state.removingAccountIds.add(accountId);
-      for (const [key, controller] of state.usageHistoryControllers) {
-        if (!key.startsWith(`${accountId}:`)) continue;
-        state.usageHistoryRefreshQueued.delete(key);
-        controller.abort();
-      }
-      try {
-        const result = await api(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
-        state.accountDrafts.delete(accountId);
-        state.selectedAccountId = result.selectedAccountId;
-        state.accounts = result.accounts;
-        renderAccounts();
-        await refreshStatus();
-        await refreshLoginSession();
-        feedback("accountMessage", `Removed ${account.label}.`, "success");
-      } finally {
-        state.removingAccountIds.delete(accountId);
-      }
-    });
+    const account = state.accounts.find(item => item.id === selectedAccountId());
+    if (!account || state.accountBusy || state.sendBusy || state.accounts.length <= 1) return;
+    state.removalTarget = { id: account.id, label: account.label };
+    $("#removeAccountName").textContent = account.label;
+    feedback("removeAccountMessage", "");
+    updateAccountControls();
+    $("#removeAccountDialog").showModal();
+    $("#cancelRemoveAccountBtn").focus();
+  });
+  $("#confirmRemoveAccountBtn").addEventListener("click", () => void removeConfirmedAccount());
+  for (const id of ["closeRemoveAccountBtn", "cancelRemoveAccountBtn"]) $("#" + id).addEventListener("click", () => {
+    if (!state.removalBusy) $("#removeAccountDialog").close();
+  });
+  $("#removeAccountDialog").addEventListener("cancel", event => {
+    if (state.removalBusy) event.preventDefault();
+  });
+  $("#removeAccountDialog").addEventListener("close", () => {
+    state.removalTarget = null;
+    const opener = $("#removeAccountBtn");
+    (opener.getClientRects().length && !opener.disabled ? opener : $("#accountSelect")).focus({ preventScroll: true });
   });
   $("#accountEnabledInput").addEventListener("change", (event) => {
     const enabled = event.target.checked;

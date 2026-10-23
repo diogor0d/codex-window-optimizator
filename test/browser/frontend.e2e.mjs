@@ -108,8 +108,27 @@ async function startFixture() {
   try {
     await waitForServer(`${base}/api/health`, child);
     // Inject transport failures outside the browser so service workers cannot bypass them.
-    const controls = { failPause: false, sendGate: null };
+    const controls = { failPause: false, sendGate: null, deleteGate: null, deleteRequests: [], failDelete: false, loseDeleteResponse: false, failStatusAfterDelete: false, failNextStatus: false };
     const proxy = createServer(async (req, res) => {
+      if (req.url === "/api/status" && controls.failNextStatus) {
+        if (!controls.failStatusAfterDelete) controls.failNextStatus = false;
+        req.resume();
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "Status temporarily unavailable." }));
+        return;
+      }
+      const deleting = req.method === "DELETE" && req.url.startsWith("/api/accounts/");
+      if (deleting) {
+        controls.deleteRequests.push(req.url);
+        if (controls.failDelete) {
+          controls.failDelete = false;
+          req.resume();
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "Temporary removal failure. Try again." }));
+          return;
+        }
+        if (controls.deleteGate) await controls.deleteGate;
+      }
       if (req.url === "/api/scheduler/pause" && controls.failPause) {
         controls.failPause = false;
         req.resume();
@@ -119,6 +138,18 @@ async function startFixture() {
       }
       if (req.url === "/api/run-now" && controls.sendGate) await controls.sendGate;
       const upstream = httpRequest(base + req.url, { method: req.method, headers: req.headers }, response => {
+        if (deleting && response.statusCode === 200) {
+          controls.failNextStatus = controls.failStatusAfterDelete;
+          if (controls.loseDeleteResponse) {
+            controls.loseDeleteResponse = false;
+            response.resume();
+            response.on("end", () => {
+              res.writeHead(503, { "content-type": "application/json" });
+              res.end(JSON.stringify({ error: "Removal response lost." }));
+            });
+            return;
+          }
+        }
         res.writeHead(response.statusCode, response.headers);
         response.pipe(res);
       });
@@ -163,7 +194,7 @@ async function requestJson(base, route, method = "GET", body) {
   return response.json();
 }
 
-async function accountWorkflow(page, fixture, label) {
+async function accountWorkflow(page, fixture, label, expectedHttpErrors) {
   // Cancel is reversible and does not create an account.
   await page.locator("#addAccountOpenBtn").click();
   await page.locator("#newAccountLabelInput").fill("Cancelled account");
@@ -252,13 +283,48 @@ async function accountWorkflow(page, fixture, label) {
   await page.locator("#accountDangerMessage").getByText("Signed out.", { exact: true }).waitFor();
   await page.locator("#deviceLoginBtn").waitFor();
   assert.equal(await page.locator("#loginProgress").isVisible(), false);
-  // Only this disposable fixture account is deleted, after the user's confirmation.
-  page.once("dialog", dialog => dialog.dismiss());
+  // Cancellation never deletes; one confirmation sends exactly one scoped request.
   await page.locator("#removeAccountBtn").click();
+  assert.equal(await page.locator("#removeAccountName").textContent(), "Work account");
+  assert.equal(await page.locator("#cancelRemoveAccountBtn").evaluate(el => el === document.activeElement), true);
+  await page.locator("#cancelRemoveAccountBtn").click();
   assert.equal((await requestJson(fixture.base, "/api/accounts")).accounts.length, 3);
-  page.once("dialog", dialog => dialog.accept());
+  assert.equal(fixture.controls.deleteRequests.length, 0);
+  // A real failure keeps the confirmation open with a usable retry.
+  expectedHttpErrors.add(`${fixture.base}/api/accounts/${newId}`);
+  expectedHttpErrors.add(`${fixture.base}/api/status`);
+  fixture.controls.failDelete = true;
   await page.locator("#removeAccountBtn").click();
+  await screenshot(page, `${label}-remove-account`);
+  await page.locator("#confirmRemoveAccountBtn").click();
+  await page.locator("#removeAccountMessage").getByText("Temporary removal failure. Try again.", { exact: true }).waitFor();
+  assert.equal(await page.locator("#removeAccountDialog").evaluate(el => el.open), true);
+  await page.waitForFunction(() => !document.querySelector("#confirmRemoveAccountBtn").disabled);
+  assert.equal(fixture.controls.deleteRequests.length, 1);
+  let releaseDelete;
+  fixture.controls.deleteGate = new Promise(resolve => { releaseDelete = resolve; });
+  fixture.controls.loseDeleteResponse = true;
+  fixture.controls.failStatusAfterDelete = true;
+  await page.locator("#confirmRemoveAccountBtn").click();
+  await page.waitForFunction(() => document.querySelector("#confirmRemoveAccountBtn").disabled && document.querySelector("#confirmRemoveAccountBtn").textContent === "Removing…");
+  await page.waitForFunction(() => document.querySelector("#accountSelect").disabled);
+  assert.equal(await page.locator("#cancelRemoveAccountBtn").isDisabled(), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#removeAccountDialog").evaluate(el => el.open), true);
+  await page.locator("#confirmRemoveAccountBtn").evaluate(el => el.click());
+  assert.equal(fixture.controls.deleteRequests.length, 2);
+  releaseDelete();
+  fixture.controls.deleteGate = null;
   await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2 && !document.querySelector("#accountSelect").disabled);
+  await page.waitForFunction(() => !document.querySelector("#removeAccountDialog").open && document.querySelector("#accountMessage").textContent.includes("Some details could not refresh"));
+  assert.match(await page.locator("#accountMessage").textContent(), /^Removed Work account\./);
+  assert.equal(await page.locator("#accountSelect").inputValue(), "alpha");
+  assert.equal(fixture.controls.deleteRequests.length, 2, "no second DELETE after a lost acknowledgement or failed refresh");
+  assert.ok(fixture.controls.deleteRequests.every(url => url === `/api/accounts/${newId}`));
+  assert.equal((await requestJson(fixture.base, "/api/accounts")).accounts.length, 2);
+  assert.equal(await page.locator("#accountSelect").evaluate(el => el === document.activeElement), true);
+  fixture.controls.failStatusAfterDelete = false;
+  fixture.controls.failNextStatus = false;
 }
 
 async function openSchedule(page, tab = "schedule") {
@@ -419,7 +485,7 @@ async function exercise(browserType, fixture, viewport, label) {
     await openSchedule(page, "run");
     assert.equal(await page.locator("#promptInput").inputValue(), "Unsaved shared draft");
     await saveSchedule(page);
-    await accountWorkflow(page, fixture, label);
+    await accountWorkflow(page, fixture, label, expectedHttpErrors);
 
     // Seeded failures and success must use distinct semantic classes/tones.
     const failedTurn = page.locator("[data-event-id='seed-failed']");

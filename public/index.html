@@ -501,6 +501,13 @@
         </form>
     </dialog>
 
+    <dialog id="removeAccountDialog" aria-labelledby="removeAccountTitle" aria-describedby="removeAccountHint">
+      <div class="dialog-header"><h2 id="removeAccountTitle">Remove account?</h2><button id="closeRemoveAccountBtn" type="button" aria-label="Close account removal">×</button></div>
+      <p id="removeAccountHint">This removes <strong id="removeAccountName"></strong> and its saved credentials and thread data from this server. This cannot be undone.</p>
+      <p id="removeAccountMessage" class="form-message" role="status"></p>
+      <div class="dialog-actions"><button id="cancelRemoveAccountBtn" type="button">Cancel</button><button id="confirmRemoveAccountBtn" type="button" class="danger">Remove account</button></div>
+    </dialog>
+
     <dialog id="addAccountDialog" aria-labelledby="addAccountTitle" aria-describedby="addAccountHint">
       <form id="addAccountForm">
         <div class="dialog-header"><h2 id="addAccountTitle">Add an account</h2><button id="closeAddAccountBtn" type="button" aria-label="Close add account">✕</button></div>

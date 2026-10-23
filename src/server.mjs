@@ -100,6 +100,8 @@ const authStatusRefreshByAccount = new Map();
 const authStatusProbeAtByAccount = new Map();
 const appServers = new Map();
 const loginSessions = new Map();
+const deletingAccountIds = new Set();
+const accountProcesses = new Map();
 let stateRefreshPromise = null;
 let authStatusBroadcastPromise = null;
 let telegramFlushPromise = null;
@@ -225,6 +227,11 @@ function getAccount(accountId = store.selectedAccountId) {
 
 function requireAccount(accountId) {
   const id = accountId ?? store.selectedAccountId;
+  if (deletingAccountIds.has(id)) {
+    const error = new Error("This account is being removed. Wait for removal to finish.");
+    error.statusCode = 409;
+    throw error;
+  }
   const account = id ? store.accounts.find((item) => item.id === id) : store.accounts[0];
   if (!account) {
     const error = new Error("Account not found");
@@ -319,12 +326,14 @@ async function ensureDirs() {
   await mkdir(ACCOUNTS_DIR, { recursive: true });
   const accounts = store?.accounts?.length ? store.accounts : [defaultAccount()];
   for (const account of accounts) {
-    await ensureAccountDirs(account);
+    if (!deletingAccountIds.has(account.id)) await ensureAccountDirs(account);
   }
 }
 
 async function ensureAccountDirs(account) {
+  if (deletingAccountIds.has(account.id)) return;
   await mkdir(account.codeHome, { recursive: true });
+  if (deletingAccountIds.has(account.id)) return;
   const configPath = path.join(account.codeHome, "config.toml");
   if (!existsSync(configPath)) {
     await writeFile(configPath, 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
@@ -340,7 +349,7 @@ async function removeAccountHome(codeHome) {
   if (!allowedRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) {
     return false;
   }
-  await rm(resolved, { recursive: true, force: true });
+  await rm(resolved, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   return true;
 }
 
@@ -743,15 +752,40 @@ function codexEnv(account = getAccount()) {
   });
 }
 
+function trackAccountProcess(accountId, child) {
+  const children = accountProcesses.get(accountId) || new Set();
+  children.add(child);
+  accountProcesses.set(accountId, children);
+  child.once("close", () => {
+    children.delete(child);
+    if (!children.size) accountProcesses.delete(accountId);
+  });
+  return child;
+}
+
+async function stopAccountProcesses(accountId) {
+  await Promise.all([...(accountProcesses.get(accountId) || [])].map(child => new Promise((resolve, reject) => {
+    const onClose = () => { clearTimeout(killTimer); clearTimeout(deadline); resolve(); };
+    child.once("close", onClose);
+    if (!child.killed) child.kill("SIGTERM");
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
+    const deadline = setTimeout(() => {
+      child.off("close", onClose);
+      reject(new Error("Account processes did not stop. Refresh and try removal again."));
+    }, 5000);
+  })));
+}
+
 function runCodex(args, options = {}) {
   const account = options.account || getAccount();
+  requireAccount(account.id);
   const timeoutMs = options.timeoutMs ?? 30000;
   return new Promise((resolve) => {
-    const child = spawn("codex", args, {
+    const child = trackAccountProcess(account.id, spawn("codex", args, {
       cwd: workspaceCwd(),
       env: codexEnv(account),
       stdio: ["pipe", "pipe", "pipe"]
-    });
+    }));
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -834,6 +868,7 @@ function markAuthValidated(account) {
 
 async function getAuthStatus(accountOrId = store.selectedAccountId, force = false) {
   const account = typeof accountOrId === "object" ? accountOrId : requireAccount(accountOrId);
+  if (deletingAccountIds.has(account.id) || !store.accounts.some(item => item.id === account.id)) return unknownAuthStatus();
   const cached = authStatusCacheByAccount.get(account.id);
   if (!force && cached && Date.now() - cached.checkedAt < 10000) {
     return cached.status;
@@ -843,6 +878,7 @@ async function getAuthStatus(accountOrId = store.selectedAccountId, force = fals
   }
   const refresh = (async () => {
     const result = await runCodex(["login", "status"], { account, timeoutMs: 20000 });
+    if (deletingAccountIds.has(account.id) || !store.accounts.some(item => item.id === account.id)) return unknownAuthStatus();
     authStatusProbeAtByAccount.set(account.id, Date.now());
     const interpreted = interpretCodexLoginStatus(result);
     const previous = authStatusCacheByAccount.get(account.id)?.status;
@@ -893,16 +929,17 @@ class CodexAppServer {
   }
 
   async start() {
+    const account = requireAccount(this.accountId);
     if (this.running) {
       return;
     }
-    const account = requireAccount(this.accountId);
     await ensureDirs();
-    const proc = spawn("codex", ["app-server", "--listen", "stdio://"], {
+    requireAccount(this.accountId);
+    const proc = trackAccountProcess(account.id, spawn("codex", ["app-server", "--listen", "stdio://"], {
       cwd: workspaceCwd(),
       env: codexEnv(account),
       stdio: ["pipe", "pipe", "pipe"]
-    });
+    }));
     this.proc = proc;
     this.buffer = "";
     addActivity("codex", "info", "Started Codex app-server", {
@@ -1121,6 +1158,7 @@ function getAppServer(accountId = store.selectedAccountId, create = true) {
   if (!accountId) {
     return null;
   }
+  if (create) requireAccount(accountId);
   if (!appServers.has(accountId) && create) {
     appServers.set(accountId, new CodexAppServer(accountId));
   }
@@ -1161,11 +1199,13 @@ async function refreshAccountState(account) {
     error: null
   };
   try {
+    if (deletingAccountIds.has(account.id) || !store.accounts.some(item => item.id === account.id)) return outcome;
     const cachedAuth = authStatusCacheByAccount.get(account.id);
     const authProbeFresh = Date.now() - (authStatusProbeAtByAccount.get(account.id) || 0) < 10 * 60 * 1000;
     const auth = cachedAuth?.status.loggedIn && authProbeFresh
       ? cachedAuth.status
       : await getAuthStatus(account, true);
+    if (deletingAccountIds.has(account.id) || !store.accounts.some(item => item.id === account.id)) return outcome;
     outcome.authChecked = !auth.probeUnavailable;
     outcome.loggedIn = auth.loggedIn;
     if (auth.probeUnavailable && !auth.loggedIn) {
@@ -1192,6 +1232,7 @@ async function refreshAccountState(account) {
     clearAuthenticationFailure(account);
     queueAccountQuotaAlerts(account, previousDashboard);
   } catch (error) {
+    if (deletingAccountIds.has(account.id) || !store.accounts.some(item => item.id === account.id)) return outcome;
     outcome.rateLimits = "failed";
     outcome.error = redactString(error.message || String(error));
     if (isAuthenticationError(error)) {
@@ -1845,11 +1886,11 @@ function startDeviceLogin(accountId = store.selectedAccountId) {
   loginSessions.set(account.id, session);
   addAuthEvent("Started Codex device login", { accountId: account.id, accountLabel: account.label, sessionId: session.id });
 
-  const child = spawn("codex", ["login", "--device-auth"], {
+  const child = trackAccountProcess(account.id, spawn("codex", ["login", "--device-auth"], {
     cwd: workspaceCwd(),
     env: codexEnv(account),
     stdio: ["pipe", "pipe", "pipe"]
-  });
+  }));
 
   const append = (stream, chunk) => {
     const text = redactString(chunk.toString("utf8"));
@@ -1878,6 +1919,7 @@ function startDeviceLogin(accountId = store.selectedAccountId) {
     broadcast("login", session);
   });
   child.on("close", async (code) => {
+    if (deletingAccountIds.has(account.id) || !store.accounts.some(item => item.id === account.id)) return;
     session.status = code === 0 ? "completed" : "failed";
     session.exitCode = code;
     session.finishedAt = nowIso();
@@ -2087,34 +2129,42 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "DELETE" && url.pathname.startsWith("/api/accounts/")) {
+    if (deletingAccountIds.size) return sendError(res, 409, "An account is already being removed. Wait for removal to finish.");
     const accountId = decodeURIComponent(url.pathname.split("/").at(-1));
     const account = requireAccount(accountId);
     if (store.accounts.length <= 1) {
       return sendError(res, 400, "Cannot delete the last remaining account");
     }
-    getAppServer(account.id, false)?.stop();
-    appServers.delete(account.id);
-    loginSessions.delete(account.id);
-    authStatusCacheByAccount.delete(account.id);
-    authStatusProbeAtByAccount.delete(account.id);
-    delete store.telegramAlertState.authIssues[account.id];
-    delete store.telegramAlertState.authFailureCounts[account.id];
-    delete store.telegramAlertState.intentionalLogouts[account.id];
-    const removedCredentials = await removeAccountHome(account.codeHome);
-    store.accounts = store.accounts.filter((item) => item.id !== account.id);
-    if (store.selectedAccountId === account.id) {
-      store.selectedAccountId = store.accounts[0].id;
+    deletingAccountIds.add(account.id);
+    try {
+      getAppServer(account.id, false)?.stop();
+      await stopAccountProcesses(account.id);
+      await saveChain;
+      appServers.delete(account.id);
+      loginSessions.delete(account.id);
+      authStatusCacheByAccount.delete(account.id);
+      authStatusProbeAtByAccount.delete(account.id);
+      delete store.telegramAlertState.authIssues[account.id];
+      delete store.telegramAlertState.authFailureCounts[account.id];
+      delete store.telegramAlertState.intentionalLogouts[account.id];
+      const removedCredentials = await removeAccountHome(account.codeHome);
+      store.accounts = store.accounts.filter((item) => item.id !== account.id);
+      if (store.selectedAccountId === account.id) {
+        store.selectedAccountId = store.accounts[0].id;
+      }
+      const selected = getAccount();
+      store.threadState = selected.threadState;
+      store.dashboard = selected.dashboard;
+      await saveStore();
+      addActivity("account", "warn", "Account removed", {
+        accountId: account.id,
+        accountLabel: account.label,
+        credentialsRemoved: removedCredentials
+      });
+      return sendJson(res, 200, { selectedAccountId: store.selectedAccountId, accounts: store.accounts.map(publicAccount) });
+    } finally {
+      deletingAccountIds.delete(account.id);
     }
-    const selected = getAccount();
-    store.threadState = selected.threadState;
-    store.dashboard = selected.dashboard;
-    await saveStore();
-    addActivity("account", "warn", "Account removed", {
-      accountId: account.id,
-      accountLabel: account.label,
-      credentialsRemoved: removedCredentials
-    });
-    return sendJson(res, 200, { selectedAccountId: store.selectedAccountId, accounts: store.accounts.map(publicAccount) });
   }
 
   if (req.method === "GET" && url.pathname === "/api/activity") {
