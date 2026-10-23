@@ -192,19 +192,12 @@
 
       <section id="account" class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
         <div class="section-header account-console-header">
-          <div>
-            <p class="eyebrow">Selected account</p>
-            <h2 id="accountConsoleTitle">Account console</h2>
+          <h2 id="accountConsoleTitle">Account console</h2>
+          <div class="account-selector-rail">
+            <label class="account-selector-label"><span class="sr-only">Account</span><select id="accountSelect"></select></label>
+            <button id="addAccountOpenBtn" type="button">Add account</button>
           </div>
           <span id="loginBadge" class="badge neutral">Not checked</span>
-        </div>
-
-        <div class="account-selector-rail">
-          <label class="account-selector-label">
-            Account
-            <select id="accountSelect"></select>
-          </label>
-          <button id="addAccountOpenBtn" type="button">Add account</button>
         </div>
 
         <div class="account-access" id="accountAccess">
@@ -241,58 +234,40 @@
           <p id="accountMessage" class="form-message" role="status"></p>
         </div>
 
-        <div class="account-overview-grid">
-          <section class="account-snapshot status-panel" aria-labelledby="accountStatusTitle">
-            <div class="snapshot-header">
-              <h3 id="accountStatusTitle">Account status</h3>
-              <span id="serviceBadge" class="badge neutral">Unknown</span>
-            </div>
-            <dl class="facts"><div><dt>Last run</dt><dd id="lastRun">None</dd></div></dl>
-            <details class="console-disclosure">
-              <summary>Connection details</summary>
-              <dl class="facts">
-                <div><dt>Sign-in</dt><dd id="authState">Unknown</dd></div>
-                <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
-                <div><dt>Thread</dt><dd id="threadState">None</dd></div>
-              </dl>
-            </details>
-          </section>
-
-          <section class="account-snapshot window-panel" aria-labelledby="accountUsageTitle">
-            <div class="snapshot-header">
-              <h3 id="accountUsageTitle">Current usage window</h3>
-              <span id="windowBadge" class="badge neutral">Unknown</span>
-            </div>
-            <div class="window-meter">
-              <div class="meter-copy">
-                <span id="windowUsageLabel">Usage unknown</span>
-                <span id="windowResetHint">Reset unknown</span>
-              </div>
-              <div class="meter-track" aria-hidden="true">
-                <div id="windowUsageBar" class="meter-bar"></div>
-              </div>
-              <div class="meter-scale" aria-hidden="true">
-                <span>0%</span><span>20%</span><span>40%</span><span>60%</span><span>80%</span><span>100%</span>
-              </div>
-            </div>
+        <section class="account-usage" aria-labelledby="accountUsageTitle">
+          <div class="usage-main">
+            <div class="snapshot-header"><h3 id="accountUsageTitle">Current usage window</h3><span id="windowBadge" class="badge neutral">Unknown</span></div>
+            <strong id="windowUsageLabel">Usage unknown</strong>
+            <div class="meter-track" aria-hidden="true"><div id="windowUsageBar" class="meter-bar"></div></div>
+            <p id="windowResetHint" class="hint">Reset unknown</p>
+          </div>
+          <dl class="usage-facts">
+            <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
+            <div><dt>Reserve</dt><dd id="windowReserve">Unavailable</dd></div>
+            <div><dt>Last run</dt><dd id="lastRun">None</dd></div>
+          </dl>
+        </section>
+        <div class="account-detail-row">
+          <details class="console-disclosure account-detail">
+            <summary>Connection details</summary>
             <dl class="facts">
-              <div><dt>Remaining</dt><dd id="windowUsage">Unknown</dd></div>
-              <div><dt>Reset</dt><dd id="windowReset">Unknown</dd></div>
-              <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
-              <div><dt>Reserve</dt><dd id="windowReserve">Unavailable</dd></div>
+              <div><dt>Status</dt><dd><span id="serviceBadge" class="badge neutral">Unknown</span></dd></div>
+              <div><dt>Sign-in</dt><dd id="authState">Unknown</dd></div>
+              <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
+              <div><dt>Thread</dt><dd id="threadState">None</dd></div>
             </dl>
-            <details class="console-disclosure">
-              <summary>Quota details and recent messages</summary>
-              <dl class="facts">
-                <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
-                <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
-                <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
-                <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
-                <div><dt>Last message</dt><dd id="lastPing">None</dd></div>
-                <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
-              </dl>
-            </details>
-          </section>
+          </details>
+          <details class="console-disclosure account-detail">
+            <summary>Quota &amp; recent messages</summary>
+            <dl class="facts">
+              <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
+              <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
+              <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
+              <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
+              <div><dt>Last message</dt><dd id="lastPing">None</dd></div>
+              <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
+            </dl>
+          </details>
         </div>
 
         <details class="account-management" id="accountSettings">
@@ -370,25 +345,71 @@
           <h2>Schedule</h2>
           <span id="schedulerBadge" class="badge neutral">Unknown</span>
         </div>
-        <div class="scheduler-console">
-          <dl class="facts">
-            <div><dt>Local time</dt><dd id="localTime">Unknown</dd></div>
-          </dl>
-          <div class="button-row">
-            <button id="pauseBtn" type="button">Pause scheduler</button>
-            <button id="resumeBtn" type="button">Resume scheduler</button>
-            <span id="schedulerMessage" class="form-message" role="status"></span>
+        <p id="scheduleTimezone" class="hint"></p>
+        <div id="scheduleTimes" class="schedule-times" aria-label="Daily send times"></div>
+        <p id="scheduleNext" class="schedule-next"></p>
+        <div class="schedule-prompt"><p class="eyebrow">Scheduled message</p><p id="schedulePrompt"></p></div>
+        <p id="scheduleOptions" class="hint"></p>
+        <div class="schedule-actions">
+          <button id="editScheduleBtn" type="button" class="primary" disabled>Edit schedule</button>
+          <button id="schedulerToggleBtn" type="button" disabled>Pause</button>
+        </div>
+        <p id="schedulerMessage" class="form-message" role="status"></p>
+        <p id="scheduleMessage" class="form-message" role="status"></p>
+      </section>
+
+      <section id="send" class="panel manual-panel">
+        <div class="section-header">
+          <h2>Send a message</h2>
+        </div>
+        <p id="sendTarget" class="hint">Choose an account in Account console.</p>
+        <label>
+          One-off prompt (optional)
+          <textarea id="manualPromptInput" rows="4" placeholder="Leave empty to use the scheduled prompt template."></textarea>
+        </label>
+        <div class="button-row">
+          <button id="manualSendBtn" type="button" class="primary">Send to Codex</button>
+          <span id="manualMessage" class="form-message" role="status"></span>
+        </div>
+      </section>
+
+      <section id="activity" class="panel activity-panel">
+        <div class="section-header">
+          <h2>Activity</h2>
+          <div class="activity-actions">
+            <label class="inline-toggle">
+              <input id="rawEventsInput" type="checkbox">
+              Raw events
+            </label>
+            <button id="clearActivityBtn" type="button">Clear view</button>
           </div>
         </div>
-        <form id="settingsForm">
+        <p id="activityHint" class="hint">Recent runs, messages, settings, and errors. Routine updates are in Raw events.</p>
+        <ol id="activityList" class="activity-list timeline-list"></ol>
+      </section>
+    </main>
+
+    <dialog id="scheduleDialog" class="schedule-dialog" aria-labelledby="scheduleDialogTitle">
+      <div class="dialog-header"><h2 id="scheduleDialogTitle">Edit schedule</h2><button id="closeScheduleBtn" type="button" aria-label="Close schedule editor">×</button></div>
+      <div class="settings-tabs" role="tablist" aria-label="Schedule settings">
+        <button id="schedule-tab" type="button" role="tab" aria-selected="true" aria-controls="schedule-tab-panel">Schedule</button>
+        <button id="run-tab" type="button" role="tab" aria-selected="false" aria-controls="run-tab-panel" tabindex="-1">Run settings</button>
+        <button id="alerts-tab" type="button" role="tab" aria-selected="false" aria-controls="alerts-tab-panel" tabindex="-1">Alerts</button>
+      </div>
+        <form id="settingsForm" novalidate>
+          <div id="schedule-tab-panel" role="tabpanel" aria-labelledby="schedule-tab">
           <label>
             Timezone
             <input id="timezoneInput" name="timezone" autocomplete="off">
           </label>
-          <label>
-            Schedule times
-            <input id="scheduleInput" name="scheduleTimes" autocomplete="off" placeholder="08:00, 13:05, 18:10, 23:15">
-          </label>
+          <fieldset class="schedule-time-editor">
+            <legend>Daily send times</legend>
+            <div id="scheduleTimeInputs" class="schedule-time-inputs"></div>
+            <button id="addScheduleTimeBtn" type="button">Add time</button>
+          </fieldset>
+          <input id="scheduleInput" type="hidden" name="scheduleTimes">
+          </div>
+          <div id="run-tab-panel" role="tabpanel" aria-labelledby="run-tab" hidden>
           <div class="grid-2">
             <label>
               Model
@@ -431,8 +452,9 @@
               </label>
             </div>
           </details>
-          <details class="console-disclosure" id="telegramSettings">
-            <summary>Telegram alerts <span id="telegramStatus" class="badge neutral">Checking</span></summary>
+          </div>
+          <div id="alerts-tab-panel" role="tabpanel" aria-labelledby="alerts-tab" hidden>
+            <div class="alerts-heading"><h3>Telegram alerts</h3><span id="telegramStatus" class="badge neutral">Checking</span></div>
             <div class="disclosure-body">
               <fieldset class="alert-settings">
                 <legend>Telegram alerts</legend>
@@ -465,46 +487,14 @@
                 </div>
               </fieldset>
             </div>
-          </details>
-          <div class="button-row">
-            <button type="submit" class="primary">Save settings</button>
-            <span id="settingsMessage" class="form-message" role="status"></span>
+          </div>
+          <p id="settingsMessage" class="form-message" role="status"></p>
+          <div class="dialog-actions">
+            <button id="cancelScheduleBtn" type="button">Cancel</button>
+            <button type="submit" class="primary">Save changes</button>
           </div>
         </form>
-      </section>
-
-      <section id="send" class="panel manual-panel">
-        <div class="section-header">
-          <h2>Send a message</h2>
-        </div>
-        <p id="sendTarget" class="hint">Choose an account in Account console.</p>
-        <label>
-          One-off prompt (optional)
-          <textarea id="manualPromptInput" rows="4" placeholder="Leave empty to use the scheduled prompt template."></textarea>
-        </label>
-        <div class="button-row">
-          <button id="manualSendBtn" type="button" class="primary">Send to Codex</button>
-          <span id="manualMessage" class="form-message" role="status"></span>
-        </div>
-      </section>
-
-      <section id="activity" class="panel activity-panel">
-        <div class="section-header">
-          <h2>Activity</h2>
-          <div class="activity-actions">
-            <label class="inline-toggle">
-              <input id="rawEventsInput" type="checkbox">
-              Raw events
-            </label>
-            <button id="clearActivityBtn" type="button">Clear view</button>
-          </div>
-        </div>
-        <p id="activityHint" class="hint">Recent runs, messages, settings, and errors. Routine updates are in Raw events.</p>
-        <ol id="activityList" class="activity-list timeline-list"></ol>
-      </section>
-    </main>
-
-
+    </dialog>
 
     <dialog id="addAccountDialog" aria-labelledby="addAccountTitle" aria-describedby="addAccountHint">
       <form id="addAccountForm">

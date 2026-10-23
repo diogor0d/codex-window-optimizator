@@ -261,6 +261,16 @@ async function accountWorkflow(page, fixture, label) {
   await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2 && !document.querySelector("#accountSelect").disabled);
 }
 
+async function openSchedule(page, tab = "schedule") {
+  if (!await page.locator("#scheduleDialog").evaluate(el => el.open)) await page.locator("#editScheduleBtn").click();
+  await page.locator(`#${tab}-tab`).click();
+}
+
+async function saveSchedule(page) {
+  await page.locator("#settingsForm button[type=submit]").click();
+  await page.waitForFunction(() => !document.querySelector("#scheduleDialog").open && document.querySelector("#scheduleMessage").textContent === "Schedule saved.");
+}
+
 async function exercise(browserType, fixture, viewport, label) {
   const executablePath = process.env[browserType.name() === "chromium" ? "CHROMIUM_EXECUTABLE_PATH" : "WEBKIT_EXECUTABLE_PATH"];
   const browser = await browserType.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
@@ -275,7 +285,7 @@ async function exercise(browserType, fixture, viewport, label) {
     page.on("console", message => {
       if (message.type() !== "error") return;
       if ((offlineCheck || expectedHttpErrors.has(message.location().url)) && /Failed to load resource|Fetch API cannot load/i.test(message.text())) return;
-      pageErrors.push(message.text());
+      pageErrors.push(`${message.text()} (${message.location().url})`);
     });
     page.setDefaultTimeout(12_000);
     await page.addInitScript(() => { if (!localStorage.getItem("theme")) localStorage.setItem("theme", "light"); });
@@ -292,28 +302,77 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.locator("#themeToggleBtn").click();
     await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
 
-    // Settings and nested disclosures remain operable and persisted.
+    // Focused editor: keyboard tabs, add/remove times, saved summary and persistence.
+    assert.equal(await page.locator("#settingsForm").isVisible(), false);
+    await openSchedule(page);
+    await page.locator("#schedule-tab").focus();
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await page.locator("#run-tab").getAttribute("aria-selected"), "true");
+    await page.keyboard.press("End");
+    assert.equal(await page.locator("#alerts-tab").getAttribute("aria-selected"), "true");
+    await page.keyboard.press("Home");
+    await page.locator("#scheduleTimeInputs input").nth(0).fill("07:15");
+    await page.locator("#scheduleTimeInputs input").nth(1).fill("19:45");
+    await page.locator("#addScheduleTimeBtn").click();
+    assert.equal(await page.locator("#scheduleTimeInputs input").count(), 3);
+    await page.locator("#scheduleTimeInputs button").last().click();
+    assert.equal(await page.locator("#scheduleTimeInputs input").count(), 2);
+    await page.locator("#run-tab").click();
     await page.locator("#advancedSettings > summary").click();
-    await page.locator("#telegramSettings > summary").click();
-    assert.equal(await page.locator("#advancedSettings").evaluate(el => el.open), true);
-    assert.equal(await page.locator("#telegramSettings").evaluate(el => el.open), true);
-    await page.locator("#scheduleInput").fill("07:15, 19:45");
     await page.locator("#effortInput").fill("low");
     await page.locator("#summaryInput").fill("E2E summary");
     await page.locator("#promptInput").fill("E2E saved prompt");
     await page.locator("#modelInput").selectOption("gpt-5.6-luna");
-    await page.locator("#settingsForm button[type=submit]").click();
-    await page.locator("#settingsMessage").getByText("Saved.").waitFor();
+    await page.locator("#alerts-tab").click();
+    assert.equal(await page.locator("#telegramEnabledInput").isVisible(), true);
+    await screenshot(page, `${label}-schedule-alerts`);
+    await page.locator("#schedule-tab").click();
+    await screenshot(page, `${label}-schedule-editor`);
+    await saveSchedule(page);
+    assert.equal(await page.locator("#scheduleTimes").textContent(), "07:1519:45");
+    assert.equal(await page.locator("#schedulePrompt").textContent(), "E2E saved prompt");
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector("#scheduleInput").value === "07:15, 19:45");
     assert.equal(await page.locator("#modelInput").inputValue(), "gpt-5.6-luna");
-    assert.equal(await page.locator("#scheduleInput").inputValue(), "07:15, 19:45");
     assert.equal(await page.locator("#effortInput").inputValue(), "low");
+    // Cancel discards only the editor draft; Escape retains it for reopening.
+    await openSchedule(page, "run");
+    await page.locator("#promptInput").fill("Discard this draft");
+    await page.locator("#cancelScheduleBtn").click();
+    await openSchedule(page);
+    await page.locator("#scheduleTimeInputs input").first().fill("");
+    await page.locator("#alerts-tab").click();
+    await page.locator("#telegramQuotaThresholdInput").fill("0");
+    await page.locator("#run-tab").click();
+    await page.locator("#settingsForm button[type=submit]").click();
+    assert.equal(await page.locator("#schedule-tab").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#scheduleTimeInputs input").first().evaluate(el => el === document.activeElement), true);
+    await page.locator("#scheduleTimeInputs input").first().fill("07:15");
+    await page.locator("#settingsForm button[type=submit]").click();
+    assert.equal(await page.locator("#alerts-tab").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#telegramQuotaThresholdInput").evaluate(el => el === document.activeElement), true);
+    await page.locator("#cancelScheduleBtn").click();
+    await openSchedule(page, "run");
+    assert.equal(await page.locator("#promptInput").inputValue(), "E2E saved prompt");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("#scheduleDialog").open);
+    assert.equal(await page.locator("#editScheduleBtn").evaluate(el => el === document.activeElement), true);
 
-    if (await page.locator("#pauseBtn").isEnabled()) await page.locator("#pauseBtn").click();
-    await page.waitForFunction(() => document.querySelector("#schedulerBadge").textContent === "Paused");
-    await page.locator("#resumeBtn").click();
+    if (await page.locator("#schedulerBadge").textContent() === "Paused") await page.locator("#schedulerToggleBtn").click();
     await page.waitForFunction(() => document.querySelector("#schedulerBadge").textContent === "Enabled");
+    await page.locator("#schedulerToggleBtn").click();
+    await page.waitForFunction(() => document.querySelector("#schedulerBadge").textContent === "Paused");
+    await page.locator("#schedulerToggleBtn").click();
+    await page.waitForFunction(() => document.querySelector("#schedulerBadge").textContent === "Enabled");
+    const selectBox = await page.locator("#accountSelect").boundingBox();
+    assert.ok(selectBox.height >= 44 && selectBox.width >= 140, "account selector needs usable Safari dimensions");
+    for (const theme of ["light", "dark"]) {
+      if (await page.locator("html").getAttribute("data-theme") !== theme) await page.locator("#themeToggleBtn").click();
+      await page.locator("#account").scrollIntoViewIfNeeded();
+      if (process.env.E2E_OUTPUT_DIR) await page.locator("#account").screenshot({ path: path.join(process.env.E2E_OUTPUT_DIR, `${label}-${theme}-account.png`) });
+      await page.locator("#schedule").scrollIntoViewIfNeeded();
+      await screenshot(page, `${label}-${theme}-schedule-summary`);
+    }
 
     // Account switching updates selection and account-specific model catalogue.
     await page.locator("#accountSelect").selectOption("beta");
@@ -345,12 +404,14 @@ async function exercise(browserType, fixture, viewport, label) {
     }
 
     // Shared settings edits survive a refresh until explicitly saved.
+    await openSchedule(page, "run");
     await page.locator("#promptInput").fill("Unsaved shared draft");
+    await page.keyboard.press("Escape");
     await page.locator("#refreshBtn").click();
     await page.waitForFunction(() => !document.querySelector("#refreshBtn").disabled);
+    await openSchedule(page, "run");
     assert.equal(await page.locator("#promptInput").inputValue(), "Unsaved shared draft");
-    await page.locator("#settingsForm button[type=submit]").click();
-    await page.locator("#settingsMessage").getByText("Saved.", { exact: true }).waitFor();
+    await saveSchedule(page);
     await accountWorkflow(page, fixture, label);
 
     // Seeded failures and success must use distinct semantic classes/tones.
@@ -414,9 +475,9 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.waitForFunction(() => !document.querySelector("#manualSendBtn").disabled);
     expectedHttpErrors.add(`${fixture.base}/api/scheduler/pause`);
     fixture.controls.failPause = true;
-    await page.locator("#pauseBtn").click();
+    await page.locator("#schedulerToggleBtn").click();
     await page.locator("#schedulerMessage").getByText("Server busy. Try again.", { exact: true }).waitFor();
-    await page.waitForFunction(() => !document.querySelector("#pauseBtn").disabled);
+    await page.waitForFunction(() => !document.querySelector("#schedulerToggleBtn").disabled);
 
     // Both send buttons lock while one request is pending; selection stays scoped.
     let releaseSend;
@@ -431,12 +492,12 @@ async function exercise(browserType, fixture, viewport, label) {
 
     // Server validation errors stay visible, and the next valid save recovers.
     expectedHttpErrors.add(`${fixture.base}/api/settings`);
+    await openSchedule(page);
     await page.locator("#timezoneInput").fill("Invalid/Timezone");
     await page.locator("#settingsForm button[type=submit]").click();
     await page.locator("#settingsMessage").getByText("Invalid timezone", { exact: true }).waitFor();
     await page.locator("#timezoneInput").fill("Europe/Lisbon");
-    await page.locator("#settingsForm button[type=submit]").click();
-    await page.locator("#settingsMessage").getByText("Saved.", { exact: true }).waitFor();
+    await saveSchedule(page);
 
     // Keep the pill's edge gap compact even when iOS reports a larger safe area.
     if (viewport.isMobile || viewport.hasTouch) {

@@ -111,7 +111,7 @@ Environment variables (defaults shown are the in-container values):
 | `TELEGRAM_BOT_TOKEN` | unset | Telegram bot token; keep only in the server's ignored `.env` |
 | `TELEGRAM_CHAT_ID` | unset | Destination user, group, or channel chat ID |
 
-Managed in the web UI under Settings: timezone, schedule times, workspace directory, model, effort, summary, approval policy, network access for scheduled turns, skip-if-active, and the scheduled prompt template. Network access is off by default; the default approval policy is `on-request`.
+Managed in **Schedule → Edit schedule**, with tabs for timing, run settings, and alerts: timezone, schedule times, workspace directory, model, effort, summary, approval policy, network access for scheduled turns, skip-if-active, and the scheduled prompt template. Network access is off by default; the default approval policy is `on-request`.
 
 The **Model** dropdown in Schedule settings defaults to **Automatic · prefer lowest cost**. It selects from each account's Codex `model/list` catalog, preferring GPT-6 Luna, then GPT-5.6 Luna when the newer model is absent. Remaining known models follow published Standard credit rates; unknown catalogs fall back to their default model. Catalogs are cached for five minutes, and a listed model's account access is confirmed only by a completed turn. The dropdown in account overrides can select a different model or inherit the global setting. An explicit model missing from an account's catalog fails with an actionable message instead of silently choosing another model.
 
@@ -121,7 +121,7 @@ The selected model is sent explicitly when creating/resuming threads and startin
 
 1. Create a dedicated bot with Telegram's `@BotFather` and start a conversation with it, or add it to the intended private group.
 2. Obtain the destination chat ID through Telegram's Bot API, then put `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the deployment's ignored `.env` file. Never commit either value.
-3. Recreate the container, open **Schedule → Telegram alerts**, send a test alert, then enable the categories you want.
+3. Recreate the container, open **Schedule → Edit schedule → Alerts**, send a test alert, then enable the categories you want.
 
 Alerts are disabled by default. The service can notify on configurable quota-warning crossings, fixed 95% and 100% crossings, quota-window resets, Luna Reserve activation/recovery, usage-reset inventory changes and upcoming expirations, and authentication or scheduled-send failures. Adaptive polling ranges from one minute during active consumption to ten minutes after long idle periods, so polling-based alerts have the same bounded delay; app-server quota notifications are processed immediately. Messages are grouped per account and emitted only when state crosses a boundary; unchanged readings do not repeat alerts. Pending messages are persisted without credentials and retried with exponential backoff after transient Telegram failures. Delivery is at least once: because Telegram has no idempotency key for `sendMessage`, a process crash immediately after Telegram accepts a message can cause that message to be sent again after restart.
 
@@ -174,6 +174,6 @@ npx --no-install playwright install chromium webkit
 npm run test:e2e
 ```
 
-What it does: installs local test tooling and browser binaries, then checks desktop, iPhone-sized, narrow, and landscape layouts, both themes, settings persistence, account selection, chart controls, activity outcomes over SSE, safe-area dock geometry, and offline recovery. Temporary test data is removed afterward. The account workflow also covers add/cancel, naming, draft preservation, failed sign-in and retry, completed sign-in, sign-out, and confirmed removal of a disposable fixture account. Clipboard writes are simulated so tests do not alter the host clipboard.
+What it does: installs local test tooling and browser binaries, then checks desktop, iPhone-sized, narrow, and landscape layouts, both themes, settings persistence, account selection, chart controls, activity outcomes over SSE, safe-area dock geometry, and offline recovery. Temporary test data is removed afterward. The schedule editor covers keyboard tabs, adding/removing individual times, save/cancel, and drafts retained after Escape and refresh. The account workflow also covers add/cancel, naming, draft preservation, failed sign-in and retry, completed sign-in, sign-out, and confirmed removal of a disposable fixture account. Clipboard writes are simulated so tests do not alter the host clipboard.
 
 For an existing tooling installation, set `PLAYWRIGHT_MODULE` to its `playwright/index.mjs` path. Optional `CHROMIUM_EXECUTABLE_PATH` and `WEBKIT_EXECUTABLE_PATH` select installed browser executables. `E2E_CASE` filters viewport names and `E2E_OUTPUT_DIR` saves visual previews. Browser emulation does not verify a physical iPhone's home indicator or Safari chrome.

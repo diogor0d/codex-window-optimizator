@@ -6,12 +6,14 @@ const state = {
   settingsRevision: 0,
   accountDrafts: new Map(),
   accountBusy: false,
+  removingAccountIds: new Set(),
   selectingAccountId: null,
   statusRequestId: 0,
   renderedAccountId: null,
   loginSession: null,
   sendBusy: false,
   schedulerBusy: false,
+  schedulerEnabled: false,
   hiddenActivityIds: new Set(),
   modelCatalogs: new Map(),
   modelCatalogRequests: new Set(),
@@ -26,6 +28,7 @@ const state = {
   usageHistory: new Map(),
   usageHistoryErrors: new Map(),
   usageHistoryRequests: new Map(),
+  usageHistoryControllers: new Map(),
   usageHistoryRefreshQueued: new Set(),
   usageHistoryGeneration: new Map(),
   usageHistoryRange: "24h",
@@ -990,7 +993,7 @@ function saveUsageHistorySnapshot(accountId, data) {
 }
 
 async function loadUsageHistory(accountId = selectedAccountId(), force = false) {
-  if (!accountId) {
+  if (!accountId || state.removingAccountIds.has(accountId) || !state.accounts.some(account => account.id === accountId)) {
     renderUsageHistory();
     return;
   }
@@ -1020,10 +1023,12 @@ async function loadUsageHistory(accountId = selectedAccountId(), force = false) 
   }
   const generation = (state.usageHistoryGeneration.get(key) || 0) + 1;
   state.usageHistoryGeneration.set(key, generation);
+  const controller = new AbortController();
+  state.usageHistoryControllers.set(key, controller);
   const request = (async () => {
     try {
-      const data = await api(`/api/usage-history?accountId=${encodeURIComponent(accountId)}&range=${encodeURIComponent(requestedRange)}`);
-      if (state.usageHistoryGeneration.get(key) !== generation) {
+      const data = await api(`/api/usage-history?accountId=${encodeURIComponent(accountId)}&range=${encodeURIComponent(requestedRange)}`, { signal: controller.signal });
+      if (controller.signal.aborted || state.usageHistoryGeneration.get(key) !== generation) {
         return;
       }
       state.usageHistory.set(key, { fetchedAt: Date.now(), data });
@@ -1033,11 +1038,13 @@ async function loadUsageHistory(accountId = selectedAccountId(), force = false) 
         renderUsageHistory();
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       state.usageHistoryErrors.set(key, error.message);
       if (requestedRange === state.usageHistoryRange && state.usageHistoryGeneration.get(key) === generation) {
         renderUsageHistory();
       }
     } finally {
+      if (state.usageHistoryControllers.get(key) === controller) state.usageHistoryControllers.delete(key);
       if (state.usageHistoryRequests.get(key) === request) {
         state.usageHistoryRequests.delete(key);
       }
@@ -1079,14 +1086,11 @@ function updateWindowSummary(dashboard = {}) {
   const resetCredits = accountResetCredits({ dashboard });
   const current = effectiveWindow(win);
   const remainingValue = current?.free;
-  const remaining = Number.isFinite(remainingValue) ? `${remainingValue}%` : "Unknown";
   const reset = Number.isFinite(current?.resetsAt) ? formatUnixSeconds(current.resetsAt) : "Unknown";
   const duration = Number.isFinite(current?.windowDurationMins) ? `${current.windowDurationMins} min` : "Unknown";
   const plan = limits?.planType ? `${limits.planType} / ${duration}` : duration;
   const lastTurn = dashboard.lastCompletedTurn;
 
-  $("#windowUsage").textContent = remaining;
-  $("#windowReset").textContent = reset;
   $("#windowPlan").textContent = plan;
   const reserve = win?.reserve?.weekly;
   const reserveMode = reserveState(win);
@@ -1133,7 +1137,9 @@ function updateStatus(status) {
     : status.auth.detail || (status.auth.loggedIn ? "Logged in" : "Not logged in");
   $("#appServerState").textContent = status.appServer.running ? "Running" : "Stopped";
   $("#threadState").textContent = selectedAccount.thread?.threadId || status.thread.threadId || "None";
-  $("#localTime").textContent = status.scheduler.next.localNow;
+  state.schedulerEnabled = status.scheduler.enabled;
+  $("#scheduleNext").textContent = status.scheduler.enabled
+    ? `Next send · ${status.scheduler.next.nextLocal || "No sends scheduled"}` : "Paused · scheduled sends are on hold";
   $("#lastRun").textContent = formatRun(status.latestRun);
   renderNextSend(status.scheduler.next.nextLocal, status.scheduler.enabled);
 
@@ -1144,8 +1150,7 @@ function updateStatus(status) {
   renderFleet();
   renderUsageHistory();
 
-  $("#pauseBtn").disabled = state.schedulerBusy || !status.scheduler.enabled;
-  $("#resumeBtn").disabled = state.schedulerBusy || status.scheduler.enabled;
+  renderSchedulerToggle();
   renderDepartures();
 }
 
@@ -1398,10 +1403,76 @@ async function saveAccountOverrides(event) {
   });
 }
 
+function renderSchedulerToggle() {
+  const button = $("#schedulerToggleBtn");
+  button.disabled = state.schedulerBusy;
+  button.textContent = state.schedulerBusy ? "Updating…" : state.schedulerEnabled ? "Pause" : "Resume";
+  button.setAttribute("aria-label", state.schedulerEnabled ? "Pause scheduler" : "Resume scheduler");
+  button.setAttribute("aria-busy", String(state.schedulerBusy));
+}
+
+function renderScheduleSummary() {
+  const settings = state.settings;
+  if (!settings) return;
+  $("#editScheduleBtn").disabled = false;
+  $("#scheduleTimezone").textContent = `Every day · ${settings.timezone}`;
+  $("#scheduleTimes").replaceChildren(...(settings.scheduleTimes || []).map(time => {
+    const chip = document.createElement("span");
+    chip.textContent = time;
+    return chip;
+  }));
+  $("#schedulePrompt").textContent = settings.promptTemplate || "No scheduled message set.";
+  $("#scheduleOptions").textContent = `${settings.model || "Automatic model"} · ${settings.effort || "Default"} effort · Telegram ${settings.telegramConfigured && settings.telegramAlertsEnabled ? "on" : "off"}`;
+}
+
+function selectSettingsTab(name) {
+  for (const tab of document.querySelectorAll(".settings-tabs [role=tab]")) {
+    const selected = tab.id === `${name}-tab`;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    document.getElementById(tab.getAttribute("aria-controls")).hidden = !selected;
+  }
+}
+
+function markSettingsDirty() {
+  state.settingsDirty = true;
+  state.settingsRevision += 1;
+  $("#editScheduleBtn").textContent = "Continue editing";
+  feedback("scheduleMessage", "Unsaved changes in schedule editor.");
+  feedback("settingsMessage", "Unsaved changes.");
+}
+
+function syncScheduleTimes() {
+  $("#scheduleInput").value = [...document.querySelectorAll("#scheduleTimeInputs input")].map(input => input.value).filter(Boolean).join(", ");
+}
+
+function renderScheduleTimeInputs(times) {
+  const rows = times.map((time, index) => {
+    const row = document.createElement("div");
+    row.className = "schedule-time-row";
+    const input = document.createElement("input");
+    input.type = "time";
+    input.value = time;
+    input.required = true;
+    input.setAttribute("aria-label", `Send time ${index + 1}`);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "×";
+    button.dataset.index = index;
+    button.setAttribute("aria-label", `Remove send time ${index + 1}`);
+    row.append(input, button);
+    return row;
+  });
+  $("#scheduleTimeInputs").replaceChildren(...rows);
+  syncScheduleTimes();
+}
+
 function fillSettings(settings) {
   state.settings = settings;
   $("#timezoneInput").value = settings.timezone || "";
   $("#scheduleInput").value = (settings.scheduleTimes || []).join(", ");
+  renderScheduleTimeInputs(settings.scheduleTimes || []);
+  renderScheduleSummary();
   $("#workspaceInput").value = settings.workspaceDir || "";
   fillModelSelect($("#modelInput"), settings.model || "", "Automatic · prefer lowest cost");
   $("#effortInput").value = settings.effort || "";
@@ -1429,6 +1500,7 @@ function fillSettings(settings) {
 async function refreshSettings() {
   const settings = await api("/api/settings");
   state.settings = settings;
+  renderScheduleSummary();
   if (!state.settingsDirty) fillSettings(settings);
 }
 
@@ -1724,6 +1796,7 @@ function renderAccountAccess() {
   const account = state.accounts.find((item) => item.id === state.selectedAccountId);
   const auth = account?.auth || {};
   const uncertain = auth.probeUnavailable || auth.logoutConfirmationPending;
+  $(".account-access-head").hidden = Boolean(auth.loggedIn && !auth.authIssue && !uncertain && state.loginSession?.status !== "running");
   $("#accountAccessTitle").textContent = auth.loggedIn ? `Connected to ${account.label}` : `Connect ${account?.label || "an account"}`;
   $("#accountAccessHint").textContent = auth.logoutConfirmationPending ? "Confirming this account’s sign-in status…"
     : auth.probeUnavailable ? "The latest sign-in check is unavailable. Refresh to check again."
@@ -2424,6 +2497,12 @@ function connectEvents() {
 
 async function saveSettings(event) {
   event.preventDefault();
+  const invalid = $("#settingsForm").querySelector("input:invalid, select:invalid, textarea:invalid");
+  if (invalid) {
+    invalid.reportValidity();
+    invalid.focus();
+    return;
+  }
   const scheduleTimes = $("#scheduleInput").value
     .split(",")
     .map((item) => item.trim())
@@ -2456,6 +2535,9 @@ async function saveSettings(event) {
       state.settingsDirty = false;
       fillSettings(settings);
       feedback("settingsMessage", "Saved.", "success");
+      feedback("scheduleMessage", "Schedule saved.", "success");
+      $("#editScheduleBtn").textContent = "Edit schedule";
+      $("#scheduleDialog").close();
     } else feedback("settingsMessage", "Saved. Your newer edits are still unsaved.");
     await refreshStatus();
   });
@@ -2490,7 +2572,7 @@ async function sendMessage(button, messageId, prompt = null) {
 async function setScheduler(enabled) {
   if (state.schedulerBusy) return;
   state.schedulerBusy = true;
-  $("#pauseBtn").disabled = $("#resumeBtn").disabled = true;
+  renderSchedulerToggle();
   feedback("schedulerMessage", enabled ? "Resuming…" : "Pausing…");
   try {
     await api(`/api/scheduler/${enabled ? "resume" : "pause"}`, { method: "POST", body: "{}" });
@@ -2499,9 +2581,7 @@ async function setScheduler(enabled) {
   } catch (error) { feedback("schedulerMessage", error.message, "error"); }
   finally {
     state.schedulerBusy = false;
-    const paused = $("#schedulerBadge").textContent === "Paused";
-    $("#pauseBtn").disabled = paused;
-    $("#resumeBtn").disabled = !paused;
+    renderSchedulerToggle();
   }
 }
 
@@ -2521,8 +2601,66 @@ function bindActions() {
   });
   $("#runNowBtn").addEventListener("click", () => void sendMessage($("#runNowBtn"), "runMessage"));
   $("#manualSendBtn").addEventListener("click", () => void sendMessage($("#manualSendBtn"), "manualMessage", $("#manualPromptInput").value.trim() || null));
-  $("#pauseBtn").addEventListener("click", () => void setScheduler(false));
-  $("#resumeBtn").addEventListener("click", () => void setScheduler(true));
+  $("#schedulerToggleBtn").addEventListener("click", () => void setScheduler(!state.schedulerEnabled));
+  $("#editScheduleBtn").addEventListener("click", () => {
+    if (!state.settingsDirty) { fillSettings(state.settings); feedback("settingsMessage", ""); }
+    selectSettingsTab("schedule");
+    $("#scheduleDialog").showModal();
+  });
+  $("#closeScheduleBtn").addEventListener("click", () => {
+    if (!$("#settingsForm button[type=submit]").disabled) $("#scheduleDialog").close();
+  });
+  $("#scheduleDialog").addEventListener("close", () => $("#editScheduleBtn").focus({ preventScroll: true }));
+  $("#scheduleDialog").addEventListener("cancel", (event) => {
+    if ($("#settingsForm button[type=submit]").disabled) event.preventDefault();
+  });
+  $("#cancelScheduleBtn").addEventListener("click", () => {
+    if ($("#settingsForm button[type=submit]").disabled) return;
+    state.settingsRevision += 1;
+    state.settingsDirty = false;
+    fillSettings(state.settings);
+    feedback("settingsMessage", "");
+    $("#editScheduleBtn").textContent = "Edit schedule";
+    feedback("scheduleMessage", "");
+    $("#scheduleDialog").close();
+  });
+  $(".settings-tabs").addEventListener("click", (event) => {
+    const tab = event.target.closest("[role=tab]");
+    if (tab) selectSettingsTab(tab.id.replace("-tab", ""));
+  });
+  $(".settings-tabs").addEventListener("keydown", (event) => {
+    const tabs = [...document.querySelectorAll(".settings-tabs [role=tab]")];
+    const index = tabs.indexOf(document.activeElement);
+    if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    selectSettingsTab(tabs[next].id.replace("-tab", ""));
+    tabs[next].focus();
+  });
+  $("#settingsForm").addEventListener("invalid", (event) => {
+    const panel = event.target.closest("[role=tabpanel]");
+    if (panel) selectSettingsTab(panel.id.replace("-tab-panel", ""));
+    const disclosure = event.target.closest("details");
+    if (disclosure) disclosure.open = true;
+  }, true);
+  $("#addScheduleTimeBtn").addEventListener("click", () => {
+    const times = [...document.querySelectorAll("#scheduleTimeInputs input")].map(input => input.value);
+    renderScheduleTimeInputs([...times, ""]);
+    $("#scheduleTimeInputs").lastElementChild.querySelector("input").focus();
+    markSettingsDirty();
+  });
+  $("#scheduleTimeInputs").addEventListener("input", syncScheduleTimes);
+  $("#scheduleTimeInputs").addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    const times = [...document.querySelectorAll("#scheduleTimeInputs input")].map(input => input.value);
+    const index = Number(button.dataset.index);
+    times.splice(index, 1);
+    renderScheduleTimeInputs(times);
+    syncScheduleTimes();
+    ($(`#scheduleTimeInputs button[data-index="${Math.min(index, times.length - 1)}"]`) || $("#addScheduleTimeBtn")).focus();
+    markSettingsDirty();
+  });
   $("#deviceLoginBtn").addEventListener("click", () => void accountAction($("#deviceLoginBtn"), "accountMessage", async () => {
     feedback("accountMessage", "Preparing sign-in…");
     renderLoginOutput(await api("/api/auth/device/start", { method: "POST", body: JSON.stringify({ accountId: selectedAccountId() }) }));
@@ -2573,11 +2711,7 @@ function bindActions() {
       setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
     });
   }
-  $("#settingsForm").addEventListener("input", () => {
-    state.settingsDirty = true;
-    state.settingsRevision += 1;
-    feedback("settingsMessage", "Unsaved changes.");
-  });
+  $("#settingsForm").addEventListener("input", markSettingsDirty);
   $("#accountSelect").addEventListener("change", (event) => void selectAccount(event.target.value));
   $("#accountDetailsForm").addEventListener("input", () => {
     const draft = state.accountDrafts.get(selectedAccountId()) || {};
@@ -2610,11 +2744,24 @@ function bindActions() {
     const account = state.accounts.find((item) => item.id === accountId);
     if (!account || !window.confirm(`Remove "${account.label}"? Its saved Codex credentials and thread data will be deleted from this server.`)) return;
     void accountAction($("#removeAccountBtn"), "accountDangerMessage", async () => {
-      await api(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
-      state.accountDrafts.delete(accountId);
-      await refreshStatus();
-      await refreshLoginSession();
-      feedback("accountMessage", `Removed ${account.label}.`, "success");
+      state.removingAccountIds.add(accountId);
+      for (const [key, controller] of state.usageHistoryControllers) {
+        if (!key.startsWith(`${accountId}:`)) continue;
+        state.usageHistoryRefreshQueued.delete(key);
+        controller.abort();
+      }
+      try {
+        const result = await api(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
+        state.accountDrafts.delete(accountId);
+        state.selectedAccountId = result.selectedAccountId;
+        state.accounts = result.accounts;
+        renderAccounts();
+        await refreshStatus();
+        await refreshLoginSession();
+        feedback("accountMessage", `Removed ${account.label}.`, "success");
+      } finally {
+        state.removingAccountIds.delete(accountId);
+      }
     });
   });
   $("#accountEnabledInput").addEventListener("change", (event) => {
