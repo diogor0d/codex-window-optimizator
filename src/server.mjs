@@ -1919,6 +1919,7 @@ async function logoutCodex(accountId = store.selectedAccountId) {
     };
     authStatusCacheByAccount.set(account.id, { checkedAt: Date.now(), status });
     clearAuthenticationFailure(account);
+    loginSessions.delete(account.id);
     store.telegramAlertState.intentionalLogouts[account.id] = true;
     void saveStore();
   } else {
@@ -2021,6 +2022,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/accounts") {
     const body = await readJson(req);
     const account = createAccount(typeof body.label === "string" && body.label.trim() ? body.label.trim() : `Account ${store.accounts.length + 1}`);
+    if (typeof body.enabled === "boolean") account.enabled = body.enabled;
     store.accounts.push(account);
     store.selectedAccountId = account.id;
     store.threadState = account.threadState;

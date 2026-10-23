@@ -59,11 +59,11 @@ http://127.0.0.1:8787
 
 On iPhone, open the HTTPS URL in Safari, tap **Share**, then **Add to Home Screen**. The installed app uses a standalone, safe-area-aware layout. It immediately shows a privacy-reduced saved fleet snapshot while live data loads; prompts, messages, workspace paths, credentials, and API responses are not stored in that snapshot. Its offline shell can open without a network connection, but account management still requires access to this server.
 
-Then log in: **Account console → Manage selected account → Start device login**. The container runs `codex login --device-auth`; open the shown URL in any browser, sign in, and enter the code. Credentials land in the persistent volume and survive restarts and rebuilds.
+Connect an account from **Account console → Sign in**. Copy the one-time code, choose **Continue to OpenAI**, and enter the code on the sign-in page. Return to the console for automatic confirmation; technical output stays under **Sign-in diagnostics**. Credentials stay in the persistent server volume and survive restarts and rebuilds.
 
 ## Multiple accounts
 
-- The original login migrates to **Default account**; add more from **Manage selected account** in the Account console.
+- The original login migrates to **Default account**; add more with **Add account** in the Account console. New accounts have scheduled sends paused until you explicitly enable them after connecting.
 - Additional credentials live under `/data/codex-accounts/<account-id>/`.
 - Enabled accounts are pinged at every configured time; disabled accounts stay logged in but are skipped.
 - The server is the sole automatic quota poller and continues when no browser is open. It checks every minute for 10 minutes after detected consumption, then backs off to 2, 5, and finally 10 minutes as the account fleet stays idle. A manual refresh remains available.
@@ -74,7 +74,7 @@ Then log in: **Account console → Manage selected account → Start device logi
 
 ### Per-account overrides
 
-Under *Account console → Manage selected account → Per-account overrides*. Leave a field empty to inherit the global default from Settings.
+Under *Account console → Account settings → Custom run settings*. Leave a field empty to use the shared default from Schedule.
 
 | Override | Use it to |
 |---|---|
@@ -161,3 +161,19 @@ The bundled compose binds `127.0.0.1:8787:8080`. To listen on another interface,
 ---
 
 *Built for a fleet of one — but the board scales.*
+
+## Frontend verification
+
+`npm run check` checks JavaScript syntax. `npm test` runs the unit and local HTTP integration tests.
+
+`npm run test:e2e` uses Playwright to launch the real server with a temporary data directory and a simulated Codex app-server. It never uses your account credentials or sends Telegram alerts. Install Playwright separately with its Chromium and WebKit browsers; production remains dependency-free:
+
+```sh
+npm install --no-save --package-lock=false playwright
+npx --no-install playwright install chromium webkit
+npm run test:e2e
+```
+
+What it does: installs local test tooling and browser binaries, then checks desktop, iPhone-sized, narrow, and landscape layouts, both themes, settings persistence, account selection, chart controls, activity outcomes over SSE, safe-area dock geometry, and offline recovery. Temporary test data is removed afterward. The account workflow also covers add/cancel, naming, draft preservation, failed sign-in and retry, completed sign-in, sign-out, and confirmed removal of a disposable fixture account. Clipboard writes are simulated so tests do not alter the host clipboard.
+
+For an existing tooling installation, set `PLAYWRIGHT_MODULE` to its `playwright/index.mjs` path. Optional `CHROMIUM_EXECUTABLE_PATH` and `WEBKIT_EXECUTABLE_PATH` select installed browser executables. `E2E_CASE` filters viewport names and `E2E_OUTPUT_DIR` saves visual previews. Browser emulation does not verify a physical iPhone's home indicator or Safari chrome.

@@ -54,7 +54,8 @@ test("records only changed usage snapshots and distinguishes consumption from re
   assert.equal(reset.activityDetected, false);
 });
 
-test("finds the latest consumption event", () => {
+test("finds the latest consumption event", (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-09-18T16:00:00.000Z"));
   let history = appendUsageSample([], dashboard(), "2026-09-18T10:00:00.000Z").history;
   history = appendUsageSample(history, dashboard({ fiveHour: 25 }), "2026-09-18T10:05:00.000Z").history;
   history = appendUsageSample(history, dashboard({ fiveHour: 0 }), "2026-09-18T15:00:00.000Z").history;

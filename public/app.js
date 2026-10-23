@@ -2,6 +2,17 @@ const $ = (selector) => document.querySelector(selector);
 
 const state = {
   settings: null,
+  settingsDirty: false,
+  settingsRevision: 0,
+  accountDrafts: new Map(),
+  accountBusy: false,
+  selectingAccountId: null,
+  statusRequestId: 0,
+  renderedAccountId: null,
+  loginSession: null,
+  sendBusy: false,
+  schedulerBusy: false,
+  hiddenActivityIds: new Set(),
   modelCatalogs: new Map(),
   modelCatalogRequests: new Set(),
   activityIds: new Set(),
@@ -37,6 +48,39 @@ async function api(path, options = {}) {
   return data;
 }
 
+function feedback(id, text, tone = "neutral") {
+  const element = document.getElementById(id);
+  if (!element) return;
+  element.textContent = text;
+  element.dataset.tone = tone;
+  if (id === "runMessage") element.hidden = !text;
+}
+
+async function buttonAction(button, messageId, action) {
+  if (button.dataset.pending) return;
+  button.dataset.pending = "true";
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  try {
+    await action();
+  } catch (error) {
+    feedback(messageId, error.message, "error");
+  } finally {
+    delete button.dataset.pending;
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    updateAccountControls();
+  }
+}
+
+async function accountAction(button, messageId, action) {
+  if (state.accountBusy) return;
+  state.accountBusy = true;
+  updateAccountControls();
+  try { await buttonAction(button, messageId, action); }
+  finally { state.accountBusy = false; updateAccountControls(); }
+}
+
 function badge(element, text, tone) {
   element.textContent = text;
   element.className = `badge ${tone}`;
@@ -70,8 +114,8 @@ function formatRun(run) {
   if (!run) {
     return "None";
   }
-  const label = [run.status, run.scheduledTime || run.reason, run.turnId || ""].filter(Boolean).join(" | ");
-  return `${label} (${new Date(run.ts).toLocaleString()})`;
+  const labels = { inProgress: "Running", completed: "Completed", failed: "Failed", skipped: "Skipped", skipped_active_turn: "Skipped · turn already running", interrupted: "Interrupted" };
+  return `${labels[run.status] || run.status || "Unknown"} · ${new Date(run.ts).toLocaleString()}`;
 }
 
 function formatUnixSeconds(seconds) {
@@ -683,14 +727,15 @@ function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
   const markers = visible.map((item, markerIndex) => {
     const reading = timeMs === null ? { value: null } : usageChartValueAt(item, model.key, timeMs);
     const color = USAGE_ACCOUNT_COLORS[item.index % USAGE_ACCOUNT_COLORS.length];
-    return `<circle class="usage-cursor-point" data-account-id="${escapeHtml(item.account.id)}" cx="${timeMs === null ? left : x(Math.max(model.startMs, Math.min(timeMs, item.observedMs))).toFixed(1)}" cy="${Number.isFinite(reading.value) ? y(reading.value).toFixed(1) : top}" r="${3 + markerIndex * 0.8}" style="--point-color:${color};fill:none;stroke:${color};stroke-width:1.5" ${Number.isFinite(reading.value) ? "" : "display=\"none\""}></circle>`;
+    const markerTime = Number.isFinite(item.observedMs) ? Math.min(timeMs, item.observedMs) : timeMs;
+    return `<circle class="usage-cursor-point" data-account-id="${escapeHtml(item.account.id)}" cx="${timeMs === null ? left : x(Math.max(model.startMs, markerTime)).toFixed(1)}" cy="${Number.isFinite(reading.value) ? y(reading.value).toFixed(1) : top}" r="${3 + markerIndex * 0.8}" style="--point-color:${color};fill:none;stroke:${color};stroke-width:1.5" ${Number.isFinite(reading.value) ? "" : "display=\"none\""}></circle>`;
   }).join("");
   host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="group" aria-label="${escapeHtml(`${model.key === "fiveHourUsed" ? "5-hour" : "Weekly"} quota remaining over ${range}`)}">
     ${[0, 25, 50, 75, 100].map((value) => `<line class="usage-grid" x1="${left}" x2="${plotRight}" y1="${y(value)}" y2="${y(value)}"></line><text class="usage-axis-y" x="${left - 5}" y="${y(value) + 4}">${value}%</text>`).join("")}
     ${tickMarkup}${paths}
     <line class="usage-cursor-line" x1="${timeMs === null ? left : x(timeMs)}" x2="${timeMs === null ? left : x(timeMs)}" y1="${top}" y2="${bottom}" ${timeMs === null ? "display=\"none\"" : ""}></line>${markers}
     <rect class="usage-hover-layer" x="${left}" y="${top}" width="${plotRight - left}" height="${bottom - top}" tabindex="0" aria-label="Quota history cursor. Use left and right arrows to move between observed times, Home for first, End for latest." aria-controls="${inspectorId}" aria-describedby="${inspectorId}"></rect>
-  </svg><p class="usage-inspector-hint">Hover or tap to move the shared time cursor. Use ←/→ to step through observed times, Home/End for the range edges. Each row shows the last recorded value at or before the cursor. Lines stop at the last poll; earlier readings are labeled.</p><div class="usage-inspector" id="${inspectorId}" aria-live="polite"></div>`;
+  </svg><details class="chart-help"><summary>How to read this chart</summary><p class="usage-inspector-hint">Hover or tap to inspect a time. Use ←/→ to step through readings, Home/End for the range edges. Values come from the last reading at or before the cursor. Lines stop at the last poll; earlier readings are labeled.</p></details><div class="usage-inspector" id="${inspectorId}" aria-live="polite"></div>`;
   const target = host.querySelector(".usage-hover-layer");
   if (!target || !model.timestamps.length) return;
   const markerByAccount = new Map([...host.querySelectorAll(".usage-cursor-point")]
@@ -713,7 +758,8 @@ function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
         marker.setAttribute("display", "none");
         continue;
       }
-      marker.setAttribute("cx", x(Math.max(model.startMs, Math.min(selectedTime, item.observedMs))).toFixed(1));
+      const markerTime = Number.isFinite(item.observedMs) ? Math.min(selectedTime, item.observedMs) : selectedTime;
+      marker.setAttribute("cx", x(Math.max(model.startMs, markerTime)).toFixed(1));
       marker.setAttribute("cy", y(reading.value).toFixed(1));
       marker.removeAttribute("display");
     }
@@ -1063,8 +1109,10 @@ function updateWindowSummary(dashboard = {}) {
 
   if (lastTurn?.status === "completed" && !lastTurn.error) {
     badge($("#windowBadge"), `Last turn OK (${formatDuration(lastTurn.durationMs)})`, "ok");
-  } else if (lastTurn?.error) {
+  } else if (lastTurn?.status === "failed" || lastTurn?.error) {
     badge($("#windowBadge"), "Last turn failed", "bad");
+  } else if (["interrupted", "cancelled"].includes(lastTurn?.status)) {
+    badge($("#windowBadge"), "Last turn interrupted", "warn");
   } else if (limits || win?.reserve || Number.isSafeInteger(win?.resetCreditsAvailable)) {
     badge($("#windowBadge"), "Window tracked", "ok");
   } else {
@@ -1096,8 +1144,8 @@ function updateStatus(status) {
   renderFleet();
   renderUsageHistory();
 
-  $("#pauseBtn").disabled = !status.scheduler.enabled;
-  $("#resumeBtn").disabled = status.scheduler.enabled;
+  $("#pauseBtn").disabled = state.schedulerBusy || !status.scheduler.enabled;
+  $("#resumeBtn").disabled = state.schedulerBusy || status.scheduler.enabled;
   renderDepartures();
 }
 
@@ -1107,53 +1155,59 @@ function selectedAccountId() {
 
 function renderAccounts() {
   const select = $("#accountSelect");
-  const list = $("#accountList");
-  if (!select || !list) {
-    return;
-  }
-  const previous = select.value;
-  select.innerHTML = "";
-  for (const account of state.accounts) {
-    const option = document.createElement("option");
-    option.value = account.id;
-    option.textContent = account.label;
-    option.selected = account.id === state.selectedAccountId;
-    select.append(option);
-  }
-  if (!state.selectedAccountId && previous) {
-    select.value = previous;
-  }
-
+  if (!select) return;
   const selected = state.accounts.find((account) => account.id === state.selectedAccountId) || state.accounts[0];
-  $("#accountLabelInput").value = selected?.label || "";
-  $("#accountEnabledInput").checked = selected?.enabled !== false;
-  fillAccountOverrides(selected);
-
-  list.innerHTML = "";
-  for (const account of state.accounts) {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = `account-card ${account.id === state.selectedAccountId ? "selected" : ""}`;
-    const authTone = account.auth?.loggedIn ? "ok" : "bad";
-    const authLabel = account.auth?.loggedIn ? "logged in" : account.auth?.authIssue ? "auth issue" : "logged out";
-    const enabledTone = account.enabled ? "ok" : "warn";
-    card.innerHTML = `
-      <span>
-        <strong>${escapeHtml(account.label)}</strong>
-        <small>${escapeHtml(account.thread?.threadId ? `thread ${shortId(account.thread.threadId)}` : "no thread yet")}</small>
-      </span>
-      <span class="account-card-badges">
-        <span class="mini-badge ${authTone}" title="${escapeHtml(account.auth?.detail || authLabel)}">${authLabel}</span>
-        <span class="mini-badge ${enabledTone}">${account.enabled ? "scheduled" : "paused"}</span>
-      </span>
-    `;
-    card.addEventListener("click", () => selectAccount(account.id));
-    list.append(card);
+  const changed = state.renderedAccountId !== selected?.id;
+  if (changed) {
+    state.renderedAccountId = selected?.id;
+    state.loginSession = null;
+    $("#loginOutput").textContent = "";
+    $("#loginProgress").hidden = true;
+    $("#accountSettings").open = false;
+    $("#accountOverrides").open = false;
+    $(".account-danger").open = false;
+    for (const id of ["accountMessage", "accountDetailsMessage", "accountOverridesMessage", "accountDangerMessage", "manualMessage", "runMessage", "loginMessage"]) feedback(id, "");
   }
+  select.replaceChildren(...state.accounts.map((account) => new Option(account.label, account.id, false, account.id === selected?.id)));
+  const draft = state.accountDrafts.get(selected?.id);
+  $("#accountLabelInput").value = draft?.label ?? selected?.label ?? "";
+  $("#accountEnabledInput").checked = selected?.enabled === true;
+  if (changed || !draft?.overrides) {
+    fillAccountOverrides(selected);
+    if (draft?.overrides) {
+      for (const [id, value] of Object.entries(draft.overrides)) $("#" + id).value = value;
+    }
+  } else if (selected?.auth?.loggedIn) void refreshModels(selected.id);
+  $("#sendTarget").textContent = selected
+    ? `To ${selected.label} · leave the prompt empty to use this account’s scheduled prompt.`
+    : "Add an account to send a message.";
+  $("#runNowBtn").title = selected ? `Send the scheduled prompt to ${selected.label}` : "Add an account first";
+  renderAccountAccess();
+  updateAccountControls();
+}
+
+function updateAccountControls() {
+  if (typeof document === "undefined") return;
+  const account = state.accounts.find((item) => item.id === state.selectedAccountId);
+  const signingIn = state.loginSession?.accountId === account?.id && state.loginSession?.status === "running";
+  for (const id of ["accountSelect", "addAccountOpenBtn", "saveAccountBtn", "saveAccountOverridesBtn", "accountEnabledInput", "logoutBtn", "removeAccountBtn"]) {
+    const element = $("#" + id);
+    if (element) element.disabled = Boolean(state.accountBusy || state.sendBusy || element.dataset.pending || (!account && id !== "addAccountOpenBtn") || (signingIn && ["logoutBtn", "removeAccountBtn"].includes(id)));
+  }
+  $("#deviceLoginBtn").disabled = Boolean(state.accountBusy || signingIn || !account);
+  $("#removeAccountBtn").disabled ||= state.accounts.length <= 1;
+  $("#removeAccountBtn").title = state.accounts.length <= 1 ? "Keep at least one account in the console." : "";
+  for (const id of ["accountDetailsForm", "accountOverridesForm"]) $("#" + id).inert = state.accountBusy;
+  if (!state.sendBusy) {
+    $("#manualSendBtn").disabled = $("#runNowBtn").disabled = !account || !account.auth?.loggedIn;
+  }
+  if (account && !account.auth?.loggedIn) $("#sendTarget").textContent = `Sign in to ${account.label} in Account console before sending.`;
 }
 
 async function refreshStatus() {
+  const requestId = ++state.statusRequestId;
   const status = await api("/api/status");
+  if (requestId !== state.statusRequestId || (state.selectingAccountId && status.selectedAccountId !== state.selectingAccountId)) return;
   updateStatus(status);
   saveStatusSnapshot(status);
   setSnapshotMode();
@@ -1182,13 +1236,12 @@ async function refreshAllState({ interactive = true } = {}) {
   } catch (error) {
     upstreamError = error;
   }
-  const accountId = selectedAccountId();
   const reloads = await Promise.allSettled(interactive
     ? [
         refreshStatus(),
         refreshSettings(),
         refreshActivity(),
-        api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId || "")}`).then(renderLoginOutput)
+        refreshLoginSession()
       ]
     : [refreshStatus(), refreshActivity()]);
   const reloadFailures = reloads.filter((result) => result.status === "rejected").length;
@@ -1243,21 +1296,26 @@ function startAutoRefresh() {
 }
 
 async function selectAccount(accountId) {
-  await api("/api/accounts/select", { method: "POST", body: JSON.stringify({ accountId }) });
-  await refreshStatus();
-  await loadFleetUsageHistory();
-  renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId)}`));
+  if (state.accountBusy) return;
+  state.selectingAccountId = accountId;
+  await accountAction($("#accountSelect"), "accountMessage", async () => {
+    try {
+      const result = await api("/api/accounts/select", { method: "POST", body: JSON.stringify({ accountId }) });
+      state.selectedAccountId = result.selectedAccountId;
+      state.accounts = result.accounts || state.accounts;
+      renderAccounts();
+      await refreshStatus();
+      await Promise.all([loadFleetUsageHistory(), refreshLoginSession()]);
+    } finally {
+      state.selectingAccountId = null;
+      $("#accountSelect").value = state.selectedAccountId || "";
+    }
+  });
 }
 
-async function patchSelectedAccount(patch) {
-  const accountId = selectedAccountId();
-  if (!accountId) {
-    return;
-  }
-  await api(`/api/accounts/${encodeURIComponent(accountId)}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch)
-  });
+async function patchSelectedAccount(patch, accountId = selectedAccountId()) {
+  if (!accountId) return;
+  await api(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body: JSON.stringify(patch) });
   await refreshStatus();
 }
 
@@ -1266,11 +1324,14 @@ function fillAccountOverrides(account) {
   const effective = account?.effectiveSettings || {};
   $("#accountScheduleInput").value = (overrides.scheduleTimes || []).join(", ");
   $("#accountWorkspaceInput").value = overrides.workspaceDir || "";
-  fillModelSelect($("#accountModelInput"), overrides.model || "", "Use global model");
+  fillModelSelect($("#accountModelInput"), state.accountDrafts.get(account?.id)?.overrides?.accountModelInput ?? overrides.model ?? "", "Use shared model");
   $("#accountPromptInput").value = overrides.promptTemplate || "";
   $("#accountScheduleInput").placeholder = (effective.scheduleTimes || []).join(", ") || "Inherited";
   $("#accountWorkspaceInput").placeholder = effective.workspaceDir || "Inherited";
-  void refreshModels(account?.id);
+  if (account?.auth?.loggedIn) void refreshModels(account.id);
+  else {
+    $("#accountModelHint").textContent = "Sign in to see the models available to this account.";
+  }
   $("#accountPromptInput").placeholder = "Inherited global template";
 }
 
@@ -1312,40 +1373,29 @@ async function refreshModels(accountId) {
 
 function renderModelCatalog(catalog) {
   fillModelSelect($("#modelInput"), $("#modelInput").value, "Automatic · prefer lowest cost");
-  fillModelSelect($("#accountModelInput"), $("#accountModelInput").value, "Use global model");
-  $("#modelHint").textContent = `Automatic prefers ${catalog.recommendedModel} for this account. Other accounts use their own catalogs.`;
-  $("#accountModelHint").textContent = "An empty override uses the global model. Model access is verified when a turn completes.";
+  fillModelSelect($("#accountModelInput"), $("#accountModelInput").value, "Use shared model");
+  $("#modelHint").textContent = `Automatic uses the lowest-cost preference available to each account (${catalog.recommendedModel} for the selected account).`;
+  $("#accountModelHint").textContent = "Use the shared model or choose one for this account.";
 }
 
-function setAccountMessage(text) {
-  const el = $("#accountMessage");
-  if (el) {
-    el.textContent = text;
-  }
-}
-
-async function saveAccountOverrides() {
+async function saveAccountOverrides(event) {
+  event.preventDefault();
   const accountId = selectedAccountId();
-  if (!accountId) {
-    return;
-  }
-  const scheduleTimes = $("#accountScheduleInput").value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const scheduleTimes = $("#accountScheduleInput").value.split(",").map((item) => item.trim()).filter(Boolean);
   const settings = {
     scheduleTimes: scheduleTimes.length ? scheduleTimes : null,
     workspaceDir: $("#accountWorkspaceInput").value.trim() || null,
     model: $("#accountModelInput").value.trim() || null,
     promptTemplate: $("#accountPromptInput").value.trim() || null
   };
-  setAccountMessage("Saving...");
-  try {
-    await patchSelectedAccount({ settings });
-    setAccountMessage("Overrides saved.");
-  } catch (error) {
-    setAccountMessage(error.message);
-  }
+  await accountAction($("#saveAccountOverridesBtn"), "accountOverridesMessage", async () => {
+    feedback("accountOverridesMessage", "Saving…");
+    await patchSelectedAccount({ settings }, accountId);
+    const draft = state.accountDrafts.get(accountId);
+    if (draft) delete draft.overrides;
+    feedback("accountOverridesMessage", "Custom settings saved.", "success");
+    renderAccounts();
+  });
 }
 
 function fillSettings(settings) {
@@ -1377,7 +1427,9 @@ function fillSettings(settings) {
 }
 
 async function refreshSettings() {
-  fillSettings(await api("/api/settings"));
+  const settings = await api("/api/settings");
+  state.settings = settings;
+  if (!state.settingsDirty) fillSettings(settings);
 }
 
 function stringifyPayload(payload) {
@@ -1387,29 +1439,40 @@ function stringifyPayload(payload) {
   return JSON.stringify(payload, null, 2);
 }
 
+function activityTone(event) {
+  const turn = event.payload?.turn;
+  if (event.severity === "error" || event.message === "turn/failed" || turn?.status === "failed" || turn?.error
+    || (event.message === "thread/status/changed" && event.payload?.status?.type === "systemError")) return "error";
+  if (event.severity === "warn" || ["turn/cancelled", "turn/interrupted"].includes(event.message)
+    || ["cancelled", "interrupted"].includes(turn?.status)) return "warn";
+  if (event.message === "turn/completed" && turn?.status === "completed") return "success";
+  if (event.message === "turn/started" || event.message === "Started Codex turn") return "active";
+  return "info";
+}
+
 function eventPriority(event) {
-  if (event.severity === "error" || event.severity === "warn") {
+  if (["error", "warn"].includes(activityTone(event))) {
     return true;
   }
-  if (event.source !== "codex") {
-    return true;
-  }
+  if (event.message === "Device login output") return false;
+  if (event.source === "refresh" && event.message === "State refresh completed") return false;
+  if (event.source === "server" && ["Service starting", "Web server listening"].includes(event.message)) return false;
+  if (event.source !== "codex") return true;
   return new Set([
     "turn/started",
     "turn/completed",
     "turn/failed",
     "turn/cancelled",
-    "item/completed",
-    "account/rateLimits/updated",
-    "thread/status/changed"
+    "turn/interrupted",
+    "item/completed"
   ]).has(event.message);
 }
 
-function shouldShowEvent(event) {
-  if (state.showRawEvents) {
+function shouldShowEvent(event, showRawEvents = state.showRawEvents) {
+  if (showRawEvents) {
     return true;
   }
-  if (!eventPriority(event)) {
+  if (event.message === "Device login output" || !eventPriority(event)) {
     return false;
   }
   if (event.message === "item/completed") {
@@ -1429,11 +1492,11 @@ function summarizeEvent(event) {
     event.severity || "info"
   ];
 
-  if (event.severity === "error") {
+  if (event.severity === "error" && !event.message?.startsWith("turn/")) {
     return {
       kind: "error",
       title: event.message || "Error",
-      body: compactText(payload.error || payload.message || stringifyPayload(payload), ""),
+      body: compactText(payload.error?.message || payload.error || payload.message || stringifyPayload(payload), ""),
       tags: baseTags,
       payload
     };
@@ -1494,24 +1557,32 @@ function summarizeEvent(event) {
     return {
       kind: "turn",
       title: "Turn started",
-      body: `Codex started processing turn ${shortId(payload.turn?.id)}.`,
-      tags: ["active", `thread ${shortId(payload.threadId)}`].filter(Boolean),
+      body: "",
+      tags: [],
       payload
     };
   }
 
-  if (event.message === "turn/completed") {
+  if (["turn/completed", "turn/failed", "turn/cancelled", "turn/interrupted"].includes(event.message)) {
+    const tone = activityTone(event);
+    const status = payload.turn?.status || event.message.split("/")[1];
+    const title = tone === "error" ? "Turn failed"
+      : tone === "warn" ? status === "cancelled" ? "Turn cancelled" : "Turn interrupted" : "Turn completed";
+    const error = payload.turn?.error || payload.error;
+    const message = typeof error === "string" ? error : error?.message;
+    const duration = Number.isFinite(payload.turn?.durationMs) ? formatDuration(payload.turn.durationMs) : null;
     return {
       kind: "turn",
-      title: "Turn completed",
-      body: `${payload.turn?.status || "completed"} in ${formatDuration(payload.turn?.durationMs)}`,
-      tags: [payload.turn?.error ? "error" : "ok", `turn ${shortId(payload.turn?.id)}`].filter(Boolean),
+      title,
+      body: [duration, message].filter(Boolean).join(" · "),
+      tags: [],
       payload: {
-        status: payload.turn?.status,
-        duration: formatDuration(payload.turn?.durationMs),
-        error: payload.turn?.error,
+        ...payload,
+        status,
+        duration,
+        error,
         threadId: payload.threadId,
-        turnId: payload.turn?.id
+        turnId: payload.turn?.id || payload.turnId
       }
     };
   }
@@ -1519,9 +1590,9 @@ function summarizeEvent(event) {
   if (event.message === "Started Codex turn") {
     return {
       kind: "turn",
-      title: "Scheduled run started",
-      body: `Reason: ${payload.reason || "unknown"}`,
-      tags: [`run ${shortId(payload.runId)}`, `turn ${shortId(payload.turnId)}`].filter(Boolean),
+      title: payload.reason === "manual" ? "Manual run started" : "Scheduled run started",
+      body: payload.reason === "manual" ? "" : `Reason: ${payload.reason || "unknown"}`,
+      tags: [],
       payload
     };
   }
@@ -1578,7 +1649,7 @@ function renderActivity() {
   state.activityIds.clear();
   const list = $("#activityList");
   list.innerHTML = "";
-  const events = [...state.activityEvents].filter(shouldShowEvent).slice(-300).reverse();
+  const events = [...state.activityEvents].filter((event) => !state.hiddenActivityIds.has(event.id) && shouldShowEvent(event)).slice(state.showRawEvents ? -300 : -40).reverse();
   for (const event of events) {
     if (state.activityIds.has(event.id)) {
       continue;
@@ -1589,10 +1660,11 @@ function renderActivity() {
       ? event.payload.accountLabel || `account ${shortId(event.payload.accountId)}`
       : null;
     const item = document.createElement("li");
-    item.className = `activity-item ${event.severity || "info"} ${summary.kind || "system"}`;
+    item.className = `activity-item ${activityTone(event)} ${summary.kind || "system"}`;
+    item.dataset.eventId = event.id;
     const payload = stringifyPayload(summary.payload);
     const tags = [accountTag, ...(summary.tags || [])]
-      .filter(Boolean)
+      .filter((tag) => tag && (state.showRawEvents || !["info", "codex", "ok"].includes(tag)) && !tag.startsWith("turn ") && !tag.startsWith("thread "))
       .slice(0, 5)
       .map((tag) => `<span class="activity-chip">${escapeHtml(tag)}</span>`)
       .join("");
@@ -1615,12 +1687,12 @@ function renderActivity() {
   if (events.length === 0) {
     const item = document.createElement("li");
     item.className = "activity-empty";
-    item.textContent = state.showRawEvents ? "No activity yet." : "No high-signal activity yet. Enable Raw events to inspect the full stream.";
+    item.textContent = state.showRawEvents ? "No activity yet." : "No recent runs or changes. Routine updates are in Raw events.";
     list.append(item);
   }
   $("#activityHint").textContent = state.showRawEvents
     ? "Showing all raw app-server and service events."
-    : "Showing turn lifecycle, completed messages, rate limits, settings, auth, and errors.";
+    : "Recent runs, messages, settings, and errors. Routine updates are in Raw events.";
 }
 
 function escapeHtml(value) {
@@ -1632,27 +1704,77 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function linkify(text) {
-  const safe = escapeHtml(text);
-  return safe.replace(/https?:\/\/[^\s]+/g, (url) => `<a href="${url}" target="_blank" rel="noreferrer">${url}</a>`);
+function loginPresentation(session, now = Date.now()) {
+  if (!session || session.status === "none") return { status: "none", code: "", url: "" };
+  const output = (session.output || []).map((entry) => entry.text || "").join("").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  const rawUrl = (output.match(/https?:\/\/[^\s<>"']+/g) || []).find((value) => {
+    try {
+      const url = new URL(value);
+      return url.origin === "https://auth.openai.com" && url.pathname === "/codex/device" && !url.username && !url.password && !url.search && !url.hash;
+    } catch { return false; }
+  }) || "";
+  const code = output.match(/\b[A-Z0-9]{4,6}-[A-Z0-9]{4,6}\b/)?.[0] || "";
+  const minutes = Number(output.match(/expires? in\s+(\d+)\s+minutes?/i)?.[1]);
+  const expired = session.status === "running" && minutes > 0 && Number.isFinite(Date.parse(session.startedAt))
+    && now >= Date.parse(session.startedAt) + minutes * 60_000;
+  return { status: expired ? "expired" : session.status, code: session.status === "running" && !expired ? code : "", url: rawUrl };
+}
+
+function renderAccountAccess() {
+  const account = state.accounts.find((item) => item.id === state.selectedAccountId);
+  const auth = account?.auth || {};
+  const uncertain = auth.probeUnavailable || auth.logoutConfirmationPending;
+  $("#accountAccessTitle").textContent = auth.loggedIn ? `Connected to ${account.label}` : `Connect ${account?.label || "an account"}`;
+  $("#accountAccessHint").textContent = auth.logoutConfirmationPending ? "Confirming this account’s sign-in status…"
+    : auth.probeUnavailable ? "The latest sign-in check is unavailable. Refresh to check again."
+    : auth.loggedIn ? "Ready for messages. Scheduled sends follow the switch below."
+      : auth.authIssue ? "Your sign-in needs attention. Sign in again to reconnect." : "Sign in with ChatGPT to read usage and send messages.";
+  $("#deviceLoginBtn").hidden = Boolean(auth.loggedIn && !auth.authIssue && !uncertain);
+  $("#deviceLoginBtn").textContent = auth.authIssue ? "Sign in again" : "Sign in";
+  const session = state.loginSession?.accountId === account?.id ? state.loginSession : null;
+  if (!session || session.status === "none") {
+    $("#loginProgress").hidden = true;
+    return;
+  }
+  const view = loginPresentation(session);
+  if (view.status === "running") {
+    $("#accountAccessTitle").textContent = `Connecting ${account.label}`;
+    $("#accountAccessHint").textContent = "Follow the steps below to connect this account.";
+    $("#deviceLoginBtn").hidden = true;
+  }
+  $("#loginProgress").hidden = false;
+  $("#loginProgress").dataset.state = view.status;
+  const copy = {
+    running: [view.code ? "Finish signing in" : "Preparing sign-in", view.code ? "Enter your code on OpenAI’s sign-in page." : "Waiting for a sign-in code from Codex…", "Waiting", "neutral"],
+    completed: ["Sign-in complete", "You can now send messages and enable scheduled sends.", "Connected", "ok"],
+    failed: ["Sign-in did not complete", "Try signing in again. Open diagnostics if you need the details.", "Try again", "bad"],
+    expired: ["Sign-in code expired", "Wait for this sign-in attempt to finish, then sign in again for a new code.", "Expired", "warn"]
+  }[view.status] || ["Sign-in status", "Check diagnostics for details.", "Unknown", "neutral"];
+  $("#loginTitle").textContent = copy[0];
+  $("#loginHint").textContent = copy[1];
+  badge($("#loginStatus"), copy[2], copy[3]);
+  $("#loginSteps").hidden = !(view.status === "running" && view.code && view.url);
+  $("#loginCode").textContent = view.code;
+  if (view.status === "running" && view.url) $("#loginLink").href = view.url;
+  else $("#loginLink").removeAttribute("href");
+  if (view.status !== "running") feedback("loginMessage", "");
 }
 
 function renderLoginOutput(session) {
-  const box = $("#loginOutput");
-  if (!session || session.status === "none") {
-    box.textContent = "No login session yet.";
-    return;
-  }
-  const lines = [
-    `Session: ${session.id}`,
-    `Status: ${session.status}`,
-    ""
-  ];
-  for (const entry of session.output || []) {
-    lines.push(`[${entry.stream}] ${entry.text}`);
-  }
-  box.innerHTML = linkify(lines.join("\n"));
-  box.scrollTop = box.scrollHeight;
+  if (!session || session.accountId !== selectedAccountId()) return;
+  if (state.loginSession?.status !== session.status || state.loginSession?.id !== session.id) $(".login-diagnostics").open = false;
+  state.loginSession = session;
+  // Terminal output is text only and is never stored in browser snapshots.
+  $("#loginOutput").textContent = (session.output || []).map((entry) => `[${entry.stream}] ${entry.text}`).join("\n");
+  renderAccountAccess();
+  updateAccountControls();
+}
+
+async function refreshLoginSession() {
+  const accountId = selectedAccountId();
+  if (!accountId) return;
+  const session = await api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId)}`);
+  if (accountId === selectedAccountId()) renderLoginOutput(session);
 }
 
 async function refreshActivity() {
@@ -2278,7 +2400,7 @@ function connectEvents() {
     }
   });
   events.addEventListener("login", async () => {
-    renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
+    await refreshLoginSession();
     await refreshStatus();
   });
   events.addEventListener("status", async () => {
@@ -2325,14 +2447,18 @@ async function saveSettings(event) {
     telegramAlertFailures: $("#telegramFailuresInput").checked,
     promptTemplate: $("#promptInput").value
   };
-  $("#settingsMessage").textContent = "Saving...";
-  try {
-    fillSettings(await api("/api/settings", { method: "PATCH", body: JSON.stringify(body) }));
-    $("#settingsMessage").textContent = "Saved.";
+  const revision = state.settingsRevision;
+  await buttonAction($("#settingsForm button[type=submit]"), "settingsMessage", async () => {
+    feedback("settingsMessage", "Saving…");
+    const settings = await api("/api/settings", { method: "PATCH", body: JSON.stringify(body) });
+    state.settings = settings;
+    if (revision === state.settingsRevision) {
+      state.settingsDirty = false;
+      fillSettings(settings);
+      feedback("settingsMessage", "Saved.", "success");
+    } else feedback("settingsMessage", "Saved. Your newer edits are still unsaved.");
     await refreshStatus();
-  } catch (error) {
-    $("#settingsMessage").textContent = error.message;
-  }
+  });
 }
 
 async function runNow(prompt = null) {
@@ -2341,6 +2467,42 @@ async function runNow(prompt = null) {
     body.prompt = prompt;
   }
   return api("/api/run-now", { method: "POST", body: JSON.stringify(body) });
+}
+
+async function sendMessage(button, messageId, prompt = null) {
+  if (state.sendBusy) return;
+  state.sendBusy = true;
+  updateAccountControls();
+  $("#runNowBtn").disabled = $("#manualSendBtn").disabled = true;
+  try {
+    await buttonAction(button, messageId, async () => {
+      feedback(messageId, "Starting turn…");
+      const run = await runNow(prompt);
+      const description = run.status === "failed" ? run.error || "Turn failed to start. Check Activity for details."
+        : run.status === "skipped_active_turn" ? "A turn is already running. No new message was sent."
+        : run.status === "completed" ? "Turn completed. See Activity for the reply." : "Turn started. Follow its progress in Activity.";
+      feedback(messageId, description, run.status === "failed" ? "error" : run.status === "completed" ? "success" : "neutral");
+      await refreshStatus();
+    });
+  } finally { state.sendBusy = false; updateAccountControls(); }
+}
+
+async function setScheduler(enabled) {
+  if (state.schedulerBusy) return;
+  state.schedulerBusy = true;
+  $("#pauseBtn").disabled = $("#resumeBtn").disabled = true;
+  feedback("schedulerMessage", enabled ? "Resuming…" : "Pausing…");
+  try {
+    await api(`/api/scheduler/${enabled ? "resume" : "pause"}`, { method: "POST", body: "{}" });
+    feedback("schedulerMessage", enabled ? "Scheduler resumed." : "Scheduler paused.", "success");
+    await refreshStatus();
+  } catch (error) { feedback("schedulerMessage", error.message, "error"); }
+  finally {
+    state.schedulerBusy = false;
+    const paused = $("#schedulerBadge").textContent === "Paused";
+    $("#pauseBtn").disabled = paused;
+    $("#resumeBtn").disabled = !paused;
+  }
 }
 
 function bindActions() {
@@ -2357,58 +2519,31 @@ function bindActions() {
   $("#refreshBtn").addEventListener("click", () => {
     void refreshAllState();
   });
-  $("#runNowBtn").addEventListener("click", async () => {
-    $("#runNowBtn").disabled = true;
+  $("#runNowBtn").addEventListener("click", () => void sendMessage($("#runNowBtn"), "runMessage"));
+  $("#manualSendBtn").addEventListener("click", () => void sendMessage($("#manualSendBtn"), "manualMessage", $("#manualPromptInput").value.trim() || null));
+  $("#pauseBtn").addEventListener("click", () => void setScheduler(false));
+  $("#resumeBtn").addEventListener("click", () => void setScheduler(true));
+  $("#deviceLoginBtn").addEventListener("click", () => void accountAction($("#deviceLoginBtn"), "accountMessage", async () => {
+    feedback("accountMessage", "Preparing sign-in…");
+    renderLoginOutput(await api("/api/auth/device/start", { method: "POST", body: JSON.stringify({ accountId: selectedAccountId() }) }));
+    feedback("accountMessage", "");
+  }));
+  $("#copyLoginCodeBtn").addEventListener("click", () => void buttonAction($("#copyLoginCodeBtn"), "loginMessage", async () => {
     try {
-      await runNow();
-      await refreshStatus();
-    } finally {
-      $("#runNowBtn").disabled = false;
+      await navigator.clipboard.writeText($("#loginCode").textContent);
+      feedback("loginMessage", "Code copied.", "success");
+    } catch {
+      feedback("loginMessage", "Select the code above and copy it manually.");
     }
-  });
-  $("#manualSendBtn").addEventListener("click", async () => {
-    $("#manualMessage").textContent = "Sending...";
-    try {
-      await runNow($("#manualPromptInput").value.trim() || null);
-      $("#manualMessage").textContent = "Sent.";
-      await refreshStatus();
-    } catch (error) {
-      $("#manualMessage").textContent = error.message;
-    }
-  });
-  $("#pauseBtn").addEventListener("click", async () => {
-    await api("/api/scheduler/pause", { method: "POST", body: "{}" });
+  }));
+  $("#logoutBtn").addEventListener("click", () => void accountAction($("#logoutBtn"), "accountDangerMessage", async () => {
+    const accountId = selectedAccountId();
+    const result = await api("/api/auth/logout", { method: "POST", body: JSON.stringify({ accountId }) });
+    if (result.code !== 0) throw new Error("Sign-out did not complete. Try again or check Activity.");
+    state.loginSession = null;
     await refreshStatus();
-  });
-  $("#resumeBtn").addEventListener("click", async () => {
-    await api("/api/scheduler/resume", { method: "POST", body: "{}" });
-    await refreshStatus();
-  });
-  $("#deviceLoginBtn").addEventListener("click", async () => {
-    $("#deviceLoginBtn").disabled = true;
-    try {
-      renderLoginOutput(await api("/api/auth/device/start", {
-        method: "POST",
-        body: JSON.stringify({ accountId: selectedAccountId() })
-      }));
-    } catch (error) {
-      $("#loginOutput").textContent = error.message;
-    } finally {
-      $("#deviceLoginBtn").disabled = false;
-    }
-  });
-  $("#logoutBtn").addEventListener("click", async () => {
-    $("#logoutBtn").disabled = true;
-    try {
-      await api("/api/auth/logout", {
-        method: "POST",
-        body: JSON.stringify({ accountId: selectedAccountId() })
-      });
-      await refreshStatus();
-    } finally {
-      $("#logoutBtn").disabled = false;
-    }
-  });
+    feedback("accountDangerMessage", "Signed out.", "success");
+  }));
   $("#settingsForm").addEventListener("submit", saveSettings);
   $("#telegramTestBtn").addEventListener("click", async () => {
     const button = $("#telegramTestBtn");
@@ -2424,9 +2559,9 @@ function bindActions() {
     }
   });
   $("#clearActivityBtn").addEventListener("click", () => {
-    $("#activityList").innerHTML = "";
-    state.activityIds.clear();
-    state.activityEvents = [];
+    for (const event of state.activityEvents) state.hiddenActivityIds.add(event.id);
+    try { sessionStorage.setItem("window-runner:hidden-activity", JSON.stringify([...state.hiddenActivityIds].slice(-1000))); } catch {}
+    renderActivity();
   });
   $("#rawEventsInput").addEventListener("change", (event) => {
     state.showRawEvents = event.target.checked;
@@ -2438,51 +2573,84 @@ function bindActions() {
       setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
     });
   }
-  $("#accountSelect").addEventListener("change", (event) => {
-    void selectAccount(event.target.value);
+  $("#settingsForm").addEventListener("input", () => {
+    state.settingsDirty = true;
+    state.settingsRevision += 1;
+    feedback("settingsMessage", "Unsaved changes.");
   });
-  $("#saveAccountBtn").addEventListener("click", async () => {
-    await patchSelectedAccount({ label: $("#accountLabelInput").value.trim() });
+  $("#accountSelect").addEventListener("change", (event) => void selectAccount(event.target.value));
+  $("#accountDetailsForm").addEventListener("input", () => {
+    const draft = state.accountDrafts.get(selectedAccountId()) || {};
+    draft.label = $("#accountLabelInput").value;
+    state.accountDrafts.set(selectedAccountId(), draft);
+    feedback("accountDetailsMessage", "Unsaved changes.");
   });
-  $("#saveAccountOverridesBtn").addEventListener("click", () => {
-    void saveAccountOverrides();
+  $("#accountDetailsForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void accountAction($("#saveAccountBtn"), "accountDetailsMessage", async () => {
+      const accountId = selectedAccountId();
+      const label = $("#accountLabelInput").value.trim();
+      if (!label) throw new Error("Enter an account name.");
+      await patchSelectedAccount({ label }, accountId);
+      const draft = state.accountDrafts.get(accountId);
+      if (draft) delete draft.label;
+      feedback("accountDetailsMessage", "Name saved.", "success");
+      renderAccounts();
+    });
   });
-  $("#removeAccountBtn").addEventListener("click", async () => {
+  $("#accountOverridesForm").addEventListener("input", () => {
+    const draft = state.accountDrafts.get(selectedAccountId()) || {};
+    draft.overrides = Object.fromEntries(["accountScheduleInput", "accountWorkspaceInput", "accountModelInput", "accountPromptInput"].map((id) => [id, $("#" + id).value]));
+    state.accountDrafts.set(selectedAccountId(), draft);
+    feedback("accountOverridesMessage", "Unsaved changes.");
+  });
+  $("#accountOverridesForm").addEventListener("submit", saveAccountOverrides);
+  $("#removeAccountBtn").addEventListener("click", () => {
     const accountId = selectedAccountId();
     const account = state.accounts.find((item) => item.id === accountId);
-    if (!account) {
-      return;
-    }
-    const confirmed = window.confirm(
-      `Remove "${account.label}"? Its Codex credentials and thread data will be deleted from the server.`
-    );
-    if (!confirmed) {
-      return;
-    }
-    $("#removeAccountBtn").disabled = true;
-    setAccountMessage("Removing...");
-    try {
+    if (!account || !window.confirm(`Remove "${account.label}"? Its saved Codex credentials and thread data will be deleted from this server.`)) return;
+    void accountAction($("#removeAccountBtn"), "accountDangerMessage", async () => {
       await api(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
-      setAccountMessage("");
+      state.accountDrafts.delete(accountId);
       await refreshStatus();
-    } catch (error) {
-      setAccountMessage(error.message);
-    } finally {
-      $("#removeAccountBtn").disabled = false;
-    }
+      await refreshLoginSession();
+      feedback("accountMessage", `Removed ${account.label}.`, "success");
+    });
   });
-  $("#accountEnabledInput").addEventListener("change", async (event) => {
-    await patchSelectedAccount({ enabled: event.target.checked });
+  $("#accountEnabledInput").addEventListener("change", (event) => {
+    const enabled = event.target.checked;
+    void accountAction($("#accountEnabledInput"), "accountMessage", async () => {
+      try {
+        await patchSelectedAccount({ enabled });
+        feedback("accountMessage", enabled ? "Included in scheduled sends." : "Scheduled sends paused for this account.", "success");
+      } catch (error) {
+        event.target.checked = !enabled;
+        throw error;
+      }
+    });
   });
-  $("#addAccountBtn").addEventListener("click", async () => {
-    const label = $("#newAccountLabelInput").value.trim() || `Account ${state.accounts.length + 1}`;
-    const result = await api("/api/accounts", { method: "POST", body: JSON.stringify({ label }) });
-    $("#newAccountLabelInput").value = "";
-    state.accounts = result.accounts || [];
-    state.selectedAccountId = result.selectedAccountId;
-    renderAccounts();
-    await refreshStatus();
-    await loadFleetUsageHistory();
+  $("#addAccountOpenBtn").addEventListener("click", () => {
+    $("#addAccountForm").reset();
+    feedback("addAccountMessage", "");
+    $("#addAccountDialog").showModal();
+  });
+  for (const id of ["closeAddAccountBtn", "cancelAddAccountBtn"]) $("#" + id).addEventListener("click", () => $("#addAccountDialog").close());
+  $("#addAccountForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void accountAction($("#addAccountBtn"), "addAccountMessage", async () => {
+      const label = $("#newAccountLabelInput").value.trim();
+      if (!label) throw new Error("Enter an account name.");
+      const result = await api("/api/accounts", { method: "POST", body: JSON.stringify({ label, enabled: false }) });
+      state.selectedAccountId = result.selectedAccountId;
+      state.accounts = result.accounts || [];
+      renderAccounts();
+      $("#addAccountDialog").close();
+      await refreshStatus();
+      await refreshLoginSession();
+      location.hash = "#account";
+      $("#accountAccess").scrollIntoView({ block: "center", behavior: "smooth" });
+      feedback("accountMessage", "Account added. Sign in to connect it.", "success");
+    }).then(() => $("#deviceLoginBtn").focus({ preventScroll: true }));
   });
 }
 
@@ -2573,6 +2741,7 @@ function registerServiceWorker() {
 
 async function init() {
   initTheme();
+  try { state.hiddenActivityIds = new Set(JSON.parse(sessionStorage.getItem("window-runner:hidden-activity") || "[]")); } catch {}
   bindActions();
   initMobileDock();
   registerServiceWorker();
@@ -2584,8 +2753,11 @@ async function init() {
   connectEvents();
   await Promise.all([refreshSettings(), refreshStatus(), refreshActivity()]);
   await loadFleetUsageHistory();
-  renderLoginOutput(await api(`/api/auth/device/current?accountId=${encodeURIComponent(selectedAccountId() || "")}`));
+  await refreshLoginSession();
   setInterval(tickFleet, 1000);
+  setInterval(() => {
+    if (document.visibilityState === "visible" && state.loginSession?.status === "running") void refreshLoginSession().then(() => refreshStatus()).catch(() => {});
+  }, 3000);
   startAutoRefresh();
 }
 
@@ -2603,6 +2775,10 @@ if (typeof document !== "undefined") {
 }
 
 export {
+  loginPresentation,
+  activityTone,
+  shouldShowEvent,
+  summarizeEvent,
   accountResetCredits,
   accountWindow,
   buildUsageChartModel,

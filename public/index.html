@@ -49,6 +49,8 @@
       </div>
     </header>
 
+    <p id="runMessage" class="action-notice" role="status" hidden></p>
+
     <nav class="mobile-dock" aria-label="Console sections">
       <a href="#fleet" data-section="fleet">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m6 13v-7m5 7V7"/></svg>
@@ -155,31 +157,37 @@
             </div>
           </div>
           <div id="usageHistoryLegend" class="usage-history-legend" aria-label="Account chart legend"></div>
-          <div id="usageHistoryLatest" class="fleet-history-latest" aria-label="Latest fleet usage values"></div>
-          <details class="fleet-history-changes">
+          <details class="console-disclosure">
+            <summary>Latest readings by account</summary>
+            <div id="usageHistoryLatest" class="fleet-history-latest" aria-label="Latest fleet usage values"></div>
+          </details>
+          <details class="fleet-history-changes console-disclosure">
             <summary>Recent fleet changes</summary>
             <div id="usageHistoryChanges"></div>
           </details>
         </section>
-        <div class="weekly-horizon" role="group" aria-labelledby="weeklyHorizonTitle">
-          <div class="weekly-horizon-head">
-            <p id="weeklyHorizonTitle" class="eyebrow">Weekly reset horizon &middot; next 7 days</p>
-            <span class="weekly-horizon-legend" aria-label="Marker legend">
-              <span><i class="weekly-legend-marker ordinary"></i>Weekly</span>
-              <span><i class="weekly-legend-marker reserve"></i>Reserve</span>
-            </span>
+        <details class="console-disclosure reset-details">
+          <summary>Reset timelines</summary>
+          <div class="weekly-horizon" role="group" aria-labelledby="weeklyHorizonTitle">
+            <div class="weekly-horizon-head">
+              <p id="weeklyHorizonTitle" class="eyebrow">Weekly reset horizon &middot; next 7 days</p>
+              <span class="weekly-horizon-legend" aria-label="Marker legend">
+                <span><i class="weekly-legend-marker ordinary"></i>Weekly</span>
+                <span><i class="weekly-legend-marker reserve"></i>Reserve</span>
+              </span>
+            </div>
+            <div id="fleetWeeklyHorizon"></div>
           </div>
-          <div id="fleetWeeklyHorizon"></div>
-        </div>
-        <div class="reset-timetable">
-          <p class="eyebrow tt-title">Reset timetable &middot; next 24h</p>
-          <div id="fleetTimetable"></div>
-        </div>
-        <p class="hint fleet-hint">
-          Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
-          Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
-          Adaptive server-side quota reads become more frequent after activity and never start a Codex turn.
-        </p>
+          <div class="reset-timetable">
+            <p class="eyebrow tt-title">Reset timetable &middot; next 24h</p>
+            <div id="fleetTimetable"></div>
+          </div>
+          <p class="hint fleet-hint">
+            Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
+            Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
+            Adaptive server-side quota reads become more frequent after activity and never start a Codex turn.
+          </p>
+        </details>
       </section>
 
       <section id="account" class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
@@ -193,10 +201,44 @@
 
         <div class="account-selector-rail">
           <label class="account-selector-label">
-            Active account
+            Account
             <select id="accountSelect"></select>
           </label>
-          <p class="account-selector-note">Every reading and account control below follows this selection.</p>
+          <button id="addAccountOpenBtn" type="button">Add account</button>
+        </div>
+
+        <div class="account-access" id="accountAccess">
+          <div class="account-access-head">
+            <div>
+              <h3 id="accountAccessTitle">Checking account</h3>
+              <p id="accountAccessHint">Loading sign-in status…</p>
+            </div>
+            <button id="deviceLoginBtn" type="button" class="primary">Sign in</button>
+          </div>
+          <section id="loginProgress" class="login-progress" aria-labelledby="loginTitle" hidden>
+            <div class="login-progress-head">
+              <h4 id="loginTitle">Sign in to your account</h4>
+              <span id="loginStatus" class="badge neutral">Waiting</span>
+            </div>
+            <p id="loginHint" role="status"></p>
+            <div id="loginSteps" hidden>
+              <ol class="login-steps">
+                <li><span>Copy this one-time code</span><div class="login-code-row"><code id="loginCode"></code><button id="copyLoginCodeBtn" type="button">Copy code</button></div></li>
+                <li><span>Open the sign-in page and enter your code</span><a id="loginLink" class="button-link primary" target="_blank" rel="noopener noreferrer">Continue to OpenAI <span aria-hidden="true">↗</span></a></li>
+              </ol>
+              <p class="hint">Return here after signing in. This page updates automatically.</p>
+            </div>
+            <p id="loginMessage" class="form-message" role="status"></p>
+            <details class="console-disclosure login-diagnostics">
+              <summary>Sign-in diagnostics</summary>
+              <pre id="loginOutput" class="terminal"></pre>
+            </details>
+          </section>
+          <label class="checkbox-line account-schedule-toggle">
+            <input id="accountEnabledInput" type="checkbox">
+            Include this account in scheduled sends
+          </label>
+          <p id="accountMessage" class="form-message" role="status"></p>
         </div>
 
         <div class="account-overview-grid">
@@ -205,12 +247,15 @@
               <h3 id="accountStatusTitle">Account status</h3>
               <span id="serviceBadge" class="badge neutral">Unknown</span>
             </div>
-            <dl class="facts">
-              <div><dt>Auth</dt><dd id="authState">Unknown</dd></div>
-              <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
-              <div><dt>Thread</dt><dd id="threadState">None</dd></div>
-              <div><dt>Last run</dt><dd id="lastRun">None</dd></div>
-            </dl>
+            <dl class="facts"><div><dt>Last run</dt><dd id="lastRun">None</dd></div></dl>
+            <details class="console-disclosure">
+              <summary>Connection details</summary>
+              <dl class="facts">
+                <div><dt>Sign-in</dt><dd id="authState">Unknown</dd></div>
+                <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
+                <div><dt>Thread</dt><dd id="threadState">None</dd></div>
+              </dl>
+            </details>
           </section>
 
           <section class="account-snapshot window-panel" aria-labelledby="accountUsageTitle">
@@ -235,69 +280,70 @@
               <div><dt>Reset</dt><dd id="windowReset">Unknown</dd></div>
               <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
               <div><dt>Reserve</dt><dd id="windowReserve">Unavailable</dd></div>
-              <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
-              <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
-              <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
-              <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
-              <div><dt>Last ping</dt><dd id="lastPing">None</dd></div>
-              <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
             </dl>
+            <details class="console-disclosure">
+              <summary>Quota details and recent messages</summary>
+              <dl class="facts">
+                <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
+                <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
+                <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
+                <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
+                <div><dt>Last message</dt><dd id="lastPing">None</dd></div>
+                <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
+              </dl>
+            </details>
           </section>
         </div>
 
-        <details class="account-management">
+        <details class="account-management" id="accountSettings">
           <summary>
-            <span>Manage selected account</span>
-            <small>Login, credentials, overrides, and account list</small>
+            <span>Account settings</span>
+            <small>Name, custom schedule, and sign-out</small>
           </summary>
           <div class="account-management-body">
-            <p class="hint">
-              Each account uses its own persistent Codex home. Enabled accounts are included in scheduled sends.
-            </p>
-            <div class="account-edit-row">
-              <input id="accountLabelInput" autocomplete="off" placeholder="Account label" aria-label="Account label">
-              <button id="saveAccountBtn" type="button">Save label</button>
-            </div>
-            <label class="checkbox-line">
-              <input id="accountEnabledInput" type="checkbox">
-              Include this account in scheduled sends
-            </label>
-            <div class="button-row">
-              <button id="deviceLoginBtn" type="button" class="primary">Start device login</button>
-              <button id="logoutBtn" type="button" class="danger">Logout</button>
-              <button id="removeAccountBtn" type="button" class="danger">Remove</button>
-            </div>
-            <span id="accountMessage" class="form-message"></span>
-            <details id="accountOverrides" class="account-overrides">
-              <summary>Per-account overrides</summary>
-              <p class="hint">Leave empty to inherit the global defaults from Settings.</p>
-              <label>
-                Schedule times
-                <input id="accountScheduleInput" autocomplete="off" placeholder="Inherited">
-              </label>
-              <label>
-                Workspace directory
-                <input id="accountWorkspaceInput" autocomplete="off" placeholder="Inherited">
-              </label>
-              <label>
-                Model
-                <select id="accountModelInput"><option value="">Use global model</option></select>
-                <small id="accountModelHint">Models load from the selected account's Codex catalog.</small>
-              </label>
-              <label>
-                Scheduled prompt template
-                <textarea id="accountPromptInput" rows="5"></textarea>
-              </label>
-              <div class="button-row">
-                <button id="saveAccountOverridesBtn" type="button">Save overrides</button>
+            <form id="accountDetailsForm">
+              <label for="accountLabelInput">Account name</label>
+              <div class="account-edit-row">
+                <input id="accountLabelInput" name="accountLabel" autocomplete="off" placeholder="e.g. Personal" required maxlength="80">
+                <button id="saveAccountBtn" type="submit">Save name</button>
+              </div>
+              <p id="accountDetailsMessage" class="form-message" role="status"></p>
+            </form>
+            <details id="accountOverrides" class="console-disclosure">
+              <summary>Custom run settings</summary>
+              <form id="accountOverridesForm" class="disclosure-body">
+                <p class="hint">Leave fields empty to use the shared settings in Schedule.</p>
+                <label>
+                  Schedule times
+                  <input id="accountScheduleInput" autocomplete="off" placeholder="Inherited">
+                </label>
+                <label>
+                  Workspace directory
+                  <input id="accountWorkspaceInput" autocomplete="off" placeholder="Inherited">
+                </label>
+                <label>
+                  Model
+                  <select id="accountModelInput"><option value="">Use global model</option></select>
+                  <small id="accountModelHint">Models load from the selected account's Codex catalog.</small>
+                </label>
+                <label>
+                  Scheduled prompt template
+                  <textarea id="accountPromptInput" rows="5"></textarea>
+                </label>
+                <div class="button-row">
+                  <button id="saveAccountOverridesBtn" type="submit">Save custom settings</button>
+                  <span id="accountOverridesMessage" class="form-message" role="status"></span>
+                </div>
+              </form>
+            </details>
+            <details class="console-disclosure account-danger">
+              <summary>Sign out or remove account</summary>
+              <div class="disclosure-body">
+                <div class="account-danger-row"><p>Sign out of Codex on this server. Your account settings stay saved.</p><button id="logoutBtn" type="button">Sign out</button></div>
+                <div class="account-danger-row"><p>Remove this account and its saved credentials and thread data from this server.</p><button id="removeAccountBtn" type="button" class="danger">Remove account</button></div>
+                <p id="accountDangerMessage" class="form-message" role="status"></p>
               </div>
             </details>
-            <div class="account-add-row">
-              <input id="newAccountLabelInput" autocomplete="off" placeholder="New account label" aria-label="New account label">
-              <button id="addAccountBtn" type="button">Add account</button>
-            </div>
-            <div id="accountList" class="account-list"></div>
-            <pre id="loginOutput" class="terminal" aria-live="polite">No login session yet.</pre>
           </div>
         </details>
       </section>
@@ -331,6 +377,7 @@
           <div class="button-row">
             <button id="pauseBtn" type="button">Pause scheduler</button>
             <button id="resumeBtn" type="button">Resume scheduler</button>
+            <span id="schedulerMessage" class="form-message" role="status"></span>
           </div>
         </div>
         <form id="settingsForm">
@@ -341,10 +388,6 @@
           <label>
             Schedule times
             <input id="scheduleInput" name="scheduleTimes" autocomplete="off" placeholder="08:00, 13:05, 18:10, 23:15">
-          </label>
-          <label>
-            Workspace directory
-            <input id="workspaceInput" name="workspaceDir" autocomplete="off">
           </label>
           <div class="grid-2">
             <label>
@@ -357,62 +400,75 @@
               <input id="effortInput" name="effort" autocomplete="off" placeholder="medium">
             </label>
           </div>
-          <div class="grid-2">
-            <label>
-              Approval policy
-              <input id="approvalInput" name="approvalPolicy" autocomplete="off">
-            </label>
-            <label>
-              Summary
-              <input id="summaryInput" name="summary" autocomplete="off">
-            </label>
-          </div>
-          <label class="checkbox-line">
-            <input id="networkInput" name="networkAccess" type="checkbox">
-            Allow network access for scheduled turns
-          </label>
-          <label class="checkbox-line">
-            <input id="skipActiveInput" name="skipIfActive" type="checkbox">
-            Skip a scheduled send while a turn is already active
-          </label>
-          <fieldset class="alert-settings">
-            <legend>Telegram alerts</legend>
-            <div class="alert-settings-head">
-              <p>Credentials stay in the server environment and are never sent to this browser.</p>
-              <span id="telegramStatus" class="badge neutral">Checking</span>
-            </div>
-            <label class="checkbox-line">
-              <input id="telegramEnabledInput" name="telegramAlertsEnabled" type="checkbox">
-              Enable Telegram alerts
-            </label>
-            <div class="grid-2">
-              <label>
-                Used quota warning threshold (%)
-                <input id="telegramQuotaThresholdInput" name="telegramQuotaWarningPercent" type="number" min="1" max="100" step="1">
-              </label>
-              <label>
-                Reset expiry warning (hours)
-                <input id="telegramExpiryHoursInput" name="telegramResetExpiryHours" type="number" min="1" max="720" step="1">
-              </label>
-            </div>
-            <div class="alert-toggle-grid">
-              <label class="checkbox-line"><input id="telegramQuotaResetsInput" type="checkbox">Quota-window resets</label>
-              <label class="checkbox-line"><input id="telegramReserveInput" type="checkbox">Luna Reserve changes</label>
-              <label class="checkbox-line"><input id="telegramResetCreditsInput" type="checkbox">Usage resets and expiry</label>
-              <label class="checkbox-line"><input id="telegramFailuresInput" type="checkbox">Auth and send failures</label>
-            </div>
-            <div class="button-row">
-              <button id="telegramTestBtn" type="button">Send test alert</button>
-              <span id="telegramMessage" class="form-message"></span>
-            </div>
-          </fieldset>
           <label>
             Scheduled prompt template
-            <textarea id="promptInput" name="promptTemplate" rows="9"></textarea>
+            <textarea id="promptInput" name="promptTemplate" rows="4"></textarea>
           </label>
+          <details class="console-disclosure" id="advancedSettings">
+            <summary>Advanced run settings</summary>
+            <div class="disclosure-body">
+              <label>
+                Workspace directory
+                <input id="workspaceInput" name="workspaceDir" autocomplete="off">
+              </label>
+              <div class="grid-2">
+                <label>
+                  Approval policy
+                  <input id="approvalInput" name="approvalPolicy" autocomplete="off">
+                </label>
+                <label>
+                  Summary
+                  <input id="summaryInput" name="summary" autocomplete="off">
+                </label>
+              </div>
+              <label class="checkbox-line">
+                <input id="networkInput" name="networkAccess" type="checkbox">
+                Allow network access for scheduled turns
+              </label>
+              <label class="checkbox-line">
+                <input id="skipActiveInput" name="skipIfActive" type="checkbox">
+                Skip a scheduled send while a turn is already active
+              </label>
+            </div>
+          </details>
+          <details class="console-disclosure" id="telegramSettings">
+            <summary>Telegram alerts <span id="telegramStatus" class="badge neutral">Checking</span></summary>
+            <div class="disclosure-body">
+              <fieldset class="alert-settings">
+                <legend>Telegram alerts</legend>
+                <div class="alert-settings-head">
+                  <p>Credentials stay in the server environment and are never sent to this browser.</p>
+                </div>
+                <label class="checkbox-line">
+                  <input id="telegramEnabledInput" name="telegramAlertsEnabled" type="checkbox">
+                  Enable Telegram alerts
+                </label>
+                <div class="grid-2">
+                  <label>
+                    Used quota warning threshold (%)
+                    <input id="telegramQuotaThresholdInput" name="telegramQuotaWarningPercent" type="number" min="1" max="100" step="1">
+                  </label>
+                  <label>
+                    Reset expiry warning (hours)
+                    <input id="telegramExpiryHoursInput" name="telegramResetExpiryHours" type="number" min="1" max="720" step="1">
+                  </label>
+                </div>
+                <div class="alert-toggle-grid">
+                  <label class="checkbox-line"><input id="telegramQuotaResetsInput" type="checkbox">Quota-window resets</label>
+                  <label class="checkbox-line"><input id="telegramReserveInput" type="checkbox">Luna Reserve changes</label>
+                  <label class="checkbox-line"><input id="telegramResetCreditsInput" type="checkbox">Usage resets and expiry</label>
+                  <label class="checkbox-line"><input id="telegramFailuresInput" type="checkbox">Auth and send failures</label>
+                </div>
+                <div class="button-row">
+                  <button id="telegramTestBtn" type="button">Send test alert</button>
+                  <span id="telegramMessage" class="form-message" role="status"></span>
+                </div>
+              </fieldset>
+            </div>
+          </details>
           <div class="button-row">
             <button type="submit" class="primary">Save settings</button>
-            <span id="settingsMessage" class="form-message"></span>
+            <span id="settingsMessage" class="form-message" role="status"></span>
           </div>
         </form>
       </section>
@@ -421,13 +477,14 @@
         <div class="section-header">
           <h2>Send a message</h2>
         </div>
+        <p id="sendTarget" class="hint">Choose an account in Account console.</p>
         <label>
-          Optional one-off prompt
-          <textarea id="manualPromptInput" rows="5" placeholder="Leave empty to use the scheduled prompt template."></textarea>
+          One-off prompt (optional)
+          <textarea id="manualPromptInput" rows="4" placeholder="Leave empty to use the scheduled prompt template."></textarea>
         </label>
         <div class="button-row">
           <button id="manualSendBtn" type="button" class="primary">Send to Codex</button>
-          <span id="manualMessage" class="form-message"></span>
+          <span id="manualMessage" class="form-message" role="status"></span>
         </div>
       </section>
 
@@ -442,12 +499,23 @@
             <button id="clearActivityBtn" type="button">Clear view</button>
           </div>
         </div>
-        <p id="activityHint" class="hint">Showing turn lifecycle, completed messages, rate limits, settings, auth, and errors.</p>
+        <p id="activityHint" class="hint">Recent runs, messages, settings, and errors. Routine updates are in Raw events.</p>
         <ol id="activityList" class="activity-list timeline-list"></ol>
       </section>
     </main>
 
 
+
+    <dialog id="addAccountDialog" aria-labelledby="addAccountTitle" aria-describedby="addAccountHint">
+      <form id="addAccountForm">
+        <div class="dialog-header"><h2 id="addAccountTitle">Add an account</h2><button id="closeAddAccountBtn" type="button" aria-label="Close add account">✕</button></div>
+        <p id="addAccountHint" class="hint">Give it a name, then sign in to connect it to Codex.</p>
+        <label>Account name<input id="newAccountLabelInput" name="label" autocomplete="off" placeholder="e.g. Work" required maxlength="80" autofocus></label>
+        <p class="hint">Scheduled sends start only after you enable them for this account.</p>
+        <p id="addAccountMessage" class="form-message" role="status"></p>
+        <div class="dialog-actions"><button id="cancelAddAccountBtn" type="button">Cancel</button><button id="addAccountBtn" type="submit" class="primary">Add account</button></div>
+      </form>
+    </dialog>
 
     <script type="module" src="/app.js"></script>
   </body>
