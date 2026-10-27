@@ -2653,7 +2653,7 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 @media (max-width: 600px), (max-width: 900px) and (pointer: coarse) {
   .mobile-dock {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     width: min(440px, calc(100% - max(12px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right))));
     max-width: none;
     min-height: 64px;
@@ -2746,13 +2746,13 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 #scheduleOptions { margin: 12px 0 18px; font-size: 12px; }
 #scheduleTimezone { margin: 0; }
 .schedule-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.schedule-dialog { width: min(600px, calc(100% - 32px)); padding: 24px; }
-.schedule-dialog .dialog-header { margin-bottom: 16px; }
+.settings-dialog { width: min(600px, calc(100% - 32px)); padding: 24px; }
+.settings-dialog .dialog-header { margin-bottom: 16px; }
 .settings-tabs { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--panel-sunken); margin-bottom: 22px; }
 .settings-tabs button { flex: 1; min-width: 0; padding: 8px; border: 0; border-radius: 10px; background: transparent; box-shadow: none; color: var(--muted); }
 .settings-tabs button[aria-selected="true"] { background: var(--panel); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-.schedule-dialog [role="tabpanel"] { min-height: 220px; }
-.schedule-dialog .dialog-actions { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
+.settings-dialog [role="tabpanel"] { min-height: 220px; }
+.settings-dialog .dialog-actions { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
 .schedule-time-editor { padding: 0; border: 0; margin: 20px 0 0; min-width: 0; }
 .schedule-time-editor legend { font-size: 12px; font-weight: 500; margin-bottom: 10px; }
 .schedule-time-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
@@ -2761,11 +2761,11 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 .schedule-time-row button { flex: 0 0 44px; min-height: 44px; padding: 0; font-size: 20px; }
 .alerts-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .alerts-heading h3 { font-size: 15px; margin: 0; }
-.schedule-dialog .alert-settings { border: 0; padding: 0; margin: 0; background: transparent; }
-.schedule-dialog .alert-settings > legend { display: none; }
-.schedule-dialog .alert-settings-head p { font-size: 12px; }
+.settings-dialog .alert-settings { border: 0; padding: 0; margin: 0; background: transparent; }
+.settings-dialog .alert-settings > legend { display: none; }
+.settings-dialog .alert-settings-head p { font-size: 12px; }
 .telegram-expiry-reminders { grid-column: 1 / -1; border: 0; padding: 0; margin: 12px 0; min-width: 0; }
-.schedule-dialog .alert-settings .telegram-expiry-reminders legend { display: block; }
+.settings-dialog .alert-settings .telegram-expiry-reminders legend { display: block; }
 .telegram-expiry-reminders legend { font-size: 13px; font-weight: 600; }
 .telegram-expiry-reminders > .hint { margin: 6px 0 10px; font-size: 12px; }
 .telegram-expiry-reminder-rows { display: grid; gap: 8px; }
@@ -2820,8 +2820,11 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
   .account-detail-row { padding-inline: 16px; }
   .account-management > summary { padding: 14px 46px 14px 16px; }
   .account-management-body { padding: 8px 16px 16px; }
-  .schedule-dialog { padding: 18px; }
+  .settings-dialog { padding: 18px; }
   .settings-tabs button { font-size: 12px; }
-  .schedule-dialog [role="tabpanel"] { min-height: 180px; }
+  .settings-dialog [role="tabpanel"] { min-height: 180px; }
   .schedule-time-inputs { grid-template-columns: minmax(0, 1fr); }
 }
+
+.alerts-panel { grid-column: 1 / -1; }
+.alerts-panel > .hint { margin: 0 0 16px; }

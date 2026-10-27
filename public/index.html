@@ -68,6 +68,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5.5 16-3.1-6.1L4 12Z"/><path d="m11.4 13.9 4-4"/></svg>
         <span>Send</span>
       </a>
+      <a href="#alerts" data-section="alerts">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/></svg>
+        <span>Alerts</span>
+      </a>
       <a href="#activity" data-section="activity">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="7" cy="6" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="10" cy="18" r="1"/></svg>
         <span>Activity</span>
@@ -377,6 +381,16 @@
         </div>
       </section>
 
+      <section id="alerts" class="panel alerts-panel">
+        <div class="section-header">
+          <h2>Alerts</h2>
+          <span id="alertsStatus" class="badge neutral">Checking</span>
+        </div>
+        <p id="alertsOverview" class="hint">Telegram notifications for quota, resets, Reserve, and failures.</p>
+        <button id="editAlertsBtn" type="button" class="primary" disabled>Configure alerts</button>
+        <p id="alertsMessage" class="form-message" role="status"></p>
+      </section>
+
       <section id="activity" class="panel activity-panel">
         <div class="section-header">
           <h2>Activity</h2>
@@ -393,12 +407,11 @@
       </section>
     </main>
 
-    <dialog id="scheduleDialog" class="schedule-dialog" aria-labelledby="scheduleDialogTitle">
+    <dialog id="scheduleDialog" class="settings-dialog schedule-dialog" aria-labelledby="scheduleDialogTitle">
       <div class="dialog-header"><h2 id="scheduleDialogTitle">Edit schedule</h2><button id="closeScheduleBtn" type="button" aria-label="Close schedule editor">×</button></div>
       <div class="settings-tabs" role="tablist" aria-label="Schedule settings">
         <button id="schedule-tab" type="button" role="tab" aria-selected="true" aria-controls="schedule-tab-panel">Schedule</button>
         <button id="run-tab" type="button" role="tab" aria-selected="false" aria-controls="run-tab-panel" tabindex="-1">Run settings</button>
-        <button id="alerts-tab" type="button" role="tab" aria-selected="false" aria-controls="alerts-tab-panel" tabindex="-1">Alerts</button>
       </div>
         <form id="settingsForm" novalidate>
           <div id="schedule-tab-panel" role="tabpanel" aria-labelledby="schedule-tab">
@@ -458,7 +471,18 @@
             </div>
           </details>
           </div>
-          <div id="alerts-tab-panel" role="tabpanel" aria-labelledby="alerts-tab" hidden>
+          <p id="settingsMessage" class="form-message" role="status"></p>
+          <div class="dialog-actions">
+            <button id="cancelScheduleBtn" type="button">Cancel</button>
+            <button type="submit" class="primary">Save changes</button>
+          </div>
+        </form>
+    </dialog>
+
+    <dialog id="alertsDialog" class="settings-dialog alerts-dialog" aria-labelledby="alertsDialogTitle">
+      <div class="dialog-header"><h2 id="alertsDialogTitle">Configure alerts</h2><button id="closeAlertsBtn" type="button" aria-label="Close alerts editor">×</button></div>
+      <form id="alertsForm" novalidate>
+          <div id="alertsEditor">
             <div class="alerts-heading"><h3>Telegram alerts</h3><span id="telegramStatus" class="badge neutral">Checking</span></div>
             <div class="disclosure-body">
               <fieldset class="alert-settings">
@@ -522,12 +546,12 @@
               </fieldset>
             </div>
           </div>
-          <p id="settingsMessage" class="form-message" role="status"></p>
-          <div class="dialog-actions">
-            <button id="cancelScheduleBtn" type="button">Cancel</button>
-            <button type="submit" class="primary">Save changes</button>
-          </div>
-        </form>
+        <p id="alertsFormMessage" class="form-message" role="status"></p>
+        <div class="dialog-actions">
+          <button id="cancelAlertsBtn" type="button">Cancel</button>
+          <button type="submit" class="primary">Save alerts</button>
+        </div>
+      </form>
     </dialog>
 
     <dialog id="removeAccountDialog" aria-labelledby="removeAccountTitle" aria-describedby="removeAccountHint">

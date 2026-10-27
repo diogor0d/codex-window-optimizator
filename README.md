@@ -111,7 +111,7 @@ Environment variables (defaults shown are the in-container values):
 | `TELEGRAM_BOT_TOKEN` | unset | Telegram bot token; keep only in the server's ignored `.env` |
 | `TELEGRAM_CHAT_ID` | unset | Destination user, group, or channel chat ID |
 
-Managed in **Schedule → Edit schedule**, with tabs for timing, run settings, and alerts: timezone, schedule times, workspace directory, model, effort, summary, approval policy, network access for scheduled turns, skip-if-active, and the scheduled prompt template. Network access is off by default; the default approval policy is `on-request`.
+Manage timezone, send times, prompts, and run settings in **Schedule → Edit schedule**. Manage Telegram notifications independently in **Alerts → Configure alerts**, also accessible from the Alerts navigation link. Each editor saves or cancels its own draft. Network access is off by default; the default approval policy is `on-request`.
 
 The **Model** dropdown in Schedule settings defaults to **Automatic · prefer lowest cost**. It selects from each account's Codex `model/list` catalog, preferring GPT-6 Luna, then GPT-5.6 Luna when the newer model is absent. Remaining known models follow published Standard credit rates; unknown catalogs fall back to their default model. Catalogs are cached for five minutes, and a listed model's account access is confirmed only by a completed turn. The dropdown in account overrides can select a different model or inherit the global setting. An explicit model missing from an account's catalog fails with an actionable message instead of silently choosing another model.
 
@@ -121,9 +121,9 @@ The selected model is sent explicitly when creating/resuming threads and startin
 
 1. Create a dedicated bot with Telegram's `@BotFather` and start a conversation with it, or add it to the intended private group.
 2. Obtain the destination chat ID through Telegram's Bot API, then put `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the deployment's ignored `.env` file. Never commit either value.
-3. Recreate the container, open **Schedule → Edit schedule → Alerts**, send a test alert, then enable the categories you want.
+3. Recreate the container, open **Alerts → Configure alerts**, send a test alert, then enable the categories you want.
 
-Alerts are disabled by default. Under **Schedule → Edit schedule → Alerts**, expand a category to customize its triggers, notification count, and timing. Remove every entry in a list to disable that alert. Each list supports up to 10 distinct values.
+Alerts are disabled by default. Under **Alerts → Configure alerts**, expand a category to customize its triggers, notification count, and timing. Remove every entry in a list to disable that alert. Each list supports up to 10 distinct values.
 
 | Category | Controls |
 | --- | --- |

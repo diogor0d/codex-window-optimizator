@@ -4,6 +4,8 @@ const state = {
   settings: null,
   settingsDirty: false,
   settingsRevision: 0,
+  alertsDirty: false,
+  alertsRevision: 0,
   accountDrafts: new Map(),
   accountBusy: false,
   removingAccountIds: new Set(),
@@ -285,7 +287,7 @@ function setSnapshotMode(snapshot = null) {
     return;
   }
   notice.hidden = !snapshot;
-  document.querySelectorAll(".account-selector-rail, .account-management, .settings-panel, .manual-panel")
+  document.querySelectorAll(".account-selector-rail, .account-management, .settings-panel, .manual-panel, .alerts-panel")
     .forEach((element) => element.toggleAttribute("inert", Boolean(snapshot)));
   const runButton = $("#runNowBtn");
   if (runButton) {
@@ -1452,7 +1454,7 @@ function renderScheduleSummary() {
   }));
   $("#schedulePrompt").textContent = schedulePromptPreview(settings) || "No scheduled message set.";
   $("#schedulePromptHint").hidden = !/\{\{(?:local_time|scheduled_time|reason)\}\}/.test(settings.promptTemplate || "");
-  $("#scheduleOptions").textContent = `${settings.model || "Automatic model"} · ${settings.effort || "Default"} effort · Telegram ${settings.telegramConfigured && settings.telegramAlertsEnabled ? "on" : "off"}`;
+  $("#scheduleOptions").textContent = `${settings.model || "Automatic model"} · ${settings.effort || "Default"} effort`;
 }
 
 function selectSettingsTab(name) {
@@ -1581,10 +1583,16 @@ function updateAlertDisclosureCounts() {
 
 function fillSettings(settings) {
   state.settings = settings;
+  if (!state.settingsDirty) fillScheduleSettings(settings);
+  if (!state.alertsDirty) fillAlertSettings(settings);
+  renderScheduleSummary();
+  renderAlertsSummary();
+}
+
+function fillScheduleSettings(settings) {
   $("#timezoneInput").value = settings.timezone || "";
   $("#scheduleInput").value = (settings.scheduleTimes || []).join(", ");
   renderScheduleTimeInputs(settings.scheduleTimes || []);
-  renderScheduleSummary();
   $("#workspaceInput").value = settings.workspaceDir || "";
   fillModelSelect($("#modelInput"), settings.model || "", "Automatic · prefer lowest cost");
   $("#effortInput").value = settings.effort || "";
@@ -1592,6 +1600,10 @@ function fillSettings(settings) {
   $("#summaryInput").value = settings.summary || "";
   $("#networkInput").checked = Boolean(settings.networkAccess);
   $("#skipActiveInput").checked = Boolean(settings.skipIfActive);
+  $("#promptInput").value = settings.promptTemplate || "";
+}
+
+function fillAlertSettings(settings) {
   $("#telegramEnabledInput").checked = Boolean(settings.telegramAlertsEnabled);
   $("#telegramEnabledInput").disabled = !settings.telegramConfigured && !settings.telegramAlertsEnabled;
   renderTelegramExpiryReminders(settings.telegramResetReminderHours ?? [48]);
@@ -1607,15 +1619,35 @@ function fillSettings(settings) {
     settings.telegramConfigured ? settings.telegramAlertsEnabled ? "Enabled" : "Configured" : "Credentials missing",
     settings.telegramConfigured ? settings.telegramAlertsEnabled ? "ok" : "warn" : "neutral"
   );
-  $("#promptInput").value = settings.promptTemplate || "";
   updateAlertDisclosureCounts();
+}
+
+function renderAlertsSummary() {
+  const settings = state.settings;
+  if (!settings) return;
+  $("#editAlertsBtn").disabled = false;
+  badge($("#alertsStatus"), settings.telegramConfigured ? settings.telegramAlertsEnabled ? "Enabled" : "Off" : "Credentials missing",
+    settings.telegramConfigured && settings.telegramAlertsEnabled ? "ok" : "neutral");
+  const eventCount = Object.values(settings.telegramAlertRules || {}).filter(times => times.length).length;
+  const reminders = (settings.telegramAlertResetExpiry ? settings.telegramResetReminderHours?.length || 0 : 0)
+    + Object.entries(settings.telegramQuotaReminderHours || {}).reduce((count, [key, times]) => count + (settings.telegramQuotaWindows?.includes(key) ? times.length : 0), 0);
+  $("#alertsOverview").textContent = settings.telegramConfigured
+    ? settings.telegramAlertsEnabled ? `${eventCount} event types configured · ${reminders} reset reminder${reminders === 1 ? "" : "s"}.`
+      : "Telegram alerts are off. Your notification settings are saved."
+    : "Configure Telegram credentials on the server to enable notifications.";
+}
+
+function markAlertsDirty() {
+  state.alertsDirty = true;
+  state.alertsRevision += 1;
+  $("#editAlertsBtn").textContent = "Continue editing alerts";
+  feedback("alertsMessage", "Unsaved changes in alerts editor.");
+  feedback("alertsFormMessage", "Unsaved changes.");
 }
 
 async function refreshSettings() {
   const settings = await api("/api/settings");
-  state.settings = settings;
-  renderScheduleSummary();
-  if (!state.settingsDirty) fillSettings(settings);
+  fillSettings(settings);
 }
 
 function stringifyPayload(payload) {
@@ -2607,24 +2639,9 @@ function connectEvents() {
   };
 }
 
-async function saveSettings(event) {
-  event.preventDefault();
-  validateAllAlertNumbers();
-  const invalid = $("#settingsForm").querySelector("input:invalid, select:invalid, textarea:invalid");
-  if (invalid) {
-    const panel = invalid.closest("[role=tabpanel]");
-    if (panel) selectSettingsTab(panel.id.replace("-tab-panel", ""));
-    const disclosure = invalid.closest("details");
-    if (disclosure) disclosure.open = true;
-    invalid.reportValidity();
-    invalid.focus();
-    return;
-  }
-  const scheduleTimes = $("#scheduleInput").value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const body = {
+function scheduleSettingsBody() {
+  const scheduleTimes = $("#scheduleInput").value.split(",").map(time => time.trim()).filter(Boolean);
+  return {
     timezone: $("#timezoneInput").value.trim(),
     scheduleTimes,
     workspaceDir: $("#workspaceInput").value.trim(),
@@ -2634,28 +2651,60 @@ async function saveSettings(event) {
     summary: $("#summaryInput").value.trim(),
     networkAccess: $("#networkInput").checked,
     skipIfActive: $("#skipActiveInput").checked,
+    promptTemplate: $("#promptInput").value
+  };
+}
+
+function alertSettingsBody() {
+  return {
     telegramAlertsEnabled: $("#telegramEnabledInput").checked,
     telegramQuotaWarningPercents: numberRowValues("telegramQuotaThresholdRows").map(Number),
     telegramQuotaWindows: QUOTA_WINDOWS.filter(window => ({ "5h": $("#telegramWatch5hInput").checked, weekly: $("#telegramWatchWeeklyInput").checked, reserve: $("#telegramWatchReserveInput").checked }[window])),
     telegramQuotaReminderHours: Object.fromEntries(QUOTA_WINDOWS.map(window => [window, numberRowValues(REMINDER_IDS[window]).map(Number)])),
     telegramAlertRules: Object.fromEntries(Object.entries(ALERT_RULES).map(([key, config]) => [key, numberRowValues(config[0]).map(Number)])),
     telegramResetReminderHours: telegramExpiryReminderValues().map(Number),
-    telegramAlertResetExpiry: $("#telegramResetExpiryInput").checked,
-    promptTemplate: $("#promptInput").value
+    telegramAlertResetExpiry: $("#telegramResetExpiryInput").checked
   };
-  const revision = state.settingsRevision;
-  await buttonAction($("#settingsForm button[type=submit]"), "settingsMessage", async () => {
-    feedback("settingsMessage", "Saving…");
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const alerts = form.id === "alertsForm";
+  if (alerts) validateAllAlertNumbers();
+  const invalid = form.querySelector("input:invalid, select:invalid, textarea:invalid");
+  if (invalid) {
+    const panel = invalid.closest("[role=tabpanel]");
+    if (panel) selectSettingsTab(panel.id.replace("-tab-panel", ""));
+    const disclosure = invalid.closest("details");
+    if (disclosure) disclosure.open = true;
+    invalid.reportValidity();
+    invalid.focus();
+    return;
+  }
+  const body = alerts ? alertSettingsBody() : scheduleSettingsBody();
+  const revisionKey = alerts ? "alertsRevision" : "settingsRevision";
+  const dirtyKey = alerts ? "alertsDirty" : "settingsDirty";
+  const formMessage = alerts ? "alertsFormMessage" : "settingsMessage";
+  const panelMessage = alerts ? "alertsMessage" : "scheduleMessage";
+  const editButton = alerts ? $("#editAlertsBtn") : $("#editScheduleBtn");
+  const dialog = alerts ? $("#alertsDialog") : $("#scheduleDialog");
+  const revision = state[revisionKey];
+  await buttonAction(form.querySelector("button[type=submit]"), formMessage, async () => {
+    feedback(formMessage, "Saving…");
     const settings = await api("/api/settings", { method: "PATCH", body: JSON.stringify(body) });
     state.settings = settings;
-    if (revision === state.settingsRevision) {
-      state.settingsDirty = false;
+    if (revision === state[revisionKey]) {
+      state[dirtyKey] = false;
       fillSettings(settings);
-      feedback("settingsMessage", "Saved.", "success");
-      feedback("scheduleMessage", "Schedule saved.", "success");
-      $("#editScheduleBtn").textContent = "Edit schedule";
-      $("#scheduleDialog").close();
-    } else feedback("settingsMessage", "Saved. Your newer edits are still unsaved.");
+      feedback(formMessage, "Saved.", "success");
+      feedback(panelMessage, alerts ? "Alerts saved." : "Schedule saved.", "success");
+      editButton.textContent = alerts ? "Configure alerts" : "Edit schedule";
+      dialog.close();
+    } else {
+      fillSettings(settings);
+      feedback(formMessage, "Saved. Your newer edits are still unsaved.");
+    }
     await refreshStatus();
   });
 }
@@ -2810,6 +2859,27 @@ function bindActions() {
     feedback("scheduleMessage", "");
     $("#scheduleDialog").close();
   });
+  $("#editAlertsBtn").addEventListener("click", () => {
+    if (!state.alertsDirty) { fillSettings(state.settings); feedback("alertsFormMessage", ""); }
+    $("#alertsDialog").showModal();
+  });
+  $("#closeAlertsBtn").addEventListener("click", () => {
+    if (!$("#alertsForm button[type=submit]").disabled) $("#alertsDialog").close();
+  });
+  $("#alertsDialog").addEventListener("close", () => $("#editAlertsBtn").focus({ preventScroll: true }));
+  $("#alertsDialog").addEventListener("cancel", (event) => {
+    if ($("#alertsForm button[type=submit]").disabled) event.preventDefault();
+  });
+  $("#cancelAlertsBtn").addEventListener("click", () => {
+    if ($("#alertsForm button[type=submit]").disabled) return;
+    state.alertsRevision += 1;
+    state.alertsDirty = false;
+    fillSettings(state.settings);
+    feedback("alertsFormMessage", "");
+    feedback("alertsMessage", "");
+    $("#editAlertsBtn").textContent = "Configure alerts";
+    $("#alertsDialog").close();
+  });
   $(".settings-tabs").addEventListener("click", (event) => {
     const tab = event.target.closest("[role=tab]");
     if (tab) selectSettingsTab(tab.id.replace("-tab", ""));
@@ -2823,7 +2893,7 @@ function bindActions() {
     selectSettingsTab(tabs[next].id.replace("-tab", ""));
     tabs[next].focus();
   });
-  $("#settingsForm").addEventListener("invalid", (event) => {
+  for (const form of [$("#settingsForm"), $("#alertsForm")]) form.addEventListener("invalid", (event) => {
     const panel = event.target.closest("[role=tabpanel]");
     if (panel) selectSettingsTab(panel.id.replace("-tab-panel", ""));
     const disclosure = event.target.closest("details");
@@ -2835,7 +2905,7 @@ function bindActions() {
     $("#scheduleTimeInputs").lastElementChild.querySelector("input").focus();
     markSettingsDirty();
   });
-  $("#settingsForm").addEventListener("click", (event) => {
+  $("#alertsForm").addEventListener("click", (event) => {
     const addRule = event.target.closest("[data-add-rule]");
     const addReminder = event.target.closest("[data-add-reminder]");
     const addThreshold = event.target.closest("#addTelegramQuotaThresholdBtn");
@@ -2843,7 +2913,7 @@ function bindActions() {
       const values = numberRowValues("telegramQuotaThresholdRows");
       if (values.length >= 10) return;
       renderNumberRows("telegramQuotaThresholdRows", [...values, ""], { kind: "Threshold", min: 1, max: 100, unit: "percent used", firstId: "telegramQuotaThresholdInput", addId: "addTelegramQuotaThresholdBtn", summaryId: "telegramQuotaThresholdSummary" });
-      document.querySelectorAll("#telegramQuotaThresholdRows input").item(values.length)?.focus(); updateAlertDisclosureCounts(); markSettingsDirty(); return;
+      document.querySelectorAll("#telegramQuotaThresholdRows input").item(values.length)?.focus(); updateAlertDisclosureCounts(); markAlertsDirty(); return;
     }
     if (addRule) {
       const [container, summary] = ALERT_RULES[addRule.dataset.addRule];
@@ -2851,7 +2921,7 @@ function bindActions() {
       if (inputs.length >= 10) return;
       renderNumberRows(container, [...inputs, ""], { kind: "Notification", min: 0, max: 10080, unit: "minutes after event", summaryId: summary });
       const add = document.querySelector(`[data-add-rule="${addRule.dataset.addRule}"]`); add.disabled = inputs.length + 1 >= 10;
-      document.querySelectorAll(`#${container} input`).item(inputs.length)?.focus(); updateAlertDisclosureCounts(); markSettingsDirty(); return;
+      document.querySelectorAll(`#${container} input`).item(inputs.length)?.focus(); updateAlertDisclosureCounts(); markAlertsDirty(); return;
     }
     if (addReminder) {
       const window = addReminder.dataset.addReminder, id = REMINDER_IDS[window], values = numberRowValues(id);
@@ -2860,7 +2930,7 @@ function bindActions() {
       addReminder.disabled = values.length + 1 >= 10;
       const summary = document.getElementById(`telegramReminder${window === "5h" ? "5h" : window === "weekly" ? "Weekly" : "Reserve"}Summary`);
       summary.textContent = `${values.length + 1} reminders`;
-      document.querySelectorAll(`#${id} input`).item(values.length)?.focus(); updateAlertDisclosureCounts(); markSettingsDirty(); return;
+      document.querySelectorAll(`#${id} input`).item(values.length)?.focus(); updateAlertDisclosureCounts(); markAlertsDirty(); return;
     }
     const remove = event.target.closest(".telegram-alert-rows button");
     if (remove) {
@@ -2876,18 +2946,18 @@ function bindActions() {
       const remaining = container.querySelectorAll("input").length;
       const nextRemove = container.querySelector(`button[data-index="${Math.min(Number(remove.dataset.index), remaining - 1)}"]`);
       const fallback = id === "telegramQuotaThresholdRows" ? $("#addTelegramQuotaThresholdBtn") : Object.values(ALERT_RULES).some(config => config[0] === id) ? document.querySelector(`[data-add-rule="${Object.keys(ALERT_RULES).find(key => ALERT_RULES[key][0] === id)}"]`) : document.querySelector(`[data-add-reminder="${Object.keys(REMINDER_IDS).find(key => REMINDER_IDS[key] === id)}"]`);
-      (nextRemove || fallback)?.focus(); markSettingsDirty(); return;
+      (nextRemove || fallback)?.focus(); markAlertsDirty(); return;
     }
   });
-  $("#settingsForm").addEventListener("input", event => {
+  $("#alertsForm").addEventListener("input", event => {
     if (event.target.matches(".telegram-alert-rows input, #telegramExpiryReminderRows input")) { validateAllAlertNumbers(); updateAlertDisclosureCounts(); }
-    if (event.target.closest("#alerts-tab-panel")) updateAlertDisclosureCounts();
+    if (event.target.closest("#alertsEditor")) updateAlertDisclosureCounts();
   });
   $("#addTelegramExpiryReminderBtn").addEventListener("click", () => {
     if (document.querySelectorAll("#telegramExpiryReminderRows input").length >= 10) return;
     renderTelegramExpiryReminders([...telegramExpiryReminderValues(), ""]);
     $("#telegramExpiryReminderRows").lastElementChild.querySelector("input").focus();
-    markSettingsDirty();
+    markAlertsDirty();
   });
   $("#telegramExpiryReminderRows").addEventListener("input", () => {
     validateTelegramExpiryReminders();
@@ -2902,7 +2972,7 @@ function bindActions() {
     renderTelegramExpiryReminders(values);
     validateTelegramExpiryReminders();
     ($(`#telegramExpiryReminderRows button[data-index="${Math.min(index, values.length - 1)}"]`) || $("#addTelegramExpiryReminderBtn")).focus();
-    updateAlertDisclosureCounts(); markSettingsDirty();
+    updateAlertDisclosureCounts(); markAlertsDirty();
   });
   $("#scheduleTimeInputs").addEventListener("input", syncScheduleTimes);
   $("#scheduleTimeInputs").addEventListener("click", (event) => {
@@ -2938,6 +3008,7 @@ function bindActions() {
     feedback("accountDangerMessage", "Signed out.", "success");
   }));
   $("#settingsForm").addEventListener("submit", saveSettings);
+  $("#alertsForm").addEventListener("submit", saveSettings);
   $("#telegramTestBtn").addEventListener("click", async () => {
     const button = $("#telegramTestBtn");
     button.disabled = true;
@@ -2967,6 +3038,7 @@ function bindActions() {
     });
   }
   $("#settingsForm").addEventListener("input", markSettingsDirty);
+  $("#alertsForm").addEventListener("input", markAlertsDirty);
   $("#accountSelect").addEventListener("change", (event) => void selectAccount(event.target.value));
   $("#accountDetailsForm").addEventListener("input", () => {
     const draft = state.accountDrafts.get(selectedAccountId()) || {};

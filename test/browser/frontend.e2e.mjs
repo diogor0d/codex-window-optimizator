@@ -337,8 +337,17 @@ async function saveSchedule(page) {
   await page.waitForFunction(() => !document.querySelector("#scheduleDialog").open && document.querySelector("#scheduleMessage").textContent === "Schedule saved.");
 }
 
+async function openAlerts(page) {
+  if (!await page.locator("#alertsDialog").evaluate(el => el.open)) await page.locator("#editAlertsBtn").click();
+}
+
+async function saveAlerts(page) {
+  await page.locator("#alertsForm button[type=submit]").click();
+  await page.waitForFunction(() => !document.querySelector("#alertsDialog").open && document.querySelector("#alertsMessage").textContent === "Alerts saved.");
+}
+
 async function openAlertGroup(page, index) {
-  const group = page.locator("#alerts-tab-panel .telegram-alert-section").nth(index);
+  const group = page.locator("#alertsEditor .telegram-alert-section").nth(index);
   if (!await group.evaluate(element => element.open)) await group.locator(":scope > summary").click();
   return group;
 }
@@ -348,9 +357,15 @@ async function exercise(browserType, fixture, viewport, label) {
   const browser = await browserType.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
     const pageErrors = [];
+    const settingsPatches = [];
     const contextOptions = { viewport: viewport.size, deviceScaleFactor: viewport.deviceScaleFactor || 1,
       isMobile: Boolean(viewport.isMobile), hasTouch: Boolean(viewport.hasTouch) };
     const page = await browser.newPage(contextOptions);
+    page.on("request", request => {
+      if (request.method() === "PATCH" && request.url().endsWith("/api/settings")) {
+        try { settingsPatches.push(JSON.parse(request.postData() || "{}")); } catch {}
+      }
+    });
     page.on("pageerror", error => pageErrors.push(error.message));
     const expectedHttpErrors = new Set();
     let offlineCheck = false;
@@ -369,6 +384,7 @@ async function exercise(browserType, fixture, viewport, label) {
     assert.ok(!(await page.locator("#schedulePrompt").textContent()).includes("{{"));
     assert.equal(await page.locator("#schedulePromptHint").isVisible(), true);
     assert.ok((await page.locator("#promptInput").inputValue()).includes("{{local_time}}"));
+    assert.ok(await page.locator('a[data-section="alerts"]').count() >= 1, "alerts have their own dashboard navigation link");
     await page.locator("#schedule").scrollIntoViewIfNeeded();
     await screenshot(page, `${label}-rendered-message-preview`);
 
@@ -380,14 +396,14 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.locator("#themeToggleBtn").click();
     await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
 
-    // Focused editor: keyboard tabs, add/remove times, saved summary and persistence.
+    // Schedule editing has only Schedule and Run tabs; alerts use their own editor.
     assert.equal(await page.locator("#settingsForm").isVisible(), false);
     await openSchedule(page);
     await page.locator("#schedule-tab").focus();
     await page.keyboard.press("ArrowRight");
     assert.equal(await page.locator("#run-tab").getAttribute("aria-selected"), "true");
     await page.keyboard.press("End");
-    assert.equal(await page.locator("#alerts-tab").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#run-tab").getAttribute("aria-selected"), "true");
     await page.keyboard.press("Home");
     await page.locator("#scheduleTimeInputs input").nth(0).fill("07:15");
     await page.locator("#scheduleTimeInputs input").nth(1).fill("19:45");
@@ -401,42 +417,49 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.locator("#summaryInput").fill("E2E summary");
     await page.locator("#promptInput").fill("E2E saved prompt");
     await page.locator("#modelInput").selectOption("gpt-5.6-luna");
-    await page.locator("#alerts-tab").click();
-    assert.equal(await page.locator("#telegramEnabledInput").isVisible(), true);
-    await screenshot(page, `${label}-schedule-alerts`);
     await page.locator("#schedule-tab").click();
     await screenshot(page, `${label}-schedule-editor`);
     await saveSchedule(page);
+    const schedulePatch = settingsPatches.at(-1);
+    assert.ok(schedulePatch && "scheduleTimes" in schedulePatch && "promptTemplate" in schedulePatch);
+    assert.ok(!Object.keys(schedulePatch).some(key => key.startsWith("telegram")), "schedule saves must omit alert settings");
     assert.equal(await page.locator("#scheduleTimes").textContent(), "07:1519:45");
     assert.equal(await page.locator("#schedulePrompt").textContent(), "E2E saved prompt");
     assert.equal(await page.locator("#schedulePromptHint").isVisible(), false);
+    await openAlerts(page);
+    await screenshot(page, `${label}-alerts-editor`);
+    await page.locator("#closeAlertsBtn").click();
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector("#scheduleInput").value === "07:15, 19:45");
     assert.equal(await page.locator("#modelInput").inputValue(), "gpt-5.6-luna");
     assert.equal(await page.locator("#effortInput").inputValue(), "low");
-    // Cancel discards only the editor draft; Escape retains it for reopening.
+    // Cancel discards the schedule draft; Escape retains it for reopening.
     await openSchedule(page, "run");
     await page.locator("#promptInput").fill("Discard this draft");
-    await page.locator("#cancelScheduleBtn").click();
-    await openSchedule(page);
-    await page.locator("#scheduleTimeInputs input").first().fill("");
-    await page.locator("#alerts-tab").click();
-    await openAlertGroup(page, 0);
-    await page.locator("#telegramQuotaThresholdInput").fill("0");
-    await page.locator("#run-tab").click();
-    await page.locator("#settingsForm button[type=submit]").click();
-    assert.equal(await page.locator("#schedule-tab").getAttribute("aria-selected"), "true");
-    assert.equal(await page.locator("#scheduleTimeInputs input").first().evaluate(el => el === document.activeElement), true);
-    await page.locator("#scheduleTimeInputs input").first().fill("07:15");
-    await page.locator("#settingsForm button[type=submit]").click();
-    assert.equal(await page.locator("#alerts-tab").getAttribute("aria-selected"), "true");
-    assert.equal(await page.locator("#telegramQuotaThresholdInput").evaluate(el => el === document.activeElement), true);
     await page.locator("#cancelScheduleBtn").click();
     await openSchedule(page, "run");
     assert.equal(await page.locator("#promptInput").inputValue(), "E2E saved prompt");
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector("#scheduleDialog").open);
     assert.equal(await page.locator("#editScheduleBtn").evaluate(el => el === document.activeElement), true);
+
+    // An invalid alert draft does not block a valid schedule save and remains isolated.
+    await openAlerts(page);
+    await openAlertGroup(page, 0);
+    await page.locator("#telegramQuotaThresholdInput").fill("0");
+    await page.locator("#closeAlertsBtn").click();
+    await openSchedule(page, "run");
+    await page.locator("#promptInput").fill("Schedule saved with an invalid alert draft");
+    await saveSchedule(page);
+    const isolatedSchedulePatch = settingsPatches.at(-1);
+    assert.ok(isolatedSchedulePatch && "promptTemplate" in isolatedSchedulePatch);
+    assert.ok(!Object.keys(isolatedSchedulePatch).some(key => key.startsWith("telegram")));
+    await openAlerts(page);
+    assert.equal(await page.locator("#telegramQuotaThresholdInput").inputValue(), "0");
+    await page.locator("#cancelAlertsBtn").click();
+    await openSchedule(page);
+    assert.equal(await page.locator("#promptInput").inputValue(), "Schedule saved with an invalid alert draft");
+    await page.locator("#cancelScheduleBtn").click();
 
     if (await page.locator("#schedulerBadge").textContent() === "Paused") await page.locator("#schedulerToggleBtn").click();
     await page.waitForFunction(() => document.querySelector("#schedulerBadge").textContent === "Enabled");
@@ -494,7 +517,23 @@ async function exercise(browserType, fixture, viewport, label) {
     await saveSchedule(page);
 
     // Expiry reminders default to 48 hours, support editing/removal, and persist as hours.
-    await openSchedule(page, "alerts");
+    await openSchedule(page);
+    await page.locator("#scheduleTimeInputs input").first().fill("");
+    await page.locator("#run-tab").click();
+    await page.locator("#promptInput").fill("Unsaved invalid schedule draft");
+    await page.locator("#closeScheduleBtn").click();
+    await openAlerts(page);
+    await page.locator("#telegramResetExpiryInput").uncheck();
+    await saveAlerts(page);
+    const alertOnlyPatch = settingsPatches.at(-1);
+    assert.ok(alertOnlyPatch && "telegramAlertResetExpiry" in alertOnlyPatch);
+    assert.ok(!["scheduleTimes", "promptTemplate", "timezone", "workspaceDir"].some(key => key in alertOnlyPatch), "alert saves must omit schedule settings");
+    assert.deepEqual((await requestJson(fixture.base, "/api/settings")).scheduleTimes, ["07:15", "19:45"]);
+    await openSchedule(page);
+    assert.equal(await page.locator("#scheduleTimeInputs input").first().inputValue(), "");
+    assert.equal(await page.locator("#promptInput").inputValue(), "Unsaved invalid schedule draft");
+    await page.locator("#cancelScheduleBtn").click();
+    await openAlerts(page);
     const reminderInputs = () => page.locator("#telegramExpiryReminderRows input");
     assert.deepEqual(await reminderInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["48"]);
     await page.locator("#addTelegramExpiryReminderBtn").click();
@@ -504,18 +543,18 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.locator("#telegramExpiryReminderRows button[aria-label='Remove expiry reminder 3']").click();
     assert.deepEqual(await reminderInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["48", "24"]);
     await reminderInputs().nth(1).fill("0");
-    await page.locator("#settingsForm button[type=submit]").click();
-    await page.locator("#alerts-tab-panel:not([hidden])").waitFor();
+    await page.locator("#alertsForm button[type=submit]").click();
+    await page.locator("#alertsForm").waitFor({ state: "visible" });
     assert.equal(await reminderInputs().nth(1).evaluate(input => input.validity.valid), false);
     await reminderInputs().nth(1).fill("24");
-    await saveSchedule(page);
+    await saveAlerts(page);
     assert.deepEqual((await requestJson(fixture.base, "/api/settings")).telegramResetReminderHours, [48, 24]);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
-    await openSchedule(page, "alerts");
+    await openAlerts(page);
     assert.deepEqual(await reminderInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["48", "24"]);
     await screenshot(page, `${label}-reset-reminders`);
-    const alertGroups = () => page.locator("#alerts-tab-panel details.telegram-alert-section");
+    const alertGroups = () => page.locator("#alertsEditor details.telegram-alert-section");
     const thresholdInputs = () => page.locator("#telegramQuotaThresholdRows input");
     await openAlertGroup(page, 0);
     assert.deepEqual(await thresholdInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["80", "95", "100"]);
@@ -535,13 +574,16 @@ async function exercise(browserType, fixture, viewport, label) {
     const fiveHourReminder = page.locator("#telegramReminder5hRows input").first();
     await fiveHourReminder.fill("0");
     await resetGroup.locator(":scope > summary").click();
-    await page.locator("#settingsForm button[type=submit]").click();
+    await page.locator("#alertsForm button[type=submit]").click();
     assert.equal(await resetGroup.evaluate(element => element.open), true, "invalid controls reveal their collapsed settings group");
     assert.equal(await fiveHourReminder.evaluate(input => input.validity.valid), false);
     await fiveHourReminder.fill("2");
     await openAlertGroup(page, 2);
     await page.locator("#telegramResetExpiryInput").uncheck();
-    await saveSchedule(page);
+    await saveAlerts(page);
+    const alertSavePatch = settingsPatches.at(-1);
+    assert.ok(alertSavePatch && "telegramAlertRules" in alertSavePatch && "telegramQuotaWarningPercents" in alertSavePatch);
+    assert.ok(!["scheduleTimes", "promptTemplate", "timezone", "workspaceDir", "model", "effort"].some(key => key in alertSavePatch), "alert saves must contain only alert fields");
     const alertSettings = await requestJson(fixture.base, "/api/settings");
     assert.deepEqual(alertSettings.telegramQuotaWarningPercents, [80, 90, 100]);
     assert.equal(alertSettings.telegramAlertRules["quota-threshold"].length, 2, "quota warnings support multiple notification times");
@@ -550,7 +592,7 @@ async function exercise(browserType, fixture, viewport, label) {
     assert.equal(alertSettings.telegramAlertResetExpiry, false);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
-    await openSchedule(page, "alerts");
+    await openAlerts(page);
     await openAlertGroup(page, 0);
     assert.deepEqual(await thresholdInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["80", "90", "100"]);
     assert.deepEqual(await page.locator("#telegramQuotaThresholdRulesRows input").evaluateAll(inputs => inputs.map(input => input.value)), ["0", "30"]);
@@ -559,7 +601,18 @@ async function exercise(browserType, fixture, viewport, label) {
     assert.deepEqual(await page.locator("#telegramReminder5hRows input").evaluateAll(inputs => inputs.map(input => input.value)), ["2"]);
     await openAlertGroup(page, 2);
     assert.equal(await page.locator("#telegramResetExpiryInput").isChecked(), false);
-    await page.locator("#closeScheduleBtn").click();
+    await page.locator("#telegramQuotaThresholdInput").fill("81");
+    await page.locator("#closeAlertsBtn").click();
+    await page.locator("#refreshBtn").click();
+    await page.waitForFunction(() => !document.querySelector("#refreshBtn").disabled);
+    await openAlerts(page);
+    await openAlertGroup(page, 0);
+    assert.equal(await page.locator("#telegramQuotaThresholdInput").inputValue(), "81", "refresh preserves the alerts draft");
+    await page.locator("#cancelAlertsBtn").click();
+    await openAlerts(page);
+    await openAlertGroup(page, 0);
+    assert.deepEqual(await thresholdInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["80", "90", "100"], "alert cancellation resets only its own draft");
+    await page.locator("#closeAlertsBtn").click();
 
     await accountWorkflow(page, fixture, label, expectedHttpErrors);
 
@@ -673,7 +726,7 @@ async function exercise(browserType, fixture, viewport, label) {
         const box = await link.boundingBox();
         assert.ok(box && box.height >= 44 && box.width >= 44, `dock touch target too short: ${box?.height}`);
       }
-      for (const section of ["account", "schedule", "send", "activity", "fleet"]) {
+      for (const section of ["account", "schedule", "alerts", "send", "activity", "fleet"]) {
         await dock.locator(`a[data-section=${section}]`).click();
         await page.waitForFunction(id => location.hash === `#${id}` && document.querySelector(`.mobile-dock a[data-section="${id}"]`).getAttribute("aria-current") === "location", section);
       }
