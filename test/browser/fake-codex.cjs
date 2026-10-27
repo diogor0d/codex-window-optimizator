@@ -43,6 +43,7 @@ if (process.argv[2] !== "app-server") process.exit(0);
 
 let buffer = "";
 let turnNumber = 0;
+const creditExpiryBase = Math.floor(Date.now() / 1000);
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => {
   buffer += chunk;
@@ -73,6 +74,12 @@ process.stdin.on("data", chunk => {
           primary: { usedPercent: 24, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
           secondary: { usedPercent: 38, windowDurationMins: 10080, resetsAt: Math.floor(Date.now() / 1000) + 86400 },
           planType: "plus"
+        }, rateLimitResetCredits: {
+          // Synthetic inventory makes the local preview and browser tests exercise credit expiry UI.
+          availableCount: path.basename(process.env.CODEX_HOME || "") === "home-a" ? 2 : 1,
+          credits: path.basename(process.env.CODEX_HOME || "") === "home-a"
+            ? [{ expiresAt: creditExpiryBase + 36 * 3600 }, { expiresAt: creditExpiryBase + 7 * 86400 }]
+            : [{ expiresAt: creditExpiryBase + 7 * 86400 }]
         } };
         break;
       case "model/list":

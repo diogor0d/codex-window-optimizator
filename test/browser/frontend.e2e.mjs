@@ -108,7 +108,7 @@ async function startFixture() {
   try {
     await waitForServer(`${base}/api/health`, child);
     // Inject transport failures outside the browser so service workers cannot bypass them.
-    const controls = { failPause: false, sendGate: null, deleteGate: null, deleteRequests: [], failDelete: false, loseDeleteResponse: false, failStatusAfterDelete: false, failNextStatus: false };
+    const controls = { resetCreditCount: null, failPause: false, sendGate: null, deleteGate: null, deleteRequests: [], failDelete: false, loseDeleteResponse: false, failStatusAfterDelete: false, failNextStatus: false };
     const proxy = createServer(async (req, res) => {
       if (req.url === "/api/status" && controls.failNextStatus) {
         if (!controls.failStatusAfterDelete) controls.failNextStatus = false;
@@ -138,6 +138,20 @@ async function startFixture() {
       }
       if (req.url === "/api/run-now" && controls.sendGate) await controls.sendGate;
       const upstream = httpRequest(base + req.url, { method: req.method, headers: req.headers }, response => {
+        if (req.url === "/api/status" && controls.resetCreditCount !== null && response.statusCode === 200) {
+          const chunks = [];
+          response.on("data", chunk => chunks.push(chunk));
+          response.on("end", () => {
+            const data = JSON.parse(Buffer.concat(chunks).toString());
+            const credits = { availableCount: controls.resetCreditCount, detailsComplete: true,
+              expiresAt: Array.from({ length: controls.resetCreditCount }, (_, index) => Math.floor(now / 1000) + (index + 1) * 86400) };
+            for (const account of data.accounts) account.dashboard.rateLimitResetCredits = credits;
+            if (data.dashboard) data.dashboard.rateLimitResetCredits = credits;
+            res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+            res.end(JSON.stringify(data));
+          });
+          return;
+        }
         if (deleting && response.statusCode === 200) {
           controls.failNextStatus = controls.failStatusAfterDelete;
           if (controls.loseDeleteResponse) {
@@ -194,7 +208,46 @@ async function requestJson(base, route, method = "GET", body) {
   return response.json();
 }
 
+async function navigate(page, section) {
+  const view = section === "account" ? "account" : section;
+  const title = { fleet: "Overview", account: "Accounts", usage: "Usage", schedule: "Schedule", alerts: "Alerts", activity: "Activity" }[view];
+  await page.locator(`.mobile-dock a[data-section="${section}"]`).click();
+  await page.waitForFunction(({ section, view, title }) => {
+    const active = document.querySelector(`.mobile-dock a[data-section="${section}"]`);
+    const visibleViews = [...document.querySelectorAll("[data-view]")].filter(item => !item.hidden);
+    return location.hash === `#${section}` && active?.getAttribute("aria-current") === "page"
+      && visibleViews.length > 0 && visibleViews.every(item => item.dataset.view === view)
+      && document.querySelector("#pageTitle")?.textContent === title;
+  }, { section, view, title });
+}
+
+async function chartLabelValues(page, chartId) {
+  return page.locator(`#${chartId} .usage-point-label[data-account-id] .usage-point-value`)
+    .evaluateAll(nodes => nodes.map(node => node.textContent.replace(/\*+$/, "")).sort());
+}
+
+async function chartInspectorValues(page, chartId) {
+  return page.locator(`#${chartId}Inspector tbody tr`)
+    .evaluateAll(rows => rows.map(row => row.cells[1].firstChild.textContent).filter(value => value !== "—").sort());
+}
+
+async function chartLabelsOverlap(page, chartId) {
+  return page.locator(`#${chartId} .usage-point-label[data-account-id]`).evaluateAll(labels => {
+    const boxes = labels.map(label => label.querySelector("rect")?.getBBox() || label.getBBox());
+    return boxes.some((a, index) => boxes.slice(index + 1).some(b => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y));
+  });
+}
+
 async function accountWorkflow(page, fixture, label, expectedHttpErrors) {
+  await navigate(page, "account");
+  await page.locator("#accountDiagnostics").waitFor();
+  assert.equal(await page.locator("#accountDiagnostics").evaluate(element => element.open), false);
+  assert.equal(await page.locator(".account-danger").isVisible(), true, "sign-out and removal remain in the account footer");
+  assert.equal(await page.locator(".account-danger summary").count(), 0, "account danger actions are not hidden behind a disclosure");
+  for (const id of ["accountLabelInput", "saveAccountBtn", "editAccountRunSettingsBtn", "logoutBtn", "removeAccountBtn"]) {
+    assert.equal(await page.locator(`#${id}`).isVisible(), true, `${id} remains available with diagnostics closed`);
+  }
+  assert.equal(await page.locator("#accountOverrides").evaluate(element => element.open), false);
   // Cancel is reversible and does not create an account.
   await page.locator("#addAccountOpenBtn").click();
   await page.locator("#newAccountLabelInput").fill("Cancelled account");
@@ -202,7 +255,6 @@ async function accountWorkflow(page, fixture, label, expectedHttpErrors) {
   assert.equal((await requestJson(fixture.base, "/api/accounts")).accounts.length, 2);
 
   // Rename and per-account drafts survive polling and switching away and back.
-  await page.locator("#accountSettings > summary").click();
   await page.locator("#accountLabelInput").fill("Alpha renamed");
   await page.locator("#refreshBtn").click();
   await page.waitForFunction(() => !document.querySelector("#refreshBtn").disabled);
@@ -210,21 +262,34 @@ async function accountWorkflow(page, fixture, label, expectedHttpErrors) {
   await page.locator("#saveAccountBtn").click();
   await page.locator("#accountDetailsMessage").getByText("Name saved.", { exact: true }).waitFor();
   await page.waitForFunction(() => document.querySelector("#accountSelect option:checked").textContent === "Alpha renamed");
-  await page.locator("#accountOverrides > summary").click();
+  await page.locator("#editAccountRunSettingsBtn").click();
+  assert.equal(await page.locator("#accountOverrides").evaluate(element => element.open), true);
   await page.locator("#accountPromptInput").fill("Draft account prompt");
   await page.locator("#accountPromptInput").evaluate(el => el.setSelectionRange(3, 8));
+  await page.locator("#closeAccountRunSettingsBtn").click();
+  assert.equal(await page.locator("#accountOverrides").evaluate(element => element.open), false);
   await page.locator("#refreshBtn").click();
   await page.waitForFunction(() => !document.querySelector("#refreshBtn").disabled);
+  await page.locator("#editAccountRunSettingsBtn").click();
   assert.deepEqual(await page.locator("#accountPromptInput").evaluate(el => [el.selectionStart, el.selectionEnd]), [3, 8]);
+  await page.locator("#closeAccountRunSettingsBtn").click();
   await page.locator("#accountSelect").selectOption("beta");
   await page.waitForFunction(() => document.querySelector("#accountSelect").value === "beta" && !document.querySelector("#accountSelect").disabled);
   await page.locator("#accountSelect").selectOption("alpha");
   await page.waitForFunction(() => document.querySelector("#accountSelect").value === "alpha" && !document.querySelector("#accountSelect").disabled);
-  await page.locator("#accountSettings > summary").click();
-  await page.locator("#accountOverrides > summary").click();
+  await page.locator("#editAccountRunSettingsBtn").click();
   assert.equal(await page.locator("#accountPromptInput").inputValue(), "Draft account prompt");
   await page.locator("#saveAccountOverridesBtn").click();
   await page.locator("#accountOverridesMessage").getByText("Custom settings saved.", { exact: true }).waitFor();
+  assert.equal(await page.locator("#accountOverrides").evaluate(element => element.open), true, "save keeps run settings open for its success message");
+  await page.locator("#closeAccountRunSettingsBtn").click();
+  await page.locator("#accountSelect").selectOption("beta");
+  await page.waitForFunction(() => document.querySelector("#accountSelect").value === "beta");
+  await page.locator("#accountSelect").selectOption("alpha");
+  await page.waitForFunction(() => document.querySelector("#accountSelect").value === "alpha");
+  await page.locator("#editAccountRunSettingsBtn").click();
+  assert.equal(await page.locator("#accountPromptInput").inputValue(), "Draft account prompt", "saved settings survive close and account switching");
+  await page.locator("#closeAccountRunSettingsBtn").click();
   const alpha = (await requestJson(fixture.base, "/api/accounts")).accounts.find(a => a.id === "alpha");
   assert.equal(alpha.settings.promptTemplate, "Draft account prompt");
   await page.locator("#accountEnabledInput").uncheck();
@@ -277,8 +342,6 @@ async function accountWorkflow(page, fixture, label, expectedHttpErrors) {
   assert.equal(await page.locator("#loginProgress").isVisible(), false);
   await page.locator("#accountSelect").selectOption(newId);
   await page.waitForFunction(() => document.querySelector("#accountSelect").value !== "beta" && !document.querySelector("#accountSelect").disabled);
-  await page.locator("#accountSettings > summary").click();
-  await page.locator(".account-danger > summary").click();
   await page.locator("#logoutBtn").click();
   await page.locator("#accountDangerMessage").getByText("Signed out.", { exact: true }).waitFor();
   await page.locator("#deviceLoginBtn").waitFor();
@@ -328,6 +391,7 @@ async function accountWorkflow(page, fixture, label, expectedHttpErrors) {
 }
 
 async function openSchedule(page, tab = "schedule") {
+  await navigate(page, "schedule");
   if (!await page.locator("#scheduleDialog").evaluate(el => el.open)) await page.locator("#editScheduleBtn").click();
   await page.locator(`#${tab}-tab`).click();
 }
@@ -338,6 +402,7 @@ async function saveSchedule(page) {
 }
 
 async function openAlerts(page) {
+  await navigate(page, "alerts");
   if (!await page.locator("#alertsDialog").evaluate(el => el.open)) await page.locator("#editAlertsBtn").click();
 }
 
@@ -350,6 +415,39 @@ async function openAlertGroup(page, index) {
   const group = page.locator("#alertsEditor .telegram-alert-section").nth(index);
   if (!await group.evaluate(element => element.open)) await group.locator(":scope > summary").click();
   return group;
+}
+
+async function exerciseResetCreditOverflow(page, fixture) {
+  fixture.controls.resetCreditCount = 17;
+  try {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.querySelector('[data-account-row="alpha"] .reset-credit-stack')?.dataset.creditCount === "17");
+    const stack = page.locator('[data-account-row="alpha"] .reset-credit-stack');
+    const seen = new Set();
+    for (let pageIndex = 0; pageIndex < 17; pageIndex++) {
+      const cards = stack.locator(".reset-credit-card:not([hidden])");
+      assert.ok(await cards.count() <= 4, "a stack never exposes an unreadable number of documents");
+      for (const index of await cards.evaluateAll(nodes => nodes.map(node => Number(node.dataset.creditIndex)))) seen.add(index);
+      assert.equal(await cards.evaluateAll(nodes => nodes.every(node => node.getBoundingClientRect().width >= Math.min(159, node.parentElement.getBoundingClientRect().width))), true, "paging preserves readable card width");
+      const next = stack.getByRole("button", { name: "Next reset credits" });
+      if (await next.isDisabled()) break;
+      await next.click();
+    }
+    assert.equal(seen.size, 17, "every reported expiry remains reachable");
+    await stack.locator('[data-front="true"]').focus();
+    await page.keyboard.press("End");
+    assert.equal(await stack.locator('[data-front="true"]').getAttribute("data-credit-index"), "16");
+    await page.locator("#refreshBtn").click();
+    await page.waitForFunction(() => !document.querySelector("#refreshBtn").disabled);
+    assert.equal(await stack.locator('[data-front="true"]').getAttribute("data-credit-index"), "16", "refresh retains the selected overflow card");
+    await stack.locator('[data-front="true"]').focus();
+    await page.keyboard.press("Home");
+    assert.equal(await stack.locator('[data-front="true"]').getAttribute("data-credit-index"), "0");
+  } finally {
+    fixture.controls.resetCreditCount = null;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator("#fleetRows .strip-row").first().waitFor();
+  }
 }
 
 async function exercise(browserType, fixture, viewport, label) {
@@ -380,19 +478,127 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.locator("#fleetRows .strip-row").first().waitFor();
     await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
     await page.waitForFunction(() => document.querySelector("#timezoneInput").value === "Europe/Lisbon");
+    await navigate(page, "fleet");
+    // Each credit retains its own expiry and urgency rather than coloring the whole inventory.
+    await page.waitForFunction(() => document.querySelector('[data-account-row="alpha"] .reset-credit-stack')?.dataset.creditState === "expiring");
+    const alphaCredits = page.locator('[data-account-row="alpha"] .reset-credit-stack');
+    assert.match(await alphaCredits.locator(".reset-credit-total").textContent(), /2 reset credits/);
+    assert.equal(await alphaCredits.locator(".reset-credit-card").count(), 2);
+    assert.equal(await alphaCredits.locator("time[datetime]").count(), 2);
+    const urgentCredit = alphaCredits.locator('.reset-credit-card[data-credit-index="0"]');
+    const laterCredit = alphaCredits.locator('.reset-credit-card[data-credit-index="1"]');
+    assert.match(await urgentCredit.textContent(), /Expires within 2 days/);
+    assert.equal(await urgentCredit.evaluate(element => getComputedStyle(element).animationName), "credit-expiry-attention");
+    assert.equal(await urgentCredit.evaluate(element => getComputedStyle(element, "::before").animationName), "credit-shine");
+    assert.equal(await laterCredit.getAttribute("data-credit-state"), "available");
+    assert.equal(await laterCredit.evaluate(element => getComputedStyle(element).animationName), "none");
+    assert.equal(await laterCredit.evaluate(element => getComputedStyle(element, "::before").animationName), "none");
+    assert.notEqual(await urgentCredit.locator("time").getAttribute("datetime"), await laterCredit.locator("time").getAttribute("datetime"));
+    assert.equal(await page.locator('[data-account-row="beta"] .reset-credit-card').getAttribute("data-credit-state"), "available");
+    const creditCards = alphaCredits.locator(".reset-credit-card");
+    assert.equal(await laterCredit.locator(".reset-credit-content").isVisible(), false, "rear documents expose only their right edge");
+    const creditCapacity = Number(await alphaCredits.getAttribute("data-credit-capacity"));
+    if (creditCapacity > 1) assert.equal(await alphaCredits.evaluate(stack => {
+      const [first, second] = [...stack.querySelectorAll(".reset-credit-card")].map(card => card.getBoundingClientRect());
+      return Math.abs(first.y - second.y) <= 3 && Math.abs(first.width - second.width) < 1 && second.x > first.x
+        && !stack.querySelector(".reset-credit-deck button") && stack.querySelectorAll(".reset-credit-card > .reset-credit-number").length === 2;
+    }), true, "overlapping documents include their own numbers without separate buttons");
+    if (!viewport.hasTouch && creditCapacity > 1) {
+      await laterCredit.locator(".reset-credit-number").hover();
+      assert.equal(await laterCredit.locator(".reset-credit-content").isVisible(), true, "hover expands a rear document");
+      await page.locator("#fleetTitle").hover();
+      assert.equal(await urgentCredit.getAttribute("data-front"), "true", "leaving the stack restores the selected document");
+    }
+    if (creditCapacity === 1) await alphaCredits.getByRole("button", { name: "Next reset credits" }).click();
+    else await laterCredit.locator(".reset-credit-number").click();
+    await page.locator("#fleetTitle").click();
+    assert.equal(await laterCredit.getAttribute("data-front"), "true", "click or tap keeps the chosen document forward");
+    await creditCards.nth(1).focus();
+    await page.keyboard.press("Home");
+    assert.equal(await urgentCredit.getAttribute("data-front"), "true", "keyboard selection returns to the first document");
+    assert.equal(await creditCards.nth(0).getAttribute("aria-pressed"), "true");
+    await exerciseResetCreditOverflow(page, fixture);
+    const sendAction = page.locator('.page-heading > a[href="#send"]');
+    assert.equal(await sendAction.evaluate(node => getComputedStyle(node).whiteSpace), "nowrap", "the Send action stays on one line");
+    if (!viewport.isMobile && !viewport.hasTouch) {
+      const nav = page.locator(".mobile-dock");
+      const navBox = await nav.boundingBox();
+      const workspaceBox = await page.locator("#mainContent").boundingBox();
+      assert.equal(await nav.evaluate(element => getComputedStyle(element).position), "relative", "desktop section navigation belongs in the header flow");
+      assert.ok(navBox && workspaceBox && navBox.y + navBox.height <= workspaceBox.y, "desktop navigation sits above the workspace");
+    }
+    const overviewChart = page.locator("#overviewUsageChart");
+    await page.waitForFunction(() => document.querySelectorAll("#overviewUsageChart .usage-point-label[data-account-id]").length >= 2);
+    assert.equal(await overviewChart.locator('svg[aria-label*="6h"]').count(), 1, "overview chart uses a fixed six-hour range");
+    assert.equal(await page.locator("#overviewUsageChartInspector").evaluate(element => element.classList.contains("sr-only") && getComputedStyle(element).clipPath === "inset(50%)"), true, "compact inspector stays available to assistive technology without a visible table");
+    const overviewCursor = overviewChart.locator(".usage-hover-layer");
+    await overviewCursor.focus();
+    await page.keyboard.press("Home");
+    const overviewFirst = await overviewChart.locator(".usage-point-label[data-account-id] .usage-point-value").evaluateAll(nodes => nodes.map(node => node.textContent).sort());
+    await page.keyboard.press("End");
+    const overviewLast = await overviewChart.locator(".usage-point-label[data-account-id] .usage-point-value").evaluateAll(nodes => nodes.map(node => node.textContent).sort());
+    assert.notDeepEqual(overviewFirst, overviewLast, "overview point labels follow the keyboard cursor");
+    const overviewLabelsOverlap = await overviewChart.locator(".usage-point-label[data-account-id]").evaluateAll(labels => {
+      const boxes = labels.map(label => label.querySelector("rect")?.getBBox() || label.getBBox());
+      return boxes.some((a, index) => boxes.slice(index + 1).some(b => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y));
+    });
+    assert.equal(overviewLabelsOverlap, false, "coincident overview labels remain separated");
+    const accountRows = () => page.locator("#fleetRows [data-account-row]");
+    assert.equal(await accountRows().count(), 2);
+    await page.locator("#accountSearchInput").fill("Beta");
+    await page.waitForFunction(() => document.querySelectorAll("#fleetRows [data-account-row]:not([hidden])").length === 1);
+    assert.equal(await page.locator("#fleetRows [data-account-row]:not([hidden])").getAttribute("data-account-row"), "beta");
+    await page.locator("#accountSearchInput").fill("");
+    await page.locator("#accountSearchInput").fill("No matching account");
+    await page.locator("#noAccountResults").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#fleetRows [data-account-row]:not([hidden])").count(), 0);
+    await page.locator("#accountSearchInput").fill("");
+    await page.locator("#noAccountResults").waitFor({ state: "hidden" });
+    await page.locator("#accountFilterInput").selectOption("scheduled");
+    await page.waitForFunction(() => document.querySelectorAll("#fleetRows [data-account-row]:not([hidden])").length === 2);
+    await page.locator("#accountFilterInput").selectOption("all");
+    await page.locator("#fleetRows [data-open-account='beta']").click();
+    await page.waitForFunction(() => !document.querySelector("#account").hidden && document.querySelector("#accountSelect").value === "beta");
+    await navigate(page, "fleet");
+    await page.locator('.page-heading a[href="#send"]').click();
+    await page.waitForFunction(() => !document.querySelector("#account").hidden && document.activeElement === document.querySelector("#manualPromptInput"));
+    assert.equal(await page.locator("#manualPromptInput").isVisible(), true, "send deep link opens Accounts and focuses the prompt");
+    await navigate(page, "usage");
+    await page.getByRole("link", { name: "Skip to content", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await page.evaluate(() => location.hash), "#usage", "skip link must preserve the current view");
+    assert.equal(await page.locator("#mainContent").evaluate(element => document.activeElement === element), true);
+    await page.goBack();
+    await page.waitForFunction(() => location.hash === "#send" && !document.querySelector("#account").hidden && document.querySelector("#usage").hidden && document.querySelector("#pageTitle").textContent === "Accounts");
+    await page.goBack();
+    await page.waitForFunction(() => location.hash === "#fleet" && !document.querySelector("#fleet").hidden && document.querySelector("#usage").hidden && document.querySelector("#pageTitle").textContent === "Overview");
+    await page.goForward();
+    await page.waitForFunction(() => location.hash === "#send" && !document.querySelector("#account").hidden && document.querySelector("#pageTitle").textContent === "Accounts");
+    await page.goForward();
+    await page.waitForFunction(() => location.hash === "#usage" && !document.querySelector("#usage").hidden && document.querySelector("#fleet").hidden && document.querySelector("#pageTitle").textContent === "Usage");
+    await navigate(page, "schedule");
     await page.waitForFunction(() => /Scheduled Codex window ping at \d{4}-\d{2}-\d{2} \d{2}:\d{2} Europe\/Lisbon/.test(document.querySelector("#schedulePrompt").textContent));
     assert.ok(!(await page.locator("#schedulePrompt").textContent()).includes("{{"));
     assert.equal(await page.locator("#schedulePromptHint").isVisible(), true);
     assert.ok((await page.locator("#promptInput").inputValue()).includes("{{local_time}}"));
-    assert.ok(await page.locator('a[data-section="alerts"]').count() >= 1, "alerts have their own dashboard navigation link");
+    assert.ok(await page.locator('.mobile-dock a[data-section="alerts"]').count() >= 1, "alerts have their own dashboard navigation link");
     await page.locator("#schedule").scrollIntoViewIfNeeded();
     await screenshot(page, `${label}-rendered-message-preview`);
 
     // Theme switch persists across reload.
+    assert.equal(await page.locator("#themeToggleBtn").evaluate(element => element.textContent.trim()), "", "theme toggle is icon-only");
+    assert.equal(await page.locator("#themeToggleBtn svg:visible").count(), 1);
+    assert.equal(await page.locator("#themeToggleBtn").getAttribute("aria-label"), "Switch to dark mode");
+    assert.equal(await page.locator("#themeToggleBtn").getAttribute("title"), "Switch to dark mode");
+    assert.equal(await page.locator("#themeToggleBtn").getAttribute("aria-pressed"), "false");
     await page.locator("#themeToggleBtn").click();
     await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+    assert.equal(await page.locator("#themeToggleBtn").getAttribute("aria-label"), "Switch to light mode");
+    assert.equal(await page.locator("#themeToggleBtn").getAttribute("title"), "Switch to light mode");
+    assert.equal(await page.locator("#themeToggleBtn").getAttribute("aria-pressed"), "true");
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+    assert.equal(await page.locator("#themeToggleBtn").getAttribute("aria-label"), "Switch to light mode");
     await page.locator("#themeToggleBtn").click();
     await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
 
@@ -426,6 +632,15 @@ async function exercise(browserType, fixture, viewport, label) {
     assert.equal(await page.locator("#scheduleTimes").textContent(), "07:1519:45");
     assert.equal(await page.locator("#schedulePrompt").textContent(), "E2E saved prompt");
     assert.equal(await page.locator("#schedulePromptHint").isVisible(), false);
+    await navigate(page, "alerts");
+    assert.equal(await page.locator("#alertRulesSummary .alert-summary-row").count(), 5);
+    await page.getByRole("button", { name: "Edit quota warnings", exact: true }).click();
+    const quotaWarnings = page.locator("#alertsEditor .telegram-alert-section").first();
+    assert.equal(await quotaWarnings.evaluate(element => element.open), true);
+    assert.equal(await quotaWarnings.locator(":scope > summary").evaluate(element => document.activeElement === element), true);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("#alertsDialog").open);
+    await page.waitForFunction(() => document.activeElement === document.querySelector('[data-edit-alert-section="0"]'));
     await openAlerts(page);
     await screenshot(page, `${label}-alerts-editor`);
     await page.locator("#closeAlertsBtn").click();
@@ -467,36 +682,62 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.waitForFunction(() => document.querySelector("#schedulerBadge").textContent === "Paused");
     await page.locator("#schedulerToggleBtn").click();
     await page.waitForFunction(() => document.querySelector("#schedulerBadge").textContent === "Enabled");
+    await navigate(page, "account");
     const selectBox = await page.locator("#accountSelect").boundingBox();
     assert.ok(selectBox.height >= 44 && selectBox.width >= 140, "account selector needs usable Safari dimensions");
     for (const theme of ["light", "dark"]) {
       if (await page.locator("html").getAttribute("data-theme") !== theme) await page.locator("#themeToggleBtn").click();
       await page.locator("#account").scrollIntoViewIfNeeded();
       if (process.env.E2E_OUTPUT_DIR) await page.locator("#account").screenshot({ path: path.join(process.env.E2E_OUTPUT_DIR, `${label}-${theme}-account.png`) });
+      await navigate(page, "schedule");
       await page.locator("#schedule").scrollIntoViewIfNeeded();
       await screenshot(page, `${label}-${theme}-schedule-summary`);
+      await navigate(page, "account");
     }
 
     // Account switching updates selection and account-specific model catalogue.
     await page.locator("#accountSelect").selectOption("beta");
     await page.waitForFunction(() => document.querySelector("#accountSelect").value === "beta");
-    await page.waitForFunction(() => document.querySelector("#accountConsoleTitle").textContent.includes("Account console"));
+    assert.equal(await page.locator("#accountConsoleTitle").textContent(), "Account details");
     assert.equal((await (await fetch(`${fixture.base}/api/status`)).json()).selectedAccountId, "beta");
     await page.locator("#accountSelect").selectOption("alpha");
     await page.waitForFunction(() => document.querySelector("#accountSelect").value === "alpha");
 
     // Chart ranges, legend keyboard activation and usage-history loading.
+    await navigate(page, "usage");
     for (const range of ["6h", "24h", "7d", "30d"]) {
       await page.locator(`#usageHistoryRanges [data-range="${range}"]`).click();
       await page.waitForFunction(expected => document.querySelector(`#usageHistoryRanges [data-range="${expected}"]`).getAttribute("aria-pressed") === "true", range);
+    }
+    for (const chartId of ["usageHistoryFiveHourChart", "usageHistoryWeeklyChart"]) {
+      await page.waitForFunction(id => document.querySelectorAll(`#${id} .usage-point-label[data-account-id]`).length >= 2, chartId);
+      const values = await chartLabelValues(page, chartId);
+      assert.equal(values.every(value => /^\d+%$/.test(value)), true, `${chartId} labels show numeric percentages`);
+      assert.equal(await chartLabelsOverlap(page, chartId), false, `${chartId} labels do not overlap`);
     }
     const cursor = page.locator("#usageHistoryFiveHourChart .usage-hover-layer");
     await cursor.focus();
     await page.keyboard.press("Home");
     const firstTime = await page.locator("#usageHistoryFiveHourChartInspector strong").textContent();
+    const historyLabelsAtStart = await chartLabelValues(page, "usageHistoryFiveHourChart");
+    const historyInspectorAtStart = await chartInspectorValues(page, "usageHistoryFiveHourChart");
+    assert.deepEqual(historyLabelsAtStart, historyInspectorAtStart, "chart point labels match the inspected readings");
     await page.keyboard.press("End");
     const lastTime = await page.locator("#usageHistoryFiveHourChartInspector strong").textContent();
     assert.notEqual(firstTime, lastTime, "keyboard cursor must inspect different readings");
+    const historyLabelsAtEnd = await chartLabelValues(page, "usageHistoryFiveHourChart");
+    const historyInspectorAtEnd = await chartInspectorValues(page, "usageHistoryFiveHourChart");
+    assert.deepEqual(historyLabelsAtEnd, historyInspectorAtEnd, "chart point labels continue to match inspected readings");
+    assert.notDeepEqual(historyLabelsAtStart, historyLabelsAtEnd, "chart point labels change with Home and End");
+    const weeklyCursor = page.locator("#usageHistoryWeeklyChart .usage-hover-layer");
+    await weeklyCursor.focus();
+    await page.keyboard.press("Home");
+    const weeklyLabelsAtStart = await chartLabelValues(page, "usageHistoryWeeklyChart");
+    assert.deepEqual(weeklyLabelsAtStart, await chartInspectorValues(page, "usageHistoryWeeklyChart"));
+    await page.keyboard.press("End");
+    const weeklyLabelsAtEnd = await chartLabelValues(page, "usageHistoryWeeklyChart");
+    assert.deepEqual(weeklyLabelsAtEnd, await chartInspectorValues(page, "usageHistoryWeeklyChart"));
+    assert.notDeepEqual(weeklyLabelsAtStart, weeklyLabelsAtEnd, "weekly chart labels change with Home and End");
     const legendToggle = page.locator("#usageHistoryLegend button").first();
     if (await legendToggle.count()) {
       await legendToggle.focus();
@@ -505,6 +746,9 @@ async function exercise(browserType, fixture, viewport, label) {
       await page.keyboard.press("Space");
       assert.equal(await legendToggle.getAttribute("aria-pressed"), "true");
     }
+
+    await navigate(page, "fleet");
+    assert.equal(await overviewChart.locator('svg[aria-label*="6h"]').count(), 1, "overview range stays at six hours after full-history range changes");
 
     // Shared settings edits survive a refresh until explicitly saved.
     await openSchedule(page, "run");
@@ -621,6 +865,7 @@ async function exercise(browserType, fixture, viewport, label) {
     const completedFailure = page.locator("[data-event-id='seed-completed-error']");
     const successTurn = page.locator("[data-event-id='seed-success']");
     const interruptedTurn = page.locator("[data-event-id='seed-interrupted']");
+    await navigate(page, "activity");
     await failedTurn.waitFor();
     await completedFailure.waitFor();
     await successTurn.waitFor();
@@ -640,7 +885,7 @@ async function exercise(browserType, fixture, viewport, label) {
           return getComputedStyle(el.querySelector(".timeline-dot")).backgroundColor === expected;
         }, token), true, `activity marker should use ${token}`);
       }
-      await page.locator("#activity").scrollIntoViewIfNeeded();
+      await navigate(page, "activity");
       if (process.env.E2E_OUTPUT_DIR) {
         await mkdir(process.env.E2E_OUTPUT_DIR, { recursive: true });
         await page.locator("#activityList").evaluate(el => { el.scrollTop = el.scrollHeight; });
@@ -655,17 +900,24 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.locator("#clearActivityBtn").click();
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
+    await navigate(page, "activity");
     assert.equal(await page.locator("[data-event-id='seed-success']").count(), 0);
+    await navigate(page, "account");
     await page.locator("#runNowBtn").click();
+    await navigate(page, "activity");
     await page.locator(".activity-item").filter({ hasText: "Turn started" }).first().waitFor({ timeout: 10_000 });
     await page.locator(".activity-item.success").filter({ hasText: "e2e-turn-" }).first().waitFor({ timeout: 10_000 });
+    await navigate(page, "account");
 
     // Real app-server notifications travel over the server's SSE connection.
+    await navigate(page, "account");
     for (const [prompt, tone, title] of [["E2E_FAIL", "error", "Turn failed"], ["E2E_INTERRUPT", "warn", "Turn interrupted"]]) {
       await page.locator("#manualPromptInput").fill(prompt);
       await page.locator("#manualSendBtn").click();
       await page.locator("#manualMessage").getByText("Turn started. Follow its progress in Activity.", { exact: true }).waitFor();
+      await navigate(page, "activity");
       await page.locator(`.activity-item.${tone}`).filter({ hasText: title }).filter({ hasText: "e2e-turn-" }).first().waitFor();
+      await navigate(page, "account");
       await page.waitForFunction(expected => document.querySelector("#windowBadge").textContent === expected, title === "Turn failed" ? "Last turn failed" : "Last turn interrupted");
     }
 
@@ -677,6 +929,7 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.waitForFunction(() => !document.querySelector("#manualSendBtn").disabled);
     expectedHttpErrors.add(`${fixture.base}/api/scheduler/pause`);
     fixture.controls.failPause = true;
+    await navigate(page, "schedule");
     await page.locator("#schedulerToggleBtn").click();
     await page.locator("#schedulerMessage").getByText("Server busy. Try again.", { exact: true }).waitFor();
     await page.waitForFunction(() => !document.querySelector("#schedulerToggleBtn").disabled);
@@ -684,6 +937,7 @@ async function exercise(browserType, fixture, viewport, label) {
     // Both send buttons lock while one request is pending; selection stays scoped.
     let releaseSend;
     fixture.controls.sendGate = new Promise(resolve => { releaseSend = resolve; });
+    await navigate(page, "account");
     await page.locator("#manualPromptInput").fill("normal send");
     await page.locator("#manualSendBtn").click();
     await page.waitForFunction(() => document.querySelector("#manualSendBtn").disabled && document.querySelector("#runNowBtn").disabled);
@@ -726,15 +980,13 @@ async function exercise(browserType, fixture, viewport, label) {
         const box = await link.boundingBox();
         assert.ok(box && box.height >= 44 && box.width >= 44, `dock touch target too short: ${box?.height}`);
       }
-      for (const section of ["account", "schedule", "alerts", "send", "activity", "fleet"]) {
-        await dock.locator(`a[data-section=${section}]`).click();
-        await page.waitForFunction(id => location.hash === `#${id}` && document.querySelector(`.mobile-dock a[data-section="${id}"]`).getAttribute("aria-current") === "location", section);
+      for (const section of ["account", "schedule", "alerts", "usage", "activity", "fleet"]) {
+        await navigate(page, section);
       }
-      await dock.locator("a[data-section=activity]").click();
-      await page.waitForFunction(() => location.hash === "#activity" && document.querySelector('.mobile-dock a[data-section="activity"]').getAttribute("aria-current") === "location");
-      await dock.locator("a[data-section=fleet]").click();
-      await page.waitForFunction(() => location.hash === "#fleet");
+      await navigate(page, "activity");
+      await navigate(page, "fleet");
     }
+    await navigate(page, "fleet");
     const rowOverlaps = await page.locator("#fleetRows .strip-row").evaluateAll(rows => rows.some(row => {
       const cell = row.querySelector(".strip-cell")?.getBoundingClientRect();
       const meta = row.querySelector(".strip-meta")?.getBoundingClientRect();
@@ -743,8 +995,8 @@ async function exercise(browserType, fixture, viewport, label) {
     assert.equal(rowOverlaps, false, "quota tracks and reset metadata must not overlap");
     const overflow = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
     assert.ok(overflow.scroll <= overflow.client + 1, `horizontal overflow ${overflow.scroll - overflow.client}px`);
-    await page.locator(".mobile-dock a[data-section=fleet]").click();
-    await page.waitForFunction(() => document.querySelector("#fleet").getBoundingClientRect().top >= 0 && document.querySelector("#fleet").getBoundingClientRect().top < 100);
+    await navigate(page, "fleet");
+    assert.equal(await page.locator("#pageTitle").textContent(), "Overview");
     await screenshot(page, label);
     await assertNoPageErrors(page, pageErrors);
 

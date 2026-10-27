@@ -7,6 +7,8 @@ const state = {
   alertsDirty: false,
   alertsRevision: 0,
   accountDrafts: new Map(),
+  resetCreditSelections: new Map(),
+  resetCreditHovers: new Map(),
   accountBusy: false,
   removingAccountIds: new Set(),
   removalTarget: null,
@@ -104,11 +106,13 @@ function preferredTheme() {
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("theme", theme);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#101725" : "#eef2f8");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#0d1117" : "#f6f8fa");
   const button = $("#themeToggleBtn");
   if (button) {
     const isDark = theme === "dark";
-    button.textContent = isDark ? "Light mode" : "Dark mode";
+    const label = isDark ? "Switch to light mode" : "Switch to dark mode";
+    button.setAttribute("aria-label", label);
+    button.title = label;
     button.setAttribute("aria-pressed", String(isDark));
   }
 }
@@ -427,6 +431,71 @@ function reserveState(win, now = Date.now()) {
   return "available";
 }
 
+function resetCreditPresentation(credits, now = Date.now()) {
+  const count = Number.isSafeInteger(credits?.resetCreditsAvailable) && credits.resetCreditsAvailable >= 0
+    ? credits.resetCreditsAvailable : null;
+  const expirations = (Array.isArray(credits?.resetCreditExpirations) ? credits.resetCreditExpirations : [])
+    .slice(0, count ?? 0).filter(Number.isSafeInteger);
+  const future = expirations.filter(value => value * 1000 > now);
+  const expiringCount = future.filter(value => value * 1000 - now <= 2 * 24 * 60 * 60 * 1000).length;
+  const expiredCount = expirations.length - future.length;
+  return {
+    count,
+    state: count === null ? "unknown" : count === 0 ? "empty" : expiringCount ? "expiring" : expiredCount ? "reported" : "available",
+    expiringCount,
+    expiredCount,
+    nextExpiry: future.length ? Math.min(...future) : null
+  };
+}
+
+function resetCreditItems(credits, now = Date.now()) {
+  const count = resetCreditPresentation(credits, now).count;
+  const expirations = Array.isArray(credits?.resetCreditExpirations) ? credits.resetCreditExpirations : [];
+  return Array.from({ length: count || 0 }, (_, index) => {
+    const value = expirations[index];
+    const expiresAt = Number.isSafeInteger(value) ? value : value === null ? null : "unknown";
+    return {
+      index,
+      expiresAt,
+      state: Number.isSafeInteger(expiresAt)
+        ? expiresAt * 1000 <= now ? "reported" : expiresAt * 1000 - now <= 2 * 24 * 60 * 60 * 1000 ? "expiring" : "available"
+        : "available"
+    };
+  });
+}
+
+function resetCreditStack(credits, accountId, now = Date.now(), context = "overview") {
+  const view = resetCreditPresentation(credits, now);
+  const items = resetCreditItems(credits, now);
+  const key = `${context}:${accountId}`;
+  const selected = Math.max(0, Math.min(items.length - 1, state.resetCreditHovers.get(key) ?? state.resetCreditSelections.get(key) ?? 0));
+  const initialStart = Math.floor(selected / 2) * 2;
+  const initialEnd = Math.min(items.length, initialStart + 2);
+  const idPrefix = `${context}-reset-credit-${accountId}`;
+  const label = view.count === null ? "Reset credits not reported" : view.count === 0 ? "No reset credits"
+    : `${view.count} ${view.expiredCount ? "reported " : ""}reset credit${view.count === 1 ? "" : "s"}`;
+  const readAt = credits.resetCreditsUpdatedAt ? `Count read ${new Date(credits.resetCreditsUpdatedAt).toLocaleString()}.` : "Read time unavailable.";
+  const cards = items.map(item => {
+    const knownExpiry = Number.isSafeInteger(item.expiresAt);
+    const expiryLabel = knownExpiry ? new Date(item.expiresAt * 1000).toLocaleString([], {
+      day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false
+    }) : item.expiresAt === null ? "No expiry" : "Expiry not reported";
+    const note = item.state === "expiring" ? "Expires within 2 days" : item.state === "reported" ? "Expiry passed · refresh account state" : "";
+    return `<div class="reset-credit-card" role="button" id="${escapeHtml(`${idPrefix}-card-${item.index}`)}" aria-label="${escapeHtml(`Reset credit ${item.index + 1}: ${expiryLabel}${note ? `. ${note}` : ""}`)}" aria-pressed="${item.index === selected}" tabindex="${item.index === selected ? 0 : -1}" ${item.index < initialStart || item.index >= initialEnd ? "hidden" : ""} data-front="${item.index === selected}" data-credit-side="${item.index < selected ? "before" : "after"}" data-credit-first="${item.index === initialStart}" data-credit-last="${item.index === initialEnd - 1}" data-credit-state="${item.state}" data-credit-index="${item.index}" style="--credit-before:${item.index - initialStart};--credit-after:${initialEnd - 1 - item.index}" title="${escapeHtml(`Reset credit ${item.index + 1}: ${expiryLabel}. ${readAt}`)}">
+      <span class="reset-credit-content" aria-hidden="${item.index !== selected}">
+      <span class="reset-credit-heading"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M6 9a4 4 0 1 1 1 4M6 5v4h4"/></svg><span class="reset-credit-count">Reset credit ${item.index + 1}</span></span>
+      <span class="reset-credit-dates">${knownExpiry ? `Expires <time datetime="${new Date(item.expiresAt * 1000).toISOString()}">${escapeHtml(expiryLabel)}</time>` : expiryLabel}</span>
+      ${note ? `<span class="reset-credit-urgency">${escapeHtml(note)}</span>` : ""}
+      </span><span class="reset-credit-number" aria-hidden="true">${item.index + 1}</span>
+    </div>`;
+  }).join("");
+  return `<div class="reset-credit-stack" data-credit-account="${escapeHtml(accountId || "")}" data-credit-context="${context}" data-credit-count="${items.length}" data-credit-state="${view.state}" data-credit-signature="${escapeHtml(JSON.stringify([view, items]))}">
+    <span class="reset-credit-total">${escapeHtml(label)}</span>
+    ${cards ? `<div class="reset-credit-deck" role="group" aria-label="Reset credit documents">${cards}</div>` : ""}
+    ${items.length > 1 ? `<div class="reset-credit-pagination" ${items.length <= 2 ? "hidden" : ""}><span class="reset-credit-page-label" role="status">${initialStart + 1}–${initialEnd} of ${items.length}</span><div><button type="button" id="${escapeHtml(`${idPrefix}-previous`)}" data-credit-page="previous" aria-label="Previous reset credits" ${initialStart === 0 ? "disabled" : ""}>←</button><button type="button" id="${escapeHtml(`${idPrefix}-next`)}" data-credit-page="next" aria-label="Next reset credits" ${initialEnd === items.length ? "disabled" : ""}>→</button></div></div>` : ""}
+  </div>`;
+}
+
 function resetCreditExpiry(win) {
   if (!Number.isSafeInteger(win?.resetCreditsAvailable)) {
     return { label: "Not reported", title: "Expiration details were not reported" };
@@ -481,7 +550,7 @@ function fmtClockTime(ms) {
   if (!Number.isFinite(ms)) {
     return "--:--";
   }
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function fmtWeeklyReset(ms) {
@@ -666,10 +735,40 @@ function usageInsightStats(series, key, startMs, endMs) {
   });
 }
 
+function positionUsageLabels(points, { left, right, top, bottom }) {
+  const labelWidth = 46;
+  const labelHeight = 18;
+  const gap = 3;
+  const capacity = Math.max(1, Math.floor((bottom - top + gap) / (labelHeight + gap)));
+  const ordered = [...points].sort((a, b) => a.y - b.y);
+  const result = [];
+  for (let offset = 0; offset < ordered.length; offset += capacity) {
+    const column = ordered.slice(offset, offset + capacity);
+    let nextTop = top;
+    const positioned = column.map(point => {
+      const labelY = Math.max(nextTop, Math.min(bottom - labelHeight, point.y - labelHeight / 2));
+      nextTop = labelY + labelHeight + gap;
+      const preferredX = point.x + 12 + labelWidth <= right ? point.x + 12 : point.x - labelWidth - 12;
+      const labelX = Math.max(left, Math.min(right - labelWidth, ordered.length > capacity ? right - labelWidth - (offset / capacity) * (labelWidth + 6) : preferredX));
+      return { ...point, labelX, labelY, width: labelWidth, height: labelHeight };
+    });
+    let ceiling = bottom;
+    for (let index = positioned.length - 1; index >= 0; index--) {
+      positioned[index].labelY = Math.min(positioned[index].labelY, ceiling - labelHeight);
+      ceiling = positioned[index].labelY - gap;
+    }
+    result.push(...positioned);
+  }
+  return result;
+}
+
 function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
   const restoreFocus = host.contains(document.activeElement) && document.activeElement?.classList.contains("usage-hover-layer");
   const width = Math.max(240, Math.floor(host.clientWidth || host.getBoundingClientRect().width || 640) - 14);
-  const { height, left, right, top, bottom } = USAGE_CHART_LAYOUT;
+  const compact = host.classList.contains("compact-usage-chart");
+  const { height, left, right, top, bottom } = compact
+    ? { height: 168, left: 36, right: 12, top: 10, bottom: 134 }
+    : USAGE_CHART_LAYOUT;
   const plotRight = width - right;
   const x = (time) => left + ((time - model.startMs) / (model.endMs - model.startMs)) * (plotRight - left);
   const y = (value) => bottom - (value / 100) * (bottom - top);
@@ -737,12 +836,30 @@ function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
     const markerTime = Number.isFinite(item.observedMs) ? Math.min(timeMs, item.observedMs) : timeMs;
     return `<circle class="usage-cursor-point" data-account-id="${escapeHtml(item.account.id)}" cx="${timeMs === null ? left : x(Math.max(model.startMs, markerTime)).toFixed(1)}" cy="${Number.isFinite(reading.value) ? y(reading.value).toFixed(1) : top}" r="${3 + markerIndex * 0.8}" style="--point-color:${color};fill:none;stroke:${color};stroke-width:1.5" ${Number.isFinite(reading.value) ? "" : "display=\"none\""}></circle>`;
   }).join("");
+  const labelsMarkup = selectedTime => {
+    if (selectedTime === null) return "";
+    const points = visible.flatMap(item => {
+      const reading = usageChartValueAt(item, model.key, selectedTime);
+      if (!Number.isFinite(reading.value)) return [];
+      const markerTime = Number.isFinite(item.observedMs) ? Math.min(selectedTime, item.observedMs) : selectedTime;
+      return [{ id: item.account.id, label: item.account.label, value: reading.value, status: reading.status,
+        color: USAGE_ACCOUNT_COLORS[item.index % USAGE_ACCOUNT_COLORS.length],
+        x: x(Math.max(model.startMs, markerTime)), y: y(reading.value) }];
+    });
+    return positionUsageLabels(points, { left, right: plotRight, top, bottom }).map(point => {
+      const stale = ["cached", "last-known"].includes(point.status);
+      const description = `${point.label}: ${point.value}% remaining${point.status === "cached" ? " · cached snapshot" : stale ? " · last recorded, earlier poll" : ""}`;
+      const edgeX = point.labelX > point.x ? point.labelX : point.labelX + point.width;
+      return `<g class="usage-point-label" data-account-id="${escapeHtml(point.id)}"><title>${escapeHtml(description)}</title><line class="usage-label-connector" x1="${point.x.toFixed(1)}" y1="${point.y.toFixed(1)}" x2="${edgeX.toFixed(1)}" y2="${(point.labelY + point.height / 2).toFixed(1)}" style="stroke:${point.color}"></line><rect x="${point.labelX.toFixed(1)}" y="${point.labelY.toFixed(1)}" width="${point.width}" height="${point.height}" rx="4" style="stroke:${point.color}"></rect><text class="usage-point-value" x="${(point.labelX + point.width / 2).toFixed(1)}" y="${(point.labelY + 12.5).toFixed(1)}" text-anchor="middle" style="fill:${point.color}">${point.value}%${stale ? "*" : ""}</text></g>`;
+    }).join("");
+  };
   host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="group" aria-label="${escapeHtml(`${model.key === "fiveHourUsed" ? "5-hour" : "Weekly"} quota remaining over ${range}`)}">
     ${[0, 25, 50, 75, 100].map((value) => `<line class="usage-grid" x1="${left}" x2="${plotRight}" y1="${y(value)}" y2="${y(value)}"></line><text class="usage-axis-y" x="${left - 5}" y="${y(value) + 4}">${value}%</text>`).join("")}
     ${tickMarkup}${paths}
     <line class="usage-cursor-line" x1="${timeMs === null ? left : x(timeMs)}" x2="${timeMs === null ? left : x(timeMs)}" y1="${top}" y2="${bottom}" ${timeMs === null ? "display=\"none\"" : ""}></line>${markers}
+    <g class="usage-point-labels" aria-hidden="true">${labelsMarkup(timeMs)}</g>
     <rect class="usage-hover-layer" x="${left}" y="${top}" width="${plotRight - left}" height="${bottom - top}" tabindex="0" aria-label="Quota history cursor. Use left and right arrows to move between observed times, Home for first, End for latest." aria-controls="${inspectorId}" aria-describedby="${inspectorId}"></rect>
-  </svg><details class="chart-help"><summary>How to read this chart</summary><p class="usage-inspector-hint">Hover or tap to inspect a time. Use ←/→ to step through readings, Home/End for the range edges. Values come from the last reading at or before the cursor. Lines stop at the last poll; earlier readings are labeled.</p></details><div class="usage-inspector" id="${inspectorId}" aria-live="polite"></div>`;
+  </svg>${compact ? "" : `<details class="chart-help"><summary>How to read this chart</summary><p class="usage-inspector-hint">Hover or tap to inspect a time. Use ←/→ to step through readings, Home/End for the range edges. Values come from the last reading at or before the cursor. Lines stop at the last poll; earlier readings are labeled. An asterisk marks a cached or earlier reading.</p></details>`}<div class="usage-inspector${compact ? " sr-only" : ""}" id="${inspectorId}" aria-live="polite"></div>`;
   const target = host.querySelector(".usage-hover-layer");
   if (!target || !model.timestamps.length) return;
   const markerByAccount = new Map([...host.querySelectorAll(".usage-cursor-point")]
@@ -770,6 +887,7 @@ function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
       marker.setAttribute("cy", y(reading.value).toFixed(1));
       marker.removeAttribute("display");
     }
+    host.querySelector(".usage-point-labels").innerHTML = labelsMarkup(selectedTime);
     renderUsageInspector(model, selectedTime, inspectorId, visibleAccounts);
   };
   const indexAtPointer = (event) => {
@@ -859,9 +977,10 @@ function renderUsageHistory() {
       <small>${escapeHtml(label)}</small>
     </span>`).join("");
 
-  const renderChart = (host, key) => {
-    const model = buildUsageChartModel(chartHistories, key, startMs, endMs);
-    chartModels[key] = model;
+  const renderChart = (host, key, chartRange = state.usageHistoryRange) => {
+    if (!host) return;
+    const model = buildUsageChartModel(chartHistories, key, endMs - USAGE_HISTORY_RANGES[chartRange], endMs);
+    if (!host.classList.contains("compact-usage-chart")) chartModels[key] = model;
     const loading = state.accounts.some((account) => state.usageHistoryRequests.has(`${account.id}:${state.usageHistoryRange}`));
     if (!model.timestamps.length) {
       usageChartModels.delete(host);
@@ -873,8 +992,8 @@ function renderUsageHistory() {
     const cursorIndex = reconcileUsageCursorIndex(previousModel?.timestamps,
       state.usageHistoryCursorByChart.get(host.id), model.timestamps);
     state.usageHistoryCursorByChart.set(host.id, cursorIndex);
-    usageChartModels.set(host, { model, range: state.usageHistoryRange, visibleAccounts: state.usageHistoryVisibleAccounts, inspectorId });
-    renderUsageChart(host, model, state.usageHistoryRange, state.usageHistoryVisibleAccounts, inspectorId);
+    usageChartModels.set(host, { model, range: chartRange, visibleAccounts: state.usageHistoryVisibleAccounts, inspectorId });
+    renderUsageChart(host, model, chartRange, state.usageHistoryVisibleAccounts, inspectorId);
     if (model.timestamps.length) {
       renderUsageInspector(model, model.timestamps[state.usageHistoryCursorByChart.get(host.id)], inspectorId, state.usageHistoryVisibleAccounts);
     } else {
@@ -900,6 +1019,11 @@ function renderUsageHistory() {
   };
   renderChart(fiveHourChart, "fiveHourUsed");
   renderChart(weeklyChart, "weeklyUsed");
+  renderChart($("#overviewUsageChart"), "fiveHourUsed", "6h");
+  $("#overviewUsageLegend").innerHTML = state.accounts.filter(account => !state.usageHistoryVisibleAccounts || state.usageHistoryVisibleAccounts.has(account.id)).map(account => {
+    const index = state.accounts.findIndex(item => item.id === account.id);
+    return `<span><i class="usage-legend pattern-${index % USAGE_ACCOUNT_DASHES.length}" style="--account-color:${USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length]}"></i>${escapeHtml(account.label)}</span>`;
+  }).join("");
   legend.innerHTML = state.accounts.map((account, index) => {
     const selected = !state.usageHistoryVisibleAccounts || state.usageHistoryVisibleAccounts.has(account.id);
     const color = USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length];
@@ -1109,6 +1233,10 @@ function updateWindowSummary(dashboard = {}) {
     ? `${resetCredits.resetCreditsAvailable}${resetCredits.resetCreditsUpdatedAt ? ` (read ${new Date(resetCredits.resetCreditsUpdatedAt).toLocaleString()})` : ""}`
     : "Not reported";
   $("#windowResetExpiry").textContent = resetCreditExpiry(resetCredits).label;
+  const focusedCreditId = $("#accountResetCredits").contains(document.activeElement) ? document.activeElement.id : null;
+  $("#accountResetCredits").innerHTML = resetCreditStack(resetCredits, selectedAccountId(), Date.now(), "account");
+  syncResetCreditDecks();
+  if (focusedCreditId) document.getElementById(focusedCreditId)?.focus({ preventScroll: true });
   $("#lastPing").textContent = compactText(dashboard.lastUserMessage?.text);
   $("#lastReply").textContent = compactText(dashboard.lastAgentMessage?.text);
   $("#windowUsageLabel").textContent = Number.isFinite(remainingValue) ? `${remainingValue}% remaining` : "Usage unknown";
@@ -1173,9 +1301,8 @@ function renderAccounts() {
     state.loginSession = null;
     $("#loginOutput").textContent = "";
     $("#loginProgress").hidden = true;
-    $("#accountSettings").open = false;
-    $("#accountOverrides").open = false;
-    $(".account-danger").open = false;
+    $("#accountOverrides").close();
+    $("#accountDiagnostics").open = false;
     for (const id of ["accountMessage", "accountDetailsMessage", "accountOverridesMessage", "accountDangerMessage", "manualMessage", "runMessage", "loginMessage"]) feedback(id, "");
   }
   select.replaceChildren(...state.accounts.map((account) => new Option(account.label, account.id, false, account.id === selected?.id)));
@@ -1188,6 +1315,9 @@ function renderAccounts() {
       for (const [id, value] of Object.entries(draft.overrides)) $("#" + id).value = value;
     }
   } else if (selected?.auth?.loggedIn) void refreshModels(selected.id);
+  $("#accountRunSettingsTitle").textContent = `Run settings · ${selected?.label || "Account"}`;
+  const custom = selected?.settings || {};
+  $("#accountRunSettingsSummary").textContent = `${custom.scheduleTimes?.length ? `Custom times: ${custom.scheduleTimes.join(", ")}` : "Shared schedule"} · ${custom.model || "Shared model"}${custom.promptTemplate ? " · Custom prompt" : ""}`;
   $("#sendTarget").textContent = selected
     ? `To ${selected.label} · leave the prompt empty to use this account’s scheduled prompt.`
     : "Add an account to send a message.";
@@ -1200,20 +1330,20 @@ function updateAccountControls() {
   if (typeof document === "undefined") return;
   const account = state.accounts.find((item) => item.id === state.selectedAccountId);
   const signingIn = state.loginSession?.accountId === account?.id && state.loginSession?.status === "running";
-  for (const id of ["accountSelect", "addAccountOpenBtn", "saveAccountBtn", "saveAccountOverridesBtn", "accountEnabledInput", "logoutBtn", "removeAccountBtn"]) {
+  for (const id of ["accountSelect", "addAccountOpenBtn", "saveAccountBtn", "saveAccountOverridesBtn", "editAccountRunSettingsBtn", "accountEnabledInput", "logoutBtn", "removeAccountBtn"]) {
     const element = $("#" + id);
     if (element) element.disabled = Boolean(state.accountBusy || state.sendBusy || element.dataset.pending || (!account && id !== "addAccountOpenBtn") || (signingIn && ["logoutBtn", "removeAccountBtn"].includes(id)));
   }
   $("#deviceLoginBtn").disabled = Boolean(state.accountBusy || signingIn || !account);
   $("#removeAccountBtn").disabled ||= state.accounts.length <= 1;
-  $("#removeAccountBtn").title = state.accounts.length <= 1 ? "Keep at least one account in the console." : "";
+  $("#removeAccountBtn").title = state.accounts.length <= 1 ? "Keep at least one account in the dashboard." : "";
   $("#confirmRemoveAccountBtn").disabled = Boolean(state.accountBusy || state.sendBusy || !state.removalTarget || state.accounts.length <= 1);
   for (const id of ["closeRemoveAccountBtn", "cancelRemoveAccountBtn"]) $("#" + id).disabled = state.removalBusy;
   for (const id of ["accountDetailsForm", "accountOverridesForm"]) $("#" + id).inert = state.accountBusy;
   if (!state.sendBusy) {
-    $("#manualSendBtn").disabled = $("#runNowBtn").disabled = !account || !account.auth?.loggedIn;
+    $("#manualSendBtn").disabled = $("#runNowBtn").disabled = state.accountBusy || !account || !account.auth?.loggedIn;
   }
-  if (account && !account.auth?.loggedIn) $("#sendTarget").textContent = `Sign in to ${account.label} in Account console before sending.`;
+  if (account && !account.auth?.loggedIn) $("#sendTarget").textContent = `Sign in to ${account.label} in Accounts before sending.`;
 }
 
 async function refreshStatus() {
@@ -1276,11 +1406,11 @@ async function refreshAllState({ interactive = true } = {}) {
 
     refreshFeedbackTimer = setTimeout(() => {
       if (!button.disabled) {
-        button.textContent = "Refresh";
+        button.textContent = "Refresh account state";
       }
     }, 3000);
   } else {
-    button.textContent = "Refresh";
+    button.textContent = "Refresh account state";
     button.title = upstreamError
       ? `Automatic refresh failed: ${upstreamError.message}`
       : "Quota and page state refresh automatically while this page is visible.";
@@ -1635,6 +1765,22 @@ function renderAlertsSummary() {
     ? settings.telegramAlertsEnabled ? `${eventCount} event types configured · ${reminders} reset reminder${reminders === 1 ? "" : "s"}.`
       : "Telegram alerts are off. Your notification settings are saved."
     : "Configure Telegram credentials on the server to enable notifications.";
+  const rules = settings.telegramAlertRules || {};
+  const ruleTimes = key => {
+    const count = (rules[key] || []).length;
+    return `${count} notification time${count === 1 ? "" : "s"}`;
+  };
+  const thresholds = settings.telegramQuotaWarningPercents || [];
+  const resetReminders = Object.values(settings.telegramQuotaReminderHours || {}).reduce((count, times) => count + times.length, 0);
+  const expiryReminders = (settings.telegramResetReminderHours || []).length;
+  const summary = [
+    ["Quota warnings", thresholds.length ? `At ${thresholds.map(value => `${value}%`).join(", ")} used · ${ruleTimes("quota-threshold")}` : "No warning thresholds"],
+    ["Quota resets", `${resetReminders} reminders before resets · ${ruleTimes("quota-reset")} after reset`],
+    ["Reset credits", `${settings.telegramAlertResetExpiry ? `${expiryReminders} expiry reminder${expiryReminders === 1 ? "" : "s"}` : "Expiry reminders off"} · ${ruleTimes("reset-credit-count")} when the count changes`],
+    ["Reserve status", `Active: ${ruleTimes("reserve-active")} · Recovered: ${ruleTimes("reserve-recovered")}`],
+    ["Failures", `Sign-in: ${ruleTimes("auth-failure")} · Scheduled sends: ${ruleTimes("send-failure")}`]
+  ];
+  $("#alertRulesSummary").innerHTML = summary.map(([title, detail], index) => `<div class="alert-summary-row"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(detail)}</p></div><button type="button" data-edit-alert-section="${index}" aria-label="Edit ${escapeHtml(title.toLowerCase())}">Edit</button></div>`).join("");
 }
 
 function markAlertsDirty() {
@@ -2056,7 +2202,8 @@ function startClock() {
     }
     const dateLine = $("#subtitle");
     if (dateLine) {
-      dateLine.textContent = `${parts.weekday} ${parts.day} ${parts.month} · ${timezone.replaceAll("_", " ").replaceAll("/", " / ")}`.toUpperCase();
+      dateLine.textContent = `${parts.weekday}, ${parts.day} ${parts.month} ${parts.year}`;
+      $("#clockTimezone").textContent = timezone.replaceAll("_", " ");
     }
   };
   render();
@@ -2079,6 +2226,7 @@ function renderNextSend(nextLocal, schedulerEnabled) {
     }
     day = nextLocal.startsWith("tomorrow") ? "TOMORROW" : "TODAY";
   }
+  $(".next-module").dataset.state = schedulerEnabled ? "enabled" : "paused";
   const signature = `${time}|${day}`;
   if (strip.dataset.signature === signature) {
     return;
@@ -2178,7 +2326,7 @@ function renderDepartures() {
   ].sort();
   host.style.setProperty("--board-columns", String(Math.max(times.length, 1)));
   if (!accounts.length || !times.length) {
-    host.innerHTML = '<p class="board-empty">No enabled accounts with schedule times. Enable one in Account console or Schedule.</p>';
+    host.innerHTML = '<p class="board-empty">No enabled accounts with schedule times. Enable one in Accounts or Schedule.</p>';
     return;
   }
   const head = `<div class="board-row board-head"><span class="board-account">account</span>${times
@@ -2216,6 +2364,14 @@ function compareFleetAccounts(a, b, now = Date.now()) {
     }
   }
   return String(a.label).localeCompare(String(b.label));
+}
+
+function quotaLevel(remaining) {
+  return !Number.isFinite(remaining) ? "unknown" : remaining > 70 ? "good" : remaining >= 30 ? "caution" : "low";
+}
+
+function resetIsSoon(resetMs, now) {
+  return Number.isFinite(resetMs) && resetMs > now && resetMs - now < 60 * 60 * 1000;
 }
 
 function renderFleet() {
@@ -2289,12 +2445,17 @@ function renderFleet() {
   }
   state.fleetSignature = fleetSignature;
 
-  $("#fleetMeanFree").textContent = readings.length
-    ? `${Math.round(readings.reduce((sum, entry) => sum + effectiveWindow(entry.win, now).free, 0) / readings.length)}%`
-    : "—";
-  $("#fleetWeeklyMeanFree").textContent = weeklyReadings.length
-    ? `${Math.round(weeklyReadings.reduce((sum, entry) => sum + entry.win.secondary.free, 0) / weeklyReadings.length)}%`
-    : "—";
+  const meanFree = readings.length
+    ? Math.round(readings.reduce((sum, entry) => sum + effectiveWindow(entry.win, now).free, 0) / readings.length)
+    : null;
+  const weeklyMeanFree = weeklyReadings.length
+    ? Math.round(weeklyReadings.reduce((sum, entry) => sum + entry.win.secondary.free, 0) / weeklyReadings.length)
+    : null;
+  for (const [id, remaining] of [["fleetMeanFree", meanFree], ["fleetWeeklyMeanFree", weeklyMeanFree]]) {
+    const value = $("#" + id);
+    value.textContent = remaining === null ? "—" : `${remaining}%`;
+    value.closest(".fleet-stat").dataset.quotaLevel = quotaLevel(remaining);
+  }
   $("#fleetReserveReady").textContent = reserveReadings.length
     ? `${reserveReady.length}/${reserveReadings.length}`
     : "—";
@@ -2335,8 +2496,9 @@ function renderFleet() {
     fleetBadge.className = `badge ${nearLimit.length || authIssues.length ? "bad" : staleReadings.length || loggedOut.length ? "warn" : "ok"}`;
   }
 
+  const focusedCreditId = rowsHost.contains(document.activeElement) ? document.activeElement.id : null;
   rowsHost.innerHTML = !accounts.length
-    ? '<p class="board-empty">No accounts configured yet. Add one in Account console.</p>'
+    ? '<p class="board-empty">No accounts configured yet. Add one in Accounts.</p>'
     : accounts.map((account) => {
         const win = accountWindow(account);
         const resetCredits = accountResetCredits(account);
@@ -2344,34 +2506,18 @@ function renderFleet() {
         let rowClasses = "strip-row";
         let trackCell;
         let metaCell = "";
-        const creditExpiry = resetCreditExpiry(resetCredits);
-        const creditExpiryDates = resetCredits.resetCreditsAvailable === 0
-          ? ["None available"]
-          : Array.isArray(resetCredits.resetCreditExpirations) && resetCredits.resetCreditExpirations.length
-            ? [
-                ...resetCredits.resetCreditExpirations.map((expiresAt) => Number.isSafeInteger(expiresAt)
-                  ? new Date(expiresAt * 1000).toLocaleDateString([], { month: "short", day: "numeric" })
-                  : expiresAt === null ? "No expiry" : "Expiry unknown"),
-                ...Array(Math.max(0, resetCredits.resetCreditsAvailable - resetCredits.resetCreditExpirations.length)).fill("Expiry unknown")
-              ]
-            : ["Expiry unknown"];
-        const creditExpiryShort = creditExpiryDates.join(" · ");
         const labelCell = `
           <span class="strip-label-stack">
-            <span class="strip-label" title="${escapeHtml(account.label)}">${escapeHtml(account.label)}</span>
+            <span class="strip-label"><a class="account-name-link" href="#account" data-open-account="${escapeHtml(account.id)}">${escapeHtml(account.label)}</a></span>
+            <span class="account-row-state">${account.enabled ? "Scheduled sends on" : "Scheduled sends off"}</span>
             ${win?.planType && win.planType !== "unknown" ? `<span class="mini-badge neutral strip-plan">${escapeHtml(win.planType)}</span>` : ""}
-            ${Number.isSafeInteger(resetCredits.resetCreditsAvailable) ? `
-              <span class="reset-credit-card" title="${escapeHtml(`${creditExpiry.title}. ${resetCredits.resetCreditsUpdatedAt ? `Count read ${new Date(resetCredits.resetCreditsUpdatedAt).toLocaleString()}` : "Read time unavailable"}`)}">
-                <span class="reset-credit-count">${resetCredits.resetCreditsAvailable} reset${resetCredits.resetCreditsAvailable === 1 ? "" : "s"}</span>
-                <span class="reset-credit-dates"><b>${resetCredits.resetCreditsAvailable ? "Expires" : "Status"}</b> ${escapeHtml(creditExpiryShort)}</span>
-              </span>` : ""}
           </span>`;
         if (account.auth?.authIssue) {
           rowClasses += " muted";
-          trackCell = `<span class="strip-note" title="${escapeHtml(account.auth.detail || "Authentication failed")}">authentication issue - re-login from Account console</span>`;
+          trackCell = `<span class="strip-note" title="${escapeHtml(account.auth.detail || "Authentication failed")}">authentication issue - re-login from Accounts</span>`;
         } else if (!loggedIn) {
           rowClasses += " muted";
-          trackCell = '<span class="strip-note">logged out — re-login from Account console</span>';
+          trackCell = '<span class="strip-note">logged out — re-login from Accounts</span>';
         } else if (!win) {
           rowClasses += " muted";
           trackCell = '<span class="strip-note">no reading yet — waiting for a live quota refresh</span>';
@@ -2392,7 +2538,7 @@ function renderFleet() {
           trackCell = `
             <div class="strip-cell">
               ${current ? `
-              <div class="strip-track" role="img" aria-label="${escapeHtml(
+              <div class="strip-track" data-quota-level="${quotaLevel(fresh ? current.free : null)}" role="img" aria-label="${escapeHtml(
                 fresh
                   ? `${account.label}: ${current.free}% of the limiting quota remaining`
                   : `${account.label}: stale reading, last reported ${current.free}% remaining`
@@ -2402,7 +2548,7 @@ function renderFleet() {
               ${win.secondary?.hasData ? `
               <div class="strip-week ${Number(win.secondary.resetsAt) * 1000 > now ? "" : "stale"}">
                 <span class="week-tag">wk</span>
-                <div class="week-track" role="img" aria-label="${escapeHtml(
+                <div class="week-track" data-quota-level="${quotaLevel(Number(win.secondary.resetsAt) * 1000 > now ? win.secondary.free : null)}" role="img" aria-label="${escapeHtml(
                   Number(win.secondary.resetsAt) * 1000 > now
                     ? `${account.label} weekly window: ${win.secondary.free}% remaining`
                     : `${account.label} weekly window: stale reading, last reported ${win.secondary.free}% remaining`
@@ -2419,7 +2565,7 @@ function renderFleet() {
               ${reserve?.hasData ? `
               <div class="strip-week strip-reserve reserve-${reserveMode}">
                 <span class="week-tag">reserve</span>
-                <div class="week-track" role="img" aria-label="${escapeHtml(
+                <div class="week-track" data-quota-level="${quotaLevel(reserveMode !== "stale" ? reserve.free : null)}" role="img" aria-label="${escapeHtml(
                   `${account.label} Reserve weekly allowance: ${reserve.free}% remaining, ${reserveMode}`
                 )}">
                   <div class="week-fill" style="width:${reserve.free}%"></div>
@@ -2440,8 +2586,11 @@ function renderFleet() {
               }</span>
             </div>` : "";
         }
-        return `<div class="${rowClasses}">${labelCell}${trackCell}${metaCell}</div>`;
+        return `<div class="${rowClasses}" data-account-row="${escapeHtml(account.id)}">${labelCell}${trackCell}${metaCell}${resetCreditStack(resetCredits, account.id, now)}</div>`;
       }).join("");
+
+  filterAccountRows();
+  if (focusedCreditId) document.getElementById(focusedCreditId)?.focus({ preventScroll: true });
 
   const weeklyHorizonLanes = accountReadings.map(({ account, win }) => {
     if (!account.auth?.loggedIn) {
@@ -2525,6 +2674,18 @@ function renderFleet() {
 
 function tickFleet() {
   const now = Date.now();
+  for (const card of document.querySelectorAll(".reset-credit-stack[data-credit-account]")) {
+    const account = state.accounts.find(item => item.id === card.dataset.creditAccount);
+    if (!account) continue;
+    const credits = accountResetCredits(account);
+    if (card.dataset.creditSignature !== JSON.stringify([resetCreditPresentation(credits, now), resetCreditItems(credits, now)])) {
+      const focusedCreditId = card.contains(document.activeElement) ? document.activeElement.id : null;
+      card.outerHTML = resetCreditStack(credits, account.id, now, card.dataset.creditContext);
+      if (focusedCreditId) document.getElementById(focusedCreditId)?.focus({ preventScroll: true });
+    }
+  }
+  syncResetCreditDecks();
+
 
   const fleetUpdated = $("#fleetUpdated");
   const updatedAt = Number(fleetUpdated?.dataset.updatedAt);
@@ -2546,6 +2707,11 @@ function tickFleet() {
   document.querySelectorAll("#fleetRows [data-resets]").forEach((el) => {
     const resetMs = Number(el.dataset.resets) * 1000;
     el.textContent = `${fmtClockTime(resetMs)} · ${fmtCountdown(resetMs - now)}`;
+    el.classList.toggle("reset-soon", resetIsSoon(resetMs, now));
+    if (resetMs <= now) {
+      const track = el.closest(".strip-row")?.querySelector(".strip-track");
+      if (track) track.dataset.quotaLevel = "unknown";
+    }
     el.title = resetMs > now
       ? "Window resets at this time"
       : "Reading expired; waiting for Codex to report the next window";
@@ -2556,6 +2722,11 @@ function tickFleet() {
     const stale = resetMs <= now;
     const row = el.closest(".strip-week");
     row?.classList.toggle("stale", stale);
+    el.classList.toggle("reset-soon", resetIsSoon(resetMs, now));
+    if (stale) {
+      const track = row?.querySelector(".week-track");
+      if (track) track.dataset.quotaLevel = "unknown";
+    }
     const free = row?.querySelector("[data-week-free]");
     if (free) {
       free.textContent = `${free.dataset.weekFree}% ${stale ? "last" : "free"}`;
@@ -2574,6 +2745,7 @@ function tickFleet() {
     .map((account) => effectiveWindow(accountWindow(account), now)?.resetsAt)
     .filter((resetsAt) => Number.isFinite(resetsAt) && resetsAt * 1000 > now)
     .sort((a, b) => a - b)[0];
+  $("#fleetNextReset").closest(".fleet-stat").classList.toggle("reset-soon", resetIsSoon(nextResetsAt * 1000, now));
   if (Number.isFinite(nextResetsAt)) {
     $("#fleetNextReset").textContent = fmtClockTime(nextResetsAt * 1000);
     $("#fleetNextResetLabel").textContent = `next reset · ${fmtCountdown(nextResetsAt * 1000 - now)}`;
@@ -2718,7 +2890,7 @@ async function runNow(prompt = null) {
 }
 
 async function sendMessage(button, messageId, prompt = null) {
-  if (state.sendBusy) return;
+  if (state.sendBusy || state.accountBusy) return;
   state.sendBusy = true;
   updateAccountControls();
   $("#runNowBtn").disabled = $("#manualSendBtn").disabled = true;
@@ -2820,7 +2992,138 @@ async function removeConfirmedAccount() {
   }
 }
 
+function resetCreditCapacity(width, edge) {
+  return Math.max(1, Math.min(4, 1 + Math.floor((width - 160) / edge)));
+}
+
+let resetCreditResizeObserver;
+const observedResetCreditStacks = new Set();
+
+function syncResetCreditDecks() {
+  const stacks = new Set(document.querySelectorAll(".reset-credit-stack"));
+  if (!resetCreditResizeObserver && typeof ResizeObserver !== "undefined") {
+    resetCreditResizeObserver = new ResizeObserver(entries => {
+      for (const { target } of entries) layoutResetCreditDeck(target);
+    });
+  }
+  for (const stack of observedResetCreditStacks) {
+    if (stacks.has(stack)) continue;
+    resetCreditResizeObserver?.unobserve(stack);
+    observedResetCreditStacks.delete(stack);
+  }
+  for (const stack of stacks) {
+    if (!observedResetCreditStacks.has(stack)) {
+      observedResetCreditStacks.add(stack);
+      resetCreditResizeObserver?.observe(stack);
+    }
+    layoutResetCreditDeck(stack);
+  }
+}
+
+function layoutResetCreditDeck(stack) {
+  const key = `${stack.dataset.creditContext}:${stack.dataset.creditAccount}`;
+  selectResetCredit(stack, state.resetCreditHovers.get(key) ?? state.resetCreditSelections.get(key) ?? 0);
+}
+
+function selectResetCredit(stack, index, persist = false) {
+  const cards = [...stack.querySelectorAll(".reset-credit-card")];
+  if (!cards.length) return;
+  const selected = Math.max(0, Math.min(cards.length - 1, index));
+  const key = `${stack.dataset.creditContext}:${stack.dataset.creditAccount}`;
+  if (persist) state.resetCreditSelections.set(key, selected);
+  const deck = stack.querySelector(".reset-credit-deck");
+  const width = deck.getBoundingClientRect().width;
+  const edge = parseFloat(getComputedStyle(deck).getPropertyValue("--credit-edge")) || 24;
+  const capacity = width > 0 ? resetCreditCapacity(width, edge) : Number(stack.dataset.creditCapacity) || 2;
+  const start = Math.floor(selected / capacity) * capacity;
+  const end = Math.min(cards.length, start + capacity);
+  stack.dataset.creditCapacity = String(capacity);
+  stack.dataset.creditStart = String(start);
+  for (const card of cards) {
+    const cardIndex = Number(card.dataset.creditIndex);
+    const active = Number(card.dataset.creditIndex) === selected;
+    const wasFront = card.dataset.front === "true";
+    card.hidden = cardIndex < start || cardIndex >= end;
+    card.setAttribute("aria-pressed", String(active));
+    card.tabIndex = active ? 0 : -1;
+    card.dataset.front = String(active);
+    card.dataset.creditSide = cardIndex < selected ? "before" : "after";
+    card.dataset.creditFirst = String(cardIndex === start);
+    card.dataset.creditLast = String(cardIndex === end - 1);
+    card.style.setProperty("--credit-before", cardIndex - start);
+    card.style.setProperty("--credit-after", end - 1 - cardIndex);
+    card.style.setProperty("--credit-layer", cardIndex < selected ? cardIndex - start : end - cardIndex);
+    card.querySelector(".reset-credit-content").setAttribute("aria-hidden", String(!active));
+    if (active !== wasFront) {
+      for (const animation of card.getAnimations()) if (animation.id === "reset-credit-slide") animation.cancel();
+      if (active && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        card.animate([{ transform: "translate(12px, 0)" }, { transform: "translate(0, -2px)" }], {
+          id: "reset-credit-slide", duration: 520, easing: "cubic-bezier(.25,.65,.3,1)"
+        });
+      }
+    }
+  }
+  const pagination = stack.querySelector(".reset-credit-pagination");
+  if (pagination) {
+    pagination.hidden = cards.length <= capacity;
+    const label = pagination.querySelector(".reset-credit-page-label");
+    const text = `${start + 1}–${end} of ${cards.length}`;
+    if (label.textContent !== text) label.textContent = text;
+    pagination.querySelector('[data-credit-page="previous"]').disabled = start === 0;
+    pagination.querySelector('[data-credit-page="next"]').disabled = end === cards.length;
+  }
+}
+
+function bindResetCreditDecks() {
+  document.addEventListener("click", event => {
+    const button = event.target.closest("[data-credit-page]");
+    if (!button || button.disabled) return;
+    const stack = button.closest(".reset-credit-stack");
+    const key = `${stack.dataset.creditContext}:${stack.dataset.creditAccount}`;
+    state.resetCreditHovers.delete(key);
+    const offset = Number(stack.dataset.creditCapacity) * (button.dataset.creditPage === "next" ? 1 : -1);
+    selectResetCredit(stack, Number(stack.dataset.creditStart) + offset, true);
+  });
+  document.addEventListener("pointerover", event => {
+    const tab = event.target.closest(".reset-credit-card[role=button]");
+    if (!tab || event.pointerType !== "mouse" || tab.contains(event.relatedTarget)) return;
+    const stack = tab.closest(".reset-credit-stack");
+    const index = Number(tab.dataset.creditIndex);
+    state.resetCreditHovers.set(`${stack.dataset.creditContext}:${stack.dataset.creditAccount}`, index);
+    selectResetCredit(stack, index);
+  });
+  document.addEventListener("pointerout", event => {
+    const stack = event.target.closest(".reset-credit-stack");
+    if (!stack || stack.contains(event.relatedTarget)) return;
+    const key = `${stack.dataset.creditContext}:${stack.dataset.creditAccount}`;
+    state.resetCreditHovers.delete(key);
+    selectResetCredit(stack, state.resetCreditSelections.get(key) ?? 0);
+  });
+  for (const type of ["click", "focusin"]) document.addEventListener(type, event => {
+    const tab = event.target.closest(".reset-credit-card[role=button]");
+    if (!tab) return;
+    selectResetCredit(tab.closest(".reset-credit-stack"), Number(tab.dataset.creditIndex), true);
+  });
+  document.addEventListener("keydown", event => {
+    const tab = event.target.closest(".reset-credit-card[role=button]");
+    if (!tab) return;
+    const stack = tab.closest(".reset-credit-stack");
+    const tabs = [...stack.querySelectorAll(".reset-credit-card")];
+    const index = Number(tab.dataset.creditIndex);
+    const next = ["Enter", " "].includes(event.key) ? index : event.key === "Home" || event.key === "Escape" ? 0 : event.key === "End" ? tabs.length - 1
+      : ["ArrowRight", "ArrowDown"].includes(event.key) ? (index + 1) % tabs.length
+        : ["ArrowLeft", "ArrowUp"].includes(event.key) ? (index - 1 + tabs.length) % tabs.length : null;
+    if (next === null) return;
+    event.preventDefault();
+    state.resetCreditHovers.delete(`${stack.dataset.creditContext}:${stack.dataset.creditAccount}`);
+    selectResetCredit(stack, next, true);
+    tabs[next].focus({ preventScroll: true });
+    tabs[next].scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+}
+
 function bindActions() {
+  bindResetCreditDecks();
   $("#usageHistoryRanges").addEventListener("click", (event) => {
     const button = event.target.closest("[data-range]");
     if (!button || !USAGE_HISTORY_RANGES[button.dataset.range]) {
@@ -2859,14 +3162,31 @@ function bindActions() {
     feedback("scheduleMessage", "");
     $("#scheduleDialog").close();
   });
+  let alertsReturnSection = null;
   $("#editAlertsBtn").addEventListener("click", () => {
+    alertsReturnSection = null;
     if (!state.alertsDirty) { fillSettings(state.settings); feedback("alertsFormMessage", ""); }
     $("#alertsDialog").showModal();
+  });
+  $("#alertRulesSummary").addEventListener("click", event => {
+    const button = event.target.closest("[data-edit-alert-section]");
+    if (!button) return;
+    $("#editAlertsBtn").click();
+    alertsReturnSection = button.dataset.editAlertSection;
+    const group = document.querySelectorAll("#alertsEditor .telegram-alert-section")[Number(alertsReturnSection)];
+    if (group) {
+      group.open = true;
+      group.querySelector("summary").focus();
+      group.scrollIntoView({ block: "nearest", behavior: "instant" });
+    }
   });
   $("#closeAlertsBtn").addEventListener("click", () => {
     if (!$("#alertsForm button[type=submit]").disabled) $("#alertsDialog").close();
   });
-  $("#alertsDialog").addEventListener("close", () => $("#editAlertsBtn").focus({ preventScroll: true }));
+  $("#alertsDialog").addEventListener("close", () => {
+    const opener = alertsReturnSection === null ? null : document.querySelector(`[data-edit-alert-section="${alertsReturnSection}"]`);
+    (opener || $("#editAlertsBtn")).focus({ preventScroll: true });
+  });
   $("#alertsDialog").addEventListener("cancel", (event) => {
     if ($("#alertsForm button[type=submit]").disabled) event.preventDefault();
   });
@@ -3066,6 +3386,12 @@ function bindActions() {
     feedback("accountOverridesMessage", "Unsaved changes.");
   });
   $("#accountOverridesForm").addEventListener("submit", saveAccountOverrides);
+  $("#editAccountRunSettingsBtn").addEventListener("click", () => $("#accountOverrides").showModal());
+  $("#closeAccountRunSettingsBtn").addEventListener("click", () => {
+    if (!state.accountBusy) $("#accountOverrides").close();
+  });
+  $("#accountOverrides").addEventListener("cancel", event => { if (state.accountBusy) event.preventDefault(); });
+  $("#accountOverrides").addEventListener("close", () => $("#editAccountRunSettingsBtn").focus({ preventScroll: true }));
   $("#removeAccountBtn").addEventListener("click", () => {
     const account = state.accounts.find(item => item.id === selectedAccountId());
     if (!account || state.accountBusy || state.sendBusy || state.accounts.length <= 1) return;
@@ -3084,9 +3410,10 @@ function bindActions() {
     if (state.removalBusy) event.preventDefault();
   });
   $("#removeAccountDialog").addEventListener("close", () => {
+    const targetStillExists = state.accounts.some(account => account.id === state.removalTarget?.id);
     state.removalTarget = null;
     const opener = $("#removeAccountBtn");
-    (opener.getClientRects().length && !opener.disabled ? opener : $("#accountSelect")).focus({ preventScroll: true });
+    (targetStillExists && opener.getClientRects().length && !opener.disabled ? opener : $("#accountSelect")).focus({ preventScroll: true });
   });
   $("#accountEnabledInput").addEventListener("change", (event) => {
     const enabled = event.target.checked;
@@ -3118,86 +3445,155 @@ function bindActions() {
       $("#addAccountDialog").close();
       await refreshStatus();
       await refreshLoginSession();
-      location.hash = "#account";
+      navigateDashboard("#account");
       $("#accountAccess").scrollIntoView({ block: "center", behavior: "smooth" });
       feedback("accountMessage", "Account added. Sign in to connect it.", "success");
     }).then(() => $("#deviceLoginBtn").focus({ preventScroll: true }));
   });
 }
 
-function visibleDockSection(bounds, currentId, viewportBottom, anchor = 16) {
-  const visible = bounds.filter((section) => section.bottom > anchor && section.top < viewportBottom);
-  if (!visible.length) return currentId;
-  const covering = visible.filter((section) => section.top <= anchor);
-  const candidates = covering.length ? covering : visible;
-  const top = covering.length ? Math.max(...candidates.map((section) => section.top))
-    : Math.min(...candidates.map((section) => section.top));
-  const row = candidates.filter((section) => Math.abs(section.top - top) < 2);
-  return row.find((section) => section.id === currentId)?.id || row[0].id;
+const DASHBOARD_VIEWS = {
+  fleet: ["Overview", "Account capacity and today’s scheduled sends."],
+  account: ["Accounts", "Manage sign-in, account settings, and messages."],
+  usage: ["Usage", "Compare quota history and inspect recorded readings."],
+  schedule: ["Schedule", "Control when and how scheduled messages are sent."],
+  alerts: ["Alerts", "Choose the events and reminders you want to hear about."],
+  activity: ["Activity", "Follow runs, replies, and changes across your accounts."]
+};
+
+function dashboardView(hash) {
+  const id = hash.replace(/^#/, "");
+  if (id === "send") return "account";
+  if (id === "board") return "fleet";
+  return Object.hasOwn(DASHBOARD_VIEWS, id) ? id : "fleet";
 }
 
-function initMobileDock() {
-  const links = [...document.querySelectorAll(".mobile-dock a")];
-  const sections = links
-    .map((link) => document.getElementById(link.dataset.section))
-    .filter(Boolean);
-  if (!links.length || !sections.length) {
-    return;
+function filterAccountRows() {
+  const query = $("#accountSearchInput")?.value.trim().toLocaleLowerCase() || "";
+  const filter = $("#accountFilterInput")?.value || "all";
+  let count = 0;
+  for (const row of document.querySelectorAll("[data-account-row]")) {
+    const account = state.accounts.find(item => item.id === row.dataset.accountRow);
+    const needsAttention = !account?.auth?.loggedIn || account.auth.authIssue || row.classList.contains("near") || row.classList.contains("stale");
+    const visible = (!query || account?.label.toLocaleLowerCase().includes(query))
+      && (filter !== "scheduled" || account?.enabled)
+      && (filter !== "attention" || needsAttention);
+    row.hidden = !visible;
+    if (visible) count++;
   }
-  let currentId;
-  let navigationId = null;
-  let destinationSeen = false;
-  let frame = 0;
-  const setCurrent = (id) => {
-    currentId = id;
+  const counter = $("#accountResultCount");
+  if (counter) counter.textContent = `${count} of ${state.accounts.length}`;
+  let empty = $("#noAccountResults");
+  if (!empty) {
+    empty = document.createElement("p");
+    empty.id = "noAccountResults";
+    empty.className = "no-account-results";
+    $("#fleetRows")?.after(empty);
+  }
+  empty.hidden = count > 0 || state.accounts.length === 0;
+  empty.textContent = "No accounts match. Try another name or filter.";
+}
+
+function navigateDashboard(hash) {
+  if (location.hash !== hash) history.pushState(null, "", hash);
+  window.dispatchEvent(new Event("dashboardnavigate"));
+}
+
+function initDashboardNavigation() {
+  const nav = $(".mobile-dock");
+  const links = [...nav.querySelectorAll("a")];
+  const indicator = document.createElement("span");
+  indicator.className = "nav-indicator";
+  indicator.setAttribute("aria-hidden", "true");
+  indicator.hidden = true;
+  nav.prepend(indicator);
+  let indicatorMode = null;
+  const updateIndicator = () => {
+    const active = links.find(link => link.getAttribute("aria-current") === "page");
+    if (!active) return;
+    const underline = getComputedStyle(nav).getPropertyValue("--nav-indicator-style").trim() === "underline";
+    const mode = underline ? "underline" : "pill";
+    const navBounds = nav.getBoundingClientRect();
+    const bounds = active.getBoundingClientRect();
+    const inset = underline ? 8 : 0;
+    const left = bounds.left - navBounds.left - nav.clientLeft + nav.scrollLeft + inset;
+    const top = (underline ? bounds.bottom - 2 : bounds.top) - navBounds.top - nav.clientTop + nav.scrollTop;
+    // First paint and breakpoint changes snap into place; section changes slide.
+    const snap = indicator.hidden || indicatorMode !== mode;
+    if (snap) indicator.style.transition = "none";
+    indicator.style.width = `${Math.max(0, bounds.width - inset * 2)}px`;
+    indicator.style.height = `${underline ? 3 : bounds.height}px`;
+    indicator.style.transform = `translate(${left}px, ${top}px)`;
+    indicator.hidden = false;
+    indicatorMode = mode;
+    if (snap) {
+      indicator.getBoundingClientRect();
+      indicator.style.removeProperty("transition");
+    }
+  };
+  let indicatorFrame = 0;
+  const scheduleIndicator = () => {
+    if (indicatorFrame) return;
+    indicatorFrame = requestAnimationFrame(() => { indicatorFrame = 0; updateIndicator(); });
+  };
+  window.addEventListener("resize", scheduleIndicator);
+  if (typeof ResizeObserver !== "undefined") {
+    const observer = new ResizeObserver(scheduleIndicator);
+    observer.observe(nav);
+    links.forEach(link => observer.observe(link));
+  }
+  document.fonts?.ready.then(scheduleIndicator);
+  const render = ({ focus = false } = {}) => {
+    const view = dashboardView(location.hash);
+    for (const panel of document.querySelectorAll("[data-view]")) panel.hidden = panel.dataset.view !== view;
     for (const link of links) {
-      if (link.dataset.section === id) {
-        link.setAttribute("aria-current", "location");
-      } else {
-        link.removeAttribute("aria-current");
+      if (link.dataset.section === view) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    }
+    updateIndicator();
+    const [title, description] = DASHBOARD_VIEWS[view];
+    $("#pageTitle").textContent = title;
+    $("#pageDescription").textContent = description;
+    document.title = `${title} · Codex Window Runner`;
+    // Keep a predictable start position; focus moves only after navigation, not polling.
+    if (focus) {
+      $("#mainContent").focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: "instant" });
+      if (location.hash === "#send") {
+        $("#manualPromptInput").focus({ preventScroll: true });
+        $("#send").scrollIntoView({ block: "start", behavior: "instant" });
       }
     }
   };
-  const selectDestination = (id) => {
-    if (!sections.some((section) => section.id === id)) return;
-    navigationId = id;
-    destinationSeen = false;
-    setCurrent(id);
-  };
-  const update = () => {
-    frame = 0;
-    const viewportBottom = document.querySelector(".mobile-dock").getBoundingClientRect().top;
-    const bounds = sections.map((section) => {
-      const rect = section.getBoundingClientRect();
-      return { id: section.id, top: rect.top, bottom: rect.bottom };
-    });
-    if (navigationId) {
-      const destination = bounds.find((section) => section.id === navigationId);
-      const visible = destination.bottom > 16 && destination.top < viewportBottom;
-      if (visible) destinationSeen = true;
-      if (visible || !destinationSeen) return;
-      navigationId = null;
+  window.addEventListener("dashboardnavigate", () => render({ focus: true }));
+  // The browser applies fragment scrolling during history traversal; restore the view afterward.
+  window.addEventListener("hashchange", () => requestAnimationFrame(() => render({ focus: true })));
+  document.addEventListener("click", event => {
+    const link = event.target.closest('a[href^="#"]');
+    if (event.defaultPrevented || !link || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (link.hash === "#mainContent") {
+      event.preventDefault();
+      $("#mainContent").focus({ preventScroll: true });
+      $("#mainContent").scrollIntoView({ block: "start", behavior: "instant" });
+      return;
     }
-    setCurrent(visibleDockSection(bounds, currentId, viewportBottom));
-  };
-  const scheduleUpdate = () => { if (!frame) frame = requestAnimationFrame(update); };
-  const resumeTracking = () => { navigationId = null; scheduleUpdate(); };
-  links.forEach((link) => link.addEventListener("click", (event) => {
-    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    selectDestination(link.dataset.section);
-    scheduleUpdate();
-  }));
-  window.addEventListener("hashchange", () => { selectDestination(location.hash.slice(1)); scheduleUpdate(); });
-  window.addEventListener("scroll", scheduleUpdate, { passive: true });
-  window.addEventListener("resize", scheduleUpdate);
-  window.addEventListener("wheel", resumeTracking, { passive: true });
-  window.addEventListener("touchmove", resumeTracking, { passive: true });
-  window.addEventListener("keydown", (event) => {
-    if (event.target.closest("input, select, textarea, [contenteditable], .usage-hover-layer")) return;
-    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) resumeTracking();
+    const id = link.hash.slice(1);
+    if (!Object.hasOwn(DASHBOARD_VIEWS, id) && !["send", "board"].includes(id)) return;
+    event.preventDefault();
+    navigateDashboard(link.hash);
   });
-  selectDestination(location.hash.slice(1) || "fleet");
-  scheduleUpdate();
+  $("#accountSearchInput").addEventListener("input", filterAccountRows);
+  $("#accountFilterInput").addEventListener("change", filterAccountRows);
+  $("#fleetRows").addEventListener("click", async event => {
+    const link = event.target.closest("[data-open-account]");
+    if (!link || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (state.accountBusy || state.sendBusy) return;
+    // Switch the view first so a selection error remains visible in its account context.
+    navigateDashboard("#account");
+    await selectAccount(link.dataset.openAccount);
+  });
+  render({ focus: location.hash === "#send" });
 }
 
 function registerServiceWorker() {
@@ -3214,7 +3610,7 @@ async function init() {
   initTheme();
   try { state.hiddenActivityIds = new Set(JSON.parse(sessionStorage.getItem("window-runner:hidden-activity") || "[]")); } catch {}
   bindActions();
-  initMobileDock();
+  initDashboardNavigation();
   registerServiceWorker();
   startClock();
   const hydrated = hydrateStatusSnapshot();
@@ -3247,6 +3643,8 @@ if (typeof document !== "undefined") {
 
 export {
   schedulePromptPreview,
+  dashboardView,
+  positionUsageLabels,
   loginPresentation,
   activityTone,
   shouldShowEvent,
@@ -3260,11 +3658,14 @@ export {
   reconcileUsageCursorIndex,
   reserveState,
   resetCreditExpiry,
+  resetCreditPresentation,
+  resetCreditItems,
+  resetCreditCapacity,
+  resetIsSoon,
   snapshotDashboard,
   usageChartTicks,
   usageChartValueAt,
   usageFree,
   usageInsightStats,
-  usageObservationAt,
-  visibleDockSection
+  usageObservationAt
 };

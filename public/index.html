@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Codex Window Runner</title>
-    <meta name="description" content="Private mobile operations console for Codex account windows and scheduled sends.">
-    <meta name="theme-color" content="#eef2f8">
+    <meta name="description" content="Manage Codex account capacity, scheduled messages, and alerts.">
+    <meta name="theme-color" content="#f6f8fa">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -18,65 +18,29 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <svg class="brand-mark" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="21" height="21" rx="5.5" fill="#315edb"/>
-          <rect x="4.5" y="7" width="3.4" height="10" rx="1.7" fill="#ffffff"/>
-          <rect x="10.3" y="5.3" width="3.4" height="13.4" rx="1.7" fill="#b8ccff"/>
-          <rect x="16.1" y="7" width="3.4" height="10" rx="1.7" fill="#ffffff"/>
-        </svg>
-        <div class="brand-name">
-          <h1>Codex Window Runner</h1>
-          <p class="brand-sub">Account windows, in sync</p>
+    <a class="skip-link" href="#mainContent">Skip to content</a>
+    <header class="app-header">
+      <div class="topbar">
+        <a class="brand" href="#fleet" aria-label="Codex Window Runner overview">
+          <svg class="brand-mark" width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="18" rx="4" fill="currentColor"/><path d="m7 9 3 3-3 3m6 0h4" fill="none" stroke="var(--panel)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="brand-name">codex-window<span class="brand-context"> <span class="brand-divider">/</span> <strong>dashboard</strong></span></span>
+          <span class="private-label">Private</span>
+        </a>
+        <div class="topbar-actions">
+          <button id="themeToggleBtn" type="button" class="icon-button" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"><svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/></svg><svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+          <button id="refreshBtn" type="button">Refresh account state</button>
+          <button id="addAccountOpenBtn" type="button" class="primary">Add account</button>
         </div>
       </div>
-      <div class="station-clock">
-        <p id="subtitle" class="eyebrow">Loading service state...</p>
-        <p id="headerClock" class="clock-digits">--:--:--</p>
-      </div>
-      <div class="next-module">
-        <p class="eyebrow">Next send</p>
-        <div class="flap-line">
-          <span id="nextRunFlap" class="flap-strip" role="img" aria-label="Next send time"></span>
-          <span id="nextRunDay" class="flap-day"></span>
-        </div>
-      </div>
-      <div class="topbar-actions">
-        <button id="themeToggleBtn" type="button" aria-pressed="false">Dark mode</button>
-        <button id="refreshBtn" type="button">Refresh</button>
-        <button id="runNowBtn" type="button" class="primary">Run now</button>
-      </div>
+      <nav class="mobile-dock" aria-label="Dashboard sections">
+        <a href="#fleet" data-section="fleet"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Overview</span></a>
+        <a href="#account" data-section="account"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/></svg><span>Accounts</span></a>
+        <a href="#usage" data-section="usage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18M6 14l4-5 4 3 6-8"/></svg><span>Usage</span></a>
+        <a href="#schedule" data-section="schedule"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18m-14 4h3m4 0h3"/></svg><span>Schedule</span></a>
+        <a href="#alerts" data-section="alerts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>Alerts</span></a>
+        <a href="#activity" data-section="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Activity</span></a>
+      </nav>
     </header>
-
-    <p id="runMessage" class="action-notice" role="status" hidden></p>
-
-    <nav class="mobile-dock" aria-label="Console sections">
-      <a href="#fleet" data-section="fleet">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m6 13v-7m5 7V7"/></svg>
-        <span>Fleet</span>
-      </a>
-      <a href="#account" data-section="account">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19c.7-3.5 2.8-5.3 6.5-5.3s5.8 1.8 6.5 5.3"/></svg>
-        <span>Account</span>
-      </a>
-      <a href="#schedule" data-section="schedule">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"/><path d="M8 3.5v4m8-4v4M4 10h16m-8 3v3l2 1"/></svg>
-        <span>Schedule</span>
-      </a>
-      <a href="#send" data-section="send">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5.5 16-3.1-6.1L4 12Z"/><path d="m11.4 13.9 4-4"/></svg>
-        <span>Send</span>
-      </a>
-      <a href="#alerts" data-section="alerts">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/></svg>
-        <span>Alerts</span>
-      </a>
-      <a href="#activity" data-section="activity">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="7" cy="6" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="10" cy="18" r="1"/></svg>
-        <span>Activity</span>
-      </a>
-    </nav>
 
     <div id="connectionBanner" class="connection-banner" role="status" hidden>
       <div>
@@ -91,10 +55,26 @@
       <span class="snapshot-pulse" aria-hidden="true"></span>
     </div>
 
-    <main class="layout">
-      <section id="fleet" class="panel fleet-panel" aria-labelledby="fleetTitle">
+    <main id="mainContent" class="workspace" tabindex="-1">
+      <div class="page-heading">
+        <div><h1 id="pageTitle">Overview</h1><p id="pageDescription">Account capacity and today’s scheduled sends.</p></div>
+        <a class="button-link" href="#send">Send a message <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="context-bar">
+        <div class="station-clock">
+          <span class="context-label">Current time</span>
+          <div class="clock-line"><time id="headerClock">--:--:--</time><div class="clock-meta"><span id="subtitle">Loading date…</span><span id="clockTimezone"></span></div></div>
+        </div>
+        <a class="next-module" href="#schedule">
+          <span class="context-label">Next send <span aria-hidden="true">→</span></span>
+          <span class="flap-line"><span id="nextRunFlap" class="flap-strip" role="img" aria-label="Next send time"></span><span id="nextRunDay" class="flap-day"></span></span>
+        </a>
+      </div>
+      <p id="runMessage" class="action-notice" role="status" hidden></p>
+      <div class="layout">
+      <section id="fleet" data-view="fleet" class="panel fleet-panel" aria-labelledby="fleetTitle">
         <div class="section-header">
-          <div><p class="eyebrow">Your accounts at a glance</p><h2 id="fleetTitle">Fleet overview</h2></div>
+          <div><h2 id="fleetTitle">Accounts</h2><p class="section-description">Compare remaining quota. Open an account to manage it.</p></div>
           <div class="fleet-header-state">
             <time id="fleetUpdated" class="fleet-updated">No live reading</time>
             <span id="fleetBadge" class="badge neutral">No data</span>
@@ -122,21 +102,50 @@
             <span class="stat-label">near limit</span>
           </div>
         </div>
+        <div class="account-list-toolbar">
+          <label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><span class="sr-only">Find an account</span><input id="accountSearchInput" type="search" placeholder="Find account…" autocomplete="off"></label>
+          <label><span class="sr-only">Filter accounts</span><select id="accountFilterInput"><option value="all">All accounts</option><option value="attention">Needs attention</option><option value="scheduled">Scheduled sends on</option></select></label>
+          <span id="accountResultCount" class="result-count" role="status"></span>
+        </div>
         <div class="strip-chart" aria-label="Available quota per account">
           <div class="strip-head" aria-hidden="true">
-            <span>account</span>
-            <span>quota remaining</span>
-            <span class="strip-head-meta">remaining &middot; window reset</span>
+            <span>Account</span>
+            <span>Remaining quota · weekly · Reserve</span>
+            <span class="strip-head-meta">Limiting window &middot; resets</span>
           </div>
           <div id="fleetRows">
             <p class="board-empty">Waiting for account data...</p>
           </div>
         </div>
-        <section class="usage-history-panel fleet-usage-history" aria-labelledby="usageHistoryTitle">
+        <details class="console-disclosure reset-details">
+          <summary>Reset timelines</summary>
+          <div class="weekly-horizon" role="group" aria-labelledby="weeklyHorizonTitle">
+            <div class="weekly-horizon-head">
+              <p id="weeklyHorizonTitle" class="eyebrow">Weekly reset horizon &middot; next 7 days</p>
+              <span class="weekly-horizon-legend" aria-label="Marker legend">
+                <span><i class="weekly-legend-marker ordinary"></i>Weekly</span>
+                <span><i class="weekly-legend-marker reserve"></i>Reserve</span>
+              </span>
+            </div>
+            <div id="fleetWeeklyHorizon"></div>
+          </div>
+          <div class="reset-timetable">
+            <p class="eyebrow tt-title">Reset timetable &middot; next 24h</p>
+            <div id="fleetTimetable"></div>
+          </div>
+          <p class="hint fleet-hint">
+            Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
+            Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
+            Adaptive server-side quota reads become more frequent after activity and never start a Codex turn.
+          </p>
+        </details>
+      </section>
+
+        <section id="usage" hidden data-view="usage" class="panel usage-history-panel fleet-usage-history" aria-labelledby="usageHistoryTitle">
           <div class="usage-history-head">
             <div>
-              <p class="eyebrow">Compare accounts &middot; recorded readings</p>
-              <h3 id="usageHistoryTitle">Quota history</h3>
+              <p class="eyebrow">Recorded readings across your accounts</p>
+              <h2 id="usageHistoryTitle">Quota history</h2>
             </div>
             <div id="usageHistoryRanges" class="usage-range-buttons" aria-label="Usage history range">
               <button type="button" data-range="6h">6h</button>
@@ -170,38 +179,27 @@
             <div id="usageHistoryChanges"></div>
           </details>
         </section>
-        <details class="console-disclosure reset-details">
-          <summary>Reset timelines</summary>
-          <div class="weekly-horizon" role="group" aria-labelledby="weeklyHorizonTitle">
-            <div class="weekly-horizon-head">
-              <p id="weeklyHorizonTitle" class="eyebrow">Weekly reset horizon &middot; next 7 days</p>
-              <span class="weekly-horizon-legend" aria-label="Marker legend">
-                <span><i class="weekly-legend-marker ordinary"></i>Weekly</span>
-                <span><i class="weekly-legend-marker reserve"></i>Reserve</span>
-              </span>
-            </div>
-            <div id="fleetWeeklyHorizon"></div>
-          </div>
-          <div class="reset-timetable">
-            <p class="eyebrow tt-title">Reset timetable &middot; next 24h</p>
-            <div id="fleetTimetable"></div>
-          </div>
-          <p class="hint fleet-hint">
-            Bars deplete as ordinary and Reserve quota is used; red marks fresh ordinary readings with 20% or less remaining.
-            Expired readings stay visible as stale but are excluded from fleet stats and the timetable.
-            Adaptive server-side quota reads become more frequent after activity and never start a Codex turn.
-          </p>
-        </details>
-      </section>
 
-      <section id="account" class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
+      <section id="account" hidden data-view="account" class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">
         <div class="section-header account-console-header">
-          <h2 id="accountConsoleTitle">Account console</h2>
+          <h2 id="accountConsoleTitle">Account details</h2>
           <div class="account-selector-rail">
             <label class="account-selector-label"><span class="sr-only">Account</span><select id="accountSelect"></select></label>
-            <button id="addAccountOpenBtn" type="button">Add account</button>
           </div>
           <span id="loginBadge" class="badge neutral">Not checked</span>
+        </div>
+
+        <div class="account-primary-settings">
+            <form id="accountDetailsForm">
+              <label for="accountLabelInput">Account name</label>
+              <div class="account-edit-row">
+                <input id="accountLabelInput" name="accountLabel" autocomplete="off" placeholder="e.g. Personal" required maxlength="80">
+                <button id="saveAccountBtn" type="submit">Save name</button>
+              </div>
+              <p id="accountDetailsMessage" class="form-message" role="status"></p>
+            </form>
+          <button id="editAccountRunSettingsBtn" type="button">Edit run settings</button>
+          <p id="accountRunSettingsSummary" class="hint"></p>
         </div>
 
         <div class="account-access" id="accountAccess">
@@ -251,46 +249,130 @@
             <div><dt>Last run</dt><dd id="lastRun">None</dd></div>
           </dl>
         </section>
+        <div id="accountResetCredits" class="account-credit-summary" aria-label="Reset credits"></div>
+        <div class="account-actions account-danger">
+          <button id="logoutBtn" type="button">Sign out</button>
+          <button id="removeAccountBtn" type="button" class="danger">Remove account</button>
+          <p id="accountDangerMessage" class="form-message" role="status"></p>
+        </div>
         <div class="account-detail-row">
-          <details class="console-disclosure account-detail">
-            <summary>Connection details</summary>
-            <dl class="facts">
-              <div><dt>Status</dt><dd><span id="serviceBadge" class="badge neutral">Unknown</span></dd></div>
-              <div><dt>Sign-in</dt><dd id="authState">Unknown</dd></div>
-              <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
-              <div><dt>Thread</dt><dd id="threadState">None</dd></div>
-            </dl>
-          </details>
-          <details class="console-disclosure account-detail">
-            <summary>Quota &amp; recent messages</summary>
-            <dl class="facts">
-              <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
-              <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
-              <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
-              <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
-              <div><dt>Last message</dt><dd id="lastPing">None</dd></div>
-              <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
-            </dl>
+          <details id="accountDiagnostics" class="console-disclosure account-detail">
+            <summary>Technical details</summary>
+            <div class="account-diagnostics-grid">
+              <div><h3>Connection</h3><dl class="facts">
+                <div><dt>Status</dt><dd><span id="serviceBadge" class="badge neutral">Unknown</span></dd></div>
+                <div><dt>Sign-in</dt><dd id="authState">Unknown</dd></div>
+                <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
+                <div><dt>Thread</dt><dd id="threadState">None</dd></div>
+              </dl></div>
+              <div><h3>Quota &amp; recent messages</h3><dl class="facts">
+                <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
+                <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
+                <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
+                <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
+                <div><dt>Last message</dt><dd id="lastPing">None</dd></div>
+                <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
+              </dl></div>
+            </div>
           </details>
         </div>
+      </section>
 
-        <details class="account-management" id="accountSettings">
-          <summary>
-            <span>Account settings</span>
-            <small>Name, custom schedule, and sign-out</small>
-          </summary>
-          <div class="account-management-body">
-            <form id="accountDetailsForm">
-              <label for="accountLabelInput">Account name</label>
-              <div class="account-edit-row">
-                <input id="accountLabelInput" name="accountLabel" autocomplete="off" placeholder="e.g. Personal" required maxlength="80">
-                <button id="saveAccountBtn" type="submit">Save name</button>
-              </div>
-              <p id="accountDetailsMessage" class="form-message" role="status"></p>
-            </form>
-            <details id="accountOverrides" class="console-disclosure">
-              <summary>Custom run settings</summary>
-              <form id="accountOverridesForm" class="disclosure-body">
+      <section id="overviewHistory" data-view="fleet" class="panel overview-history" aria-labelledby="overviewHistoryTitle">
+        <div class="section-header"><div><h2 id="overviewHistoryTitle">Recent usage</h2><p class="section-description">Last 6 hours · 5-hour quota remaining</p></div><a class="text-link" href="#usage">View full history <span aria-hidden="true">→</span></a></div>
+        <div id="overviewUsageChart" class="usage-history-chart compact-usage-chart"><p class="board-empty">Loading recent usage…</p></div>
+        <div id="overviewUsageLegend" class="overview-usage-legend" aria-label="Account chart legend"></div>
+      </section>
+
+      <section id="board" data-view="fleet" class="panel board-panel">
+        <div class="section-header">
+          <h2>Today’s sends</h2>
+          <span class="board-legend">
+            <span><i class="lg ok"></i>done</span>
+            <span><i class="lg bad"></i>failed</span>
+            <span><i class="lg warn"></i>skipped</span>
+            <span><i class="lg active"></i>running</span>
+            <span><i class="lg pending"></i>scheduled</span>
+          </span>
+        </div>
+        <div id="departuresBoard" class="board-wrap">
+          <p class="board-empty">Waiting for account data...</p>
+        </div>
+        <p class="hint board-hint">Built from this server’s run history for today, in the configured timezone.</p>
+      </section>
+
+      <section id="schedule" hidden data-view="schedule" class="panel settings-panel">
+        <div class="section-header">
+          <h2>Shared schedule</h2>
+          <span id="schedulerBadge" class="badge neutral">Unknown</span>
+        </div>
+        <p class="settings-intro">Daily sends for enabled accounts. Custom account settings take precedence.</p>
+        <p id="scheduleTimezone" class="hint"></p>
+        <div id="scheduleTimes" class="schedule-times" aria-label="Daily send times"></div>
+        <p id="scheduleNext" class="schedule-next"></p>
+        <div class="schedule-prompt">
+          <p class="eyebrow">Message preview</p>
+          <p id="schedulePrompt"></p>
+          <p id="schedulePromptHint" class="hint" hidden>Shared schedule preview · values update when sent.</p>
+        </div>
+        <p id="scheduleOptions" class="hint"></p>
+        <div class="schedule-actions">
+          <button id="editScheduleBtn" type="button" class="primary" disabled>Edit schedule</button>
+          <button id="schedulerToggleBtn" type="button" disabled>Pause</button>
+        </div>
+        <p id="schedulerMessage" class="form-message" role="status"></p>
+        <p id="scheduleMessage" class="form-message" role="status"></p>
+      </section>
+
+      <section id="send" hidden data-view="account" class="panel manual-panel">
+        <div class="section-header">
+          <h2>Send a message</h2>
+        </div>
+        <p id="sendTarget" class="hint">Choose an account to send a message.</p>
+        <label>
+          Message (optional)
+          <textarea id="manualPromptInput" rows="4" placeholder="Write a message, or leave empty to use this account’s scheduled prompt."></textarea>
+        </label>
+        <div class="button-row">
+          <button id="manualSendBtn" type="button" class="primary">Send message</button>
+          <button id="runNowBtn" type="button">Send scheduled prompt</button>
+          <span id="manualMessage" class="form-message" role="status"></span>
+        </div>
+      </section>
+
+      <section id="alerts" hidden data-view="alerts" class="panel alerts-panel">
+        <div class="section-header">
+          <h2>Alerts</h2>
+          <span id="alertsStatus" class="badge neutral">Checking</span>
+        </div>
+        <p class="settings-intro">Choose when Telegram should notify you about account capacity and scheduled sends.</p>
+        <p id="alertsOverview" class="hint">Telegram notifications for quota, resets, Reserve, and failures.</p>
+        <p class="eyebrow">Saved notification rules</p>
+        <div id="alertRulesSummary" class="alert-rules-summary"></div>
+        <button id="editAlertsBtn" type="button" class="primary" disabled>Configure alerts</button>
+        <p id="alertsMessage" class="form-message" role="status"></p>
+      </section>
+
+      <section id="activity" hidden data-view="activity" class="panel activity-panel">
+        <div class="section-header">
+          <h2>Activity</h2>
+          <div class="activity-actions">
+            <label class="inline-toggle">
+              <input id="rawEventsInput" type="checkbox">
+              Raw events
+            </label>
+            <button id="clearActivityBtn" type="button">Clear view</button>
+          </div>
+        </div>
+        <p id="activityHint" class="hint">Recent runs, messages, settings, and errors. Routine updates are in Raw events.</p>
+        <ol id="activityList" class="activity-list timeline-list"></ol>
+      </section>
+      </div>
+    </main>
+
+    <dialog id="accountOverrides" class="settings-dialog" aria-labelledby="accountRunSettingsTitle">
+      <div class="dialog-header"><h2 id="accountRunSettingsTitle">Account run settings</h2><button id="closeAccountRunSettingsBtn" type="button" aria-label="Close account run settings">×</button></div>
+              <form id="accountOverridesForm">
                 <p class="hint">Leave fields empty to use the shared settings in Schedule.</p>
                 <label>
                   Schedule times
@@ -309,103 +391,12 @@
                   Scheduled prompt template
                   <textarea id="accountPromptInput" rows="5"></textarea>
                 </label>
-                <div class="button-row">
+                <div class="dialog-actions">
                   <button id="saveAccountOverridesBtn" type="submit">Save custom settings</button>
                   <span id="accountOverridesMessage" class="form-message" role="status"></span>
                 </div>
               </form>
-            </details>
-            <details class="console-disclosure account-danger">
-              <summary>Sign out or remove account</summary>
-              <div class="disclosure-body">
-                <div class="account-danger-row"><p>Sign out of Codex on this server. Your account settings stay saved.</p><button id="logoutBtn" type="button">Sign out</button></div>
-                <div class="account-danger-row"><p>Remove this account and its saved credentials and thread data from this server.</p><button id="removeAccountBtn" type="button" class="danger">Remove account</button></div>
-                <p id="accountDangerMessage" class="form-message" role="status"></p>
-              </div>
-            </details>
-          </div>
-        </details>
-      </section>
-
-      <section id="board" class="panel board-panel">
-        <div class="section-header">
-          <h2>Today’s sends</h2>
-          <span class="board-legend">
-            <span><i class="lg ok"></i>done</span>
-            <span><i class="lg bad"></i>failed</span>
-            <span><i class="lg warn"></i>skipped</span>
-            <span><i class="lg active"></i>running</span>
-            <span><i class="lg pending"></i>scheduled</span>
-          </span>
-        </div>
-        <div id="departuresBoard" class="board-wrap">
-          <p class="board-empty">Waiting for account data...</p>
-        </div>
-        <p class="hint board-hint">Built from this server’s run history for today, in the configured timezone.</p>
-      </section>
-
-      <section id="schedule" class="panel settings-panel">
-        <div class="section-header">
-          <h2>Schedule</h2>
-          <span id="schedulerBadge" class="badge neutral">Unknown</span>
-        </div>
-        <p id="scheduleTimezone" class="hint"></p>
-        <div id="scheduleTimes" class="schedule-times" aria-label="Daily send times"></div>
-        <p id="scheduleNext" class="schedule-next"></p>
-        <div class="schedule-prompt">
-          <p class="eyebrow">Message preview</p>
-          <p id="schedulePrompt"></p>
-          <p id="schedulePromptHint" class="hint" hidden>Shared schedule preview · values update when sent.</p>
-        </div>
-        <p id="scheduleOptions" class="hint"></p>
-        <div class="schedule-actions">
-          <button id="editScheduleBtn" type="button" class="primary" disabled>Edit schedule</button>
-          <button id="schedulerToggleBtn" type="button" disabled>Pause</button>
-        </div>
-        <p id="schedulerMessage" class="form-message" role="status"></p>
-        <p id="scheduleMessage" class="form-message" role="status"></p>
-      </section>
-
-      <section id="send" class="panel manual-panel">
-        <div class="section-header">
-          <h2>Send a message</h2>
-        </div>
-        <p id="sendTarget" class="hint">Choose an account in Account console.</p>
-        <label>
-          One-off prompt (optional)
-          <textarea id="manualPromptInput" rows="4" placeholder="Leave empty to use the scheduled prompt template."></textarea>
-        </label>
-        <div class="button-row">
-          <button id="manualSendBtn" type="button" class="primary">Send to Codex</button>
-          <span id="manualMessage" class="form-message" role="status"></span>
-        </div>
-      </section>
-
-      <section id="alerts" class="panel alerts-panel">
-        <div class="section-header">
-          <h2>Alerts</h2>
-          <span id="alertsStatus" class="badge neutral">Checking</span>
-        </div>
-        <p id="alertsOverview" class="hint">Telegram notifications for quota, resets, Reserve, and failures.</p>
-        <button id="editAlertsBtn" type="button" class="primary" disabled>Configure alerts</button>
-        <p id="alertsMessage" class="form-message" role="status"></p>
-      </section>
-
-      <section id="activity" class="panel activity-panel">
-        <div class="section-header">
-          <h2>Activity</h2>
-          <div class="activity-actions">
-            <label class="inline-toggle">
-              <input id="rawEventsInput" type="checkbox">
-              Raw events
-            </label>
-            <button id="clearActivityBtn" type="button">Clear view</button>
-          </div>
-        </div>
-        <p id="activityHint" class="hint">Recent runs, messages, settings, and errors. Routine updates are in Raw events.</p>
-        <ol id="activityList" class="activity-list timeline-list"></ol>
-      </section>
-    </main>
+    </dialog>
 
     <dialog id="scheduleDialog" class="settings-dialog schedule-dialog" aria-labelledby="scheduleDialogTitle">
       <div class="dialog-header"><h2 id="scheduleDialogTitle">Edit schedule</h2><button id="closeScheduleBtn" type="button" aria-label="Close schedule editor">×</button></div>

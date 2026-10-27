@@ -1,7 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, snapshotDashboard, usageFree, usageObservationAt } from "../public/app.js";
+import { accountResetCredits, accountWindow, effectiveWindow, reserveState, resetCreditExpiry, resetCreditPresentation, resetCreditItems, resetCreditCapacity, resetIsSoon, snapshotDashboard, usageFree, usageObservationAt } from "../public/app.js";
+
+test("reset stacks preserve readable card width and cap the visible document count", () => {
+  for (const edge of [24, 44]) {
+    for (const width of [120, 160, 190, 284, 342, 600, 1600]) {
+      const count = resetCreditCapacity(width, edge);
+      assert.ok(count >= 1 && count <= 4);
+      assert.ok(width - (count - 1) * edge >= Math.min(width, 160));
+    }
+  }
+  assert.equal(resetCreditCapacity(190, 24), 2);
+  assert.equal(resetCreditCapacity(284, 44), 3);
+});
 
 const future = 2_000_000_000;
 
@@ -341,4 +353,95 @@ test("does not report expired Reserve data as available", () => {
   } });
 
   assert.equal(reserveState(win, 200_000), "stale");
+});
+
+test("marks resets soon only when strictly future and less than one hour away", () => {
+  const now = 1_900_000_000_000;
+
+  assert.equal(resetIsSoon(now + 1, now), true);
+  assert.equal(resetIsSoon(now + 60 * 60 * 1000 - 1, now), true);
+  assert.equal(resetIsSoon(now + 60 * 60 * 1000, now), false);
+  assert.equal(resetIsSoon(now, now), false);
+  assert.equal(resetIsSoon(now - 1, now), false);
+  assert.equal(resetIsSoon(null, now), false);
+});
+
+test("reset-credit presentation marks only future expirations within two days", () => {
+  const now = 1_900_000_000_000;
+  const seconds = Math.floor(now / 1000);
+  const base = { resetCreditsAvailable: 3, resetCreditDetailsComplete: true };
+
+  assert.deepEqual(resetCreditPresentation({ ...base, resetCreditExpirations: [seconds + 2 * 24 * 60 * 60, null, seconds + 10 * 24 * 60 * 60] }, now), {
+    count: 3,
+    state: "expiring",
+    expiringCount: 1,
+    expiredCount: 0,
+    nextExpiry: seconds + 2 * 24 * 60 * 60
+  });
+  assert.equal(resetCreditPresentation({ ...base, resetCreditExpirations: [seconds + 2 * 24 * 60 * 60 + 1] }, now).state, "available");
+  assert.equal(resetCreditPresentation({ ...base, resetCreditExpirations: [null] }, now).state, "available");
+});
+
+test("reset-credit presentation reports expired credits without changing the authoritative count", () => {
+  const now = 1_900_000_000_000;
+  const seconds = Math.floor(now / 1000);
+  const presentation = resetCreditPresentation({
+    resetCreditsAvailable: 4,
+    resetCreditExpirations: [seconds - 1, seconds, seconds + 10 * 24 * 60 * 60, null, seconds + 20 * 24 * 60 * 60],
+    resetCreditDetailsComplete: true
+  }, now);
+
+  assert.equal(presentation.count, 4);
+  assert.equal(presentation.state, "reported");
+  assert.equal(presentation.expiringCount, 0);
+  assert.equal(presentation.expiredCount, 2);
+  assert.equal(presentation.nextExpiry, seconds + 10 * 24 * 60 * 60);
+});
+
+test("reset-credit presentation preserves known inventory when expiry details are missing", () => {
+  const now = 1_900_000_000_000;
+
+  assert.deepEqual(resetCreditPresentation({ resetCreditsAvailable: 2, resetCreditExpirations: [], resetCreditDetailsComplete: false }, now), {
+    count: 2,
+    state: "available",
+    expiringCount: 0,
+    expiredCount: 0,
+    nextExpiry: null
+  });
+  assert.deepEqual(resetCreditPresentation({ resetCreditsAvailable: 0, resetCreditExpirations: [], resetCreditDetailsComplete: true }, now), {
+    count: 0,
+    state: "empty",
+    expiringCount: 0,
+    expiredCount: 0,
+    nextExpiry: null
+  });
+  assert.equal(resetCreditPresentation({ resetCreditsAvailable: null, resetCreditExpirations: [] }, now).state, "unknown");
+});
+
+
+test("keeps each reported reset credit and its individual expiry state", () => {
+  const now = 1_900_000_000_000;
+  const seconds = now / 1000;
+  const credits = { resetCreditsAvailable: 5,
+    resetCreditExpirations: [seconds - 1, seconds + 2 * 86400, seconds + 2 * 86400 + 1, null, "unknown"] };
+  assert.deepEqual(resetCreditItems(credits, now), [
+    { index: 0, expiresAt: seconds - 1, state: "reported" },
+    { index: 1, expiresAt: seconds + 2 * 86400, state: "expiring" },
+    { index: 2, expiresAt: seconds + 2 * 86400 + 1, state: "available" },
+    { index: 3, expiresAt: null, state: "available" },
+    { index: 4, expiresAt: "unknown", state: "available" }
+  ]);
+  assert.equal(resetCreditItems(credits, now + 2 * 86400 * 1000)[1].state, "reported");
+  assert.equal(resetCreditItems(credits, now + 2 * 86400 * 1000).length, 5);
+});
+
+test("individual credit cards follow the authoritative count without inventing missing dates", () => {
+  const now = 1_900_000_000_000;
+  assert.deepEqual(resetCreditItems({ resetCreditsAvailable: 2, resetCreditExpirations: [] }, now), [
+    { index: 0, expiresAt: "unknown", state: "available" },
+    { index: 1, expiresAt: "unknown", state: "available" }
+  ]);
+  assert.equal(resetCreditItems({ resetCreditsAvailable: 1, resetCreditExpirations: [null, null] }, now).length, 1);
+  assert.deepEqual(resetCreditItems({ resetCreditsAvailable: 0 }, now), []);
+  assert.deepEqual(resetCreditItems({ resetCreditsAvailable: null }, now), []);
 });

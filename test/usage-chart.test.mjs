@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildUsageChartModel,
+  positionUsageLabels,
   nearestUsageTimestamp,
   nextUsageCursorIndex,
   reconcileUsageCursorIndex,
@@ -204,4 +205,34 @@ test("compares accounts polled at different times without hiding their recorded 
   const latest = model.timestamps.at(-1);
   assert.deepEqual(model.series.map((series) => usageChartValueAt(series, key, latest).value), [80, 80]);
   assert.equal(usageChartValueAt(model.series[1], key, latest).status, "last-known");
+});
+
+
+test("separates coincident chart value labels and keeps edge readings in the plot", () => {
+  const bounds = { left: 36, right: 288, top: 10, bottom: 134 };
+  const points = [
+    { id: "a", x: 288, y: 10 }, { id: "b", x: 288, y: 10 },
+    { id: "c", x: 36, y: 134 }, { id: "d", x: 36, y: 134 }
+  ];
+  const labels = positionUsageLabels(points, bounds);
+  assert.equal(labels.length, points.length);
+  for (const label of labels) {
+    assert.ok(label.labelX >= bounds.left && label.labelX + label.width <= bounds.right);
+    assert.ok(label.labelY >= bounds.top && label.labelY + label.height <= bounds.bottom);
+  }
+  for (let i = 0; i < labels.length; i++) {
+    for (const other of labels.slice(i + 1)) {
+      const label = labels[i];
+      assert.ok(label.labelX + label.width <= other.labelX || other.labelX + other.width <= label.labelX
+        || label.labelY + label.height <= other.labelY || other.labelY + other.height <= label.labelY);
+    }
+  }
+  assert.deepEqual(points.map(point => point.y), [10, 10, 134, 134], "layout must not mutate recorded points");
+});
+
+test("uses another label column when many accounts share the same quota", () => {
+  const points = Array.from({ length: 10 }, (_, index) => ({ id: String(index), x: 270, y: 72 }));
+  const labels = positionUsageLabels(points, { left: 36, right: 288, top: 10, bottom: 134 });
+  assert.equal(new Set(labels.map(label => label.labelX)).size, 2);
+  assert.ok(labels.every(label => label.labelY >= 10 && label.labelY + label.height <= 134));
 });

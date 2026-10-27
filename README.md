@@ -23,7 +23,18 @@ It cannot see OpenAI's internal reset clock. What it does is simple and predicta
 
 ## The console
 
-A Liquid Glass-inspired dashboard with translucent floating navigation, native system typography, light and dark themes, and clear data surfaces. Fleet quota, history, reset horizons, account controls, schedules, and activity share one responsive layout. Reduced motion, reduced transparency, keyboard focus, and mobile safe areas are respected.
+A compact dashboard inspired by GitHub’s visual language: neutral surfaces, bordered lists, clear account actions, and light and dark themes. Desktop uses an underline navbar in the header; mobile keeps the floating pill dock at the bottom. Both switch between focused views:
+
+- **Overview:** account capacity, search and status filters, reset timelines, a compact six-hour usage chart, and today’s sends. Open an account name to manage that account.
+- **Accounts:** visible account naming, run settings, sign-in/sign-out, removal, quota details, and a message composer scoped to the selected account. **Send a message** opens this composer directly.
+- **Usage:** comparative quota history, range controls, values beside cursor points, and keyboard/touch inspection.
+- **Schedule:** shared daily send times, rendered prompt preview, pause/resume, and the schedule editor.
+- **Alerts:** saved notification rules and the independent Telegram editor.
+- **Activity:** run outcomes, replies, and account changes.
+
+Navigation supports direct links and browser Back/Forward. Reduced motion, reduced transparency, keyboard focus, and mobile safe areas are respected.
+
+Quota tiles and account bars use green above 70% remaining, yellow from 30–70%, and a slow red pulse below 30%. Upcoming resets pulse blue when less than an hour away. Reported reset credits share a compact document stack in Overview and Accounts. Each number belongs to its card. Hover an exposed edge to expand that document over the others, leaving their edges visible; tap or keyboard selection keeps it open. The stack adapts to its available width, showing at most four readable cards at once; previous/next controls expose additional credits, and keyboard navigation reaches the entire inventory. A gold highlight, shine and expiry pulse apply only to cards expiring within two days. Unknown expiry dates do not trigger an alert; a passed expiry asks for a fresh account reading without changing the reported count. Reduced-motion preferences disable these animations.
 
 ```
 TODAY'S SENDS                        ✓ done   ✕ failed   ⏸ skipped   ● running
@@ -59,22 +70,22 @@ http://127.0.0.1:8787
 
 On iPhone, open the HTTPS URL in Safari, tap **Share**, then **Add to Home Screen**. The installed app uses a standalone, safe-area-aware layout. It immediately shows a privacy-reduced saved fleet snapshot while live data loads; prompts, messages, workspace paths, credentials, and API responses are not stored in that snapshot. Its offline shell can open without a network connection, but account management still requires access to this server.
 
-Connect an account from **Account console → Sign in**. Copy the one-time code, choose **Continue to OpenAI**, and enter the code on the sign-in page. Return to the console for automatic confirmation; technical output stays under **Sign-in diagnostics**. Credentials stay in the persistent server volume and survive restarts and rebuilds.
+Connect an account from **Accounts → Sign in**. Copy the one-time code, choose **Continue to OpenAI**, and enter the code on the sign-in page. Return to the console for automatic confirmation; technical output stays under **Sign-in diagnostics**. Credentials stay in the persistent server volume and survive restarts and rebuilds.
 
 ## Multiple accounts
 
-- The original login migrates to **Default account**; add more with **Add account** in the Account console. New accounts have scheduled sends paused until you explicitly enable them after connecting.
+- The original login migrates to **Default account**; add more with **Add account** in the header. New accounts have scheduled sends paused until you explicitly enable them after connecting.
 - Additional credentials live under `/data/codex-accounts/<account-id>/`.
 - Enabled accounts are pinged at every configured time; disabled accounts stay logged in but are skipped.
 - The server is the sole automatic quota poller and continues when no browser is open. It checks every minute for 10 minutes after detected consumption, then backs off to 2, 5, and finally 10 minutes as the account fleet stays idle. A manual refresh remains available.
-- Meaningful 5-hour, weekly, and Reserve changes are retained per account for 30 days plus one boundary baseline, capped at 5,000 samples. **Quota history** appears in **Fleet overview** as separate 5-hour and weekly charts with one line per account. The plots resize without horizontal scrolling; date-aware ticks adapt to the available width. Hover or tap a chart to inspect every account at the same time, including overlapping lines, or focus it and use the arrow keys and Home/End. Account buttons toggle series for comparisons. Missing observations remain gaps; cached snapshots and last-known readings from earlier polls are labeled, while plotted lines stop at their last observation. Range summaries show observed lows, changes, and replenishments without claiming an exact historical reset time. Unchanged reads are not stored.
+- Meaningful 5-hour, weekly, and Reserve changes are retained per account for 30 days plus one boundary baseline, capped at 5,000 samples. **Quota history** appears in **Usage** as separate 5-hour and weekly charts with one line per account. The plots resize without horizontal scrolling; date-aware ticks adapt to the available width. Hover or tap a chart to inspect every account at the same time, including overlapping lines, or focus it and use the arrow keys and Home/End. Account buttons toggle series for comparisons. Missing observations remain gaps; cached snapshots and last-known readings from earlier polls are labeled, while plotted lines stop at their last observation. Range summaries show observed lows, changes, and replenishments without claiming an exact historical reset time. Unchanged reads are not stored.
 - Reserve is shown separately from ordinary quota, including its weekly reset date. Its state becomes **active** only when Codex explicitly reports that ordinary usage is unavailable and a current Reserve allowance exists; percentages are never used to infer activation. Available usage-reset credits and every reported expiration are shown for each account.
 - **Remove** stops the account's app-server and permanently deletes its Codex home, including `auth.json`. The last remaining account cannot be removed.
 - Login, logout, and run-now controls all apply to the selected account.
 
 ### Per-account overrides
 
-Under *Account console → Account settings → Custom run settings*. Leave a field empty to use the shared default from Schedule.
+Under *Accounts → Edit run settings*. Leave a field empty to use the shared default from Schedule.
 
 | Override | Use it to |
 |---|---|
@@ -83,7 +94,7 @@ Under *Account console → Account settings → Custom run settings*. Leave a fi
 | Model override | Run different models per plan or per job |
 | Workspace directory | Give simultaneous agents separate sandboxes |
 
-The header's *Next send* covers the union of enabled accounts' schedules.
+The *Next send* bar covers the union of enabled accounts' schedules.
 
 ## Security model
 
@@ -93,7 +104,7 @@ This is a **private admin app** with full control over Codex sessions. Do not ex
 - Put it behind **Cloudflare Tunnel + Cloudflare Access**.
 - Set `ADMIN_EMAILS` so the backend only accepts requests carrying a matching Access-authenticated email header. This is defense in depth — if the app is directly exposed, those headers can be spoofed.
 - The app never asks for your ChatGPT password and never displays tokens. Treat the data volume like a password store — **backups contain live credentials; encrypt them**.
-- `codex login status` reports credential *presence*, not validity. The service therefore verifies authentication through live Codex requests and reports rejected or expired credentials as an **auth issue**. Re-login from the Account console; a successful device login restarts that account's app-server so it uses the new credentials.
+- `codex login status` reports credential *presence*, not validity. The service therefore verifies authentication through live Codex requests and reports rejected or expired credentials as an **auth issue**. Re-login from Accounts; a successful device login restarts that account's app-server so it uses the new credentials.
 
 ## Configuration
 
