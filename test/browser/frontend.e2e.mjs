@@ -517,6 +517,17 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.keyboard.press("Home");
     assert.equal(await urgentCredit.getAttribute("data-front"), "true", "keyboard selection returns to the first document");
     assert.equal(await creditCards.nth(0).getAttribute("aria-pressed"), "true");
+    if (viewport.size.width >= 1101) {
+      const rowLayout = await alphaCredits.evaluate(stack => {
+        const row = stack.closest(".strip-row");
+        const quota = row.querySelector(".strip-cell").getBoundingClientRect();
+        const credits = stack.getBoundingClientRect();
+        const meta = row.querySelector(".strip-meta").getBoundingClientRect();
+        return { height: row.getBoundingClientRect().height, creditsBesideQuota: credits.left >= quota.right - 1, metaBesideCredits: meta.left >= credits.right - 1 };
+      });
+      assert.ok(rowLayout.height <= 155, "reset documents must not inflate desktop account rows");
+      assert.ok(rowLayout.creditsBesideQuota && rowLayout.metaBesideCredits, "desktop reset credits have a dedicated column beside quota");
+    }
     await exerciseResetCreditOverflow(page, fixture);
     const sendAction = page.locator('.page-heading > a[href="#send"]');
     assert.equal(await sendAction.evaluate(node => getComputedStyle(node).whiteSpace), "nowrap", "the Send action stays on one line");

@@ -1385,11 +1385,18 @@ span.reset-soon { display: inline-block; border-radius: 4px; color: var(--accent
 @keyframes credit-expiry-attention { 0%, 100% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--credit-gold) 20%, transparent); } 50% { box-shadow: inset 0 0 0 2px var(--credit-gold), 0 0 8px color-mix(in srgb, var(--credit-gold) 25%, transparent); } }
 @media (max-width: 700px) { .account-credit-summary { margin-inline: 16px; } .strip-label-stack .reset-credit-card { width: fit-content; max-width: 100%; } }
 
-.strip-row { grid-template-areas: "label track meta" "credits track meta"; }
-.strip-row > .reset-credit-stack { grid-area: credits; }
+.strip-head-credits { display: none; }
+.strip-row { grid-template-areas: "label track meta" "label credits meta"; align-items: start; }
+.strip-row > .strip-note { grid-area: track; }
+.strip-row > .reset-credit-stack { grid-area: credits; max-width: 320px; }
+@media (min-width: 1101px) {
+  .strip-head, .strip-row { grid-template-columns: minmax(140px,180px) minmax(220px,1fr) minmax(220px,260px) minmax(130px,160px); grid-template-areas: "label track credits meta"; column-gap: 20px; }
+  .strip-head-credits { display: block; }
+  .strip-row { align-items: center; }
+}
 @media (max-width: 700px) {
-  .strip-row { grid-template-areas: "label meta" "credits credits" "track track"; }
-  .strip-row > .reset-credit-stack { width: 100%; }
+  .strip-row { grid-template-areas: "label meta" "track track" "credits credits"; }
+  .strip-row > .reset-credit-stack { width: 100%; max-width: none; }
 }
 
 /* Each document is one continuous card; only the edges of rear cards remain exposed. */
@@ -1397,6 +1404,7 @@ span.reset-soon { display: inline-block; border-radius: 4px; color: var(--accent
 .reset-credit-total { color: var(--muted); font-size: 10px; font-weight: 500; }
 .reset-credit-deck { --credit-edge: 24px; display: grid; min-width: 0; padding-block: 2px; isolation: isolate; }
 .reset-credit-deck > .reset-credit-card { grid-area: 1 / 1; width: auto; min-width: 0; min-height: 96px; margin-block: 0; margin-inline: calc(var(--credit-before) * var(--credit-edge)) calc(var(--credit-after) * var(--credit-edge)); padding: 9px calc(var(--credit-edge) + 6px) 9px 9px; border-radius: 6px; cursor: pointer; }
+@media (min-width: 701px) { .strip-row .reset-credit-deck > .reset-credit-card { min-height: 80px; } }
 .reset-credit-card[hidden], .reset-credit-pagination[hidden] { display: none; }
 .reset-credit-content { display: grid; align-content: start; gap: 4px; min-width: 0; }
 .reset-credit-card[data-front="false"] { z-index: var(--credit-layer, 0); }
