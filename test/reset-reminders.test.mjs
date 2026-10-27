@@ -20,7 +20,7 @@ async function until(read, predicate = Boolean) {
   throw new Error("Timed out waiting for isolated reminder fixture");
 }
 
-async function fixture(t, legacyHours) {
+async function fixture(t, legacyHours, options = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), "reset-reminders-"));
   const dataDir = path.join(temp, "data");
   const bin = path.join(temp, "bin");
@@ -32,7 +32,9 @@ async function fixture(t, legacyHours) {
   await Promise.all([mkdir(dataDir), mkdir(bin), mkdir(home)]);
   const initialNow = Date.now();
   const expiry = Math.floor(initialNow / 1000) + 3 * 86400;
-  let controls = { now: initialNow, status: 200, count: 1, expirations: [expiry] };
+  let controls = { now: initialNow, status: 200, count: 1, expirations: [expiry], used: 20, weekly: 20,
+    fiveHourReset: Math.floor(initialNow / 1000) + 4 * 3600, weeklyReset: expiry,
+    reserveUsed: 10, ordinaryAllowed: true, authFailure: false };
   const setControls = async (patch) => {
     controls = { ...controls, ...patch };
     await writeFile(`${controlsPath}.tmp`, JSON.stringify(controls));
@@ -44,7 +46,11 @@ async function fixture(t, legacyHours) {
   await writeFile(preloadPath, `
 import { readFileSync, appendFileSync } from "node:fs";
 const controls = () => JSON.parse(readFileSync(process.env.REMINDER_CONTROLS, "utf8"));
-Date.now = () => controls().now;
+const RealDate = Date;
+globalThis.Date = class extends RealDate {
+  constructor(...args) { super(...(args.length ? args : [controls().now])); }
+  static now() { return controls().now; }
+};
 const realInterval = globalThis.setInterval;
 globalThis.setInterval = (fn, ms, ...args) => realInterval(fn, ms === 60_000 ? 50 : ms, ...args);
 globalThis.fetch = async (url, options) => {
@@ -60,6 +66,7 @@ globalThis.fetch = async (url, options) => {
 const fs = require("node:fs");
 if (process.argv[2] === "login") { console.log("Logged in using ChatGPT"); process.exit(0); }
 if (process.argv[2] !== "app-server") process.exit(0);
+let lastOutcome;
 require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
   const request = JSON.parse(line);
   if (request.id === undefined) return;
@@ -67,8 +74,22 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (request.method === "account/read") result = { account: { type: "chatgpt" } };
   if (request.method === "account/rateLimits/read") {
     const control = JSON.parse(fs.readFileSync(process.env.REMINDER_CONTROLS, "utf8"));
-    result = { rateLimits: {}, rateLimitResetCredits: { availableCount: control.count,
+    if (control.authFailure) {
+      console.log(JSON.stringify({ id: request.id, error: { code: 401, message: "Unauthorized: fixture authentication failed" } }));
+      return;
+    }
+    result = { rateLimits: {
+      primary: { usedPercent: control.used, windowDurationMins: 300, resetsAt: control.fiveHourReset },
+      secondary: { usedPercent: control.weekly, windowDurationMins: 10080, resetsAt: control.weeklyReset }
+    }, rateLimitsByLimitId: { reserve: { limitName: "gpt-reserve", primary: { usedPercent: control.reserveUsed,
+      windowDurationMins: 10080, resetsAt: control.weeklyReset } } }, ordinaryUsageAllowed: control.ordinaryAllowed,
+      rateLimitResetCredits: { availableCount: control.count,
       credits: control.expirations.map(expiresAt => ({ expiresAt })) } };
+    if (control.turnOutcome && control.turnOutcome !== lastOutcome) {
+      lastOutcome = control.turnOutcome;
+      console.log(JSON.stringify({ method: "turn/completed", params: { threadId: "fixture-thread", turn: {
+        id: "fixture-turn", status: control.turnOutcome, ...(control.turnOutcome === "failed" ? { error: { message: "Fixture send failure" } } : {}) } } }));
+    }
   }
   if (request.method === "thread/resume") result = { thread: { id: "fixture-thread" } };
   console.log(JSON.stringify({ id: request.id, result }));
@@ -81,7 +102,9 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     accounts: [{ id: "fixture", label: "Fixture account", enabled: false, codeHome: home,
       threadState: { threadId: "fixture-thread" },
       dashboard: { rateLimitResetCredits: { availableCount: 1, expiresAt: [expiry] } } }],
-    selectedAccountId: "fixture"
+    selectedAccountId: "fixture",
+    scheduledRuns: options.seedRun ? [{ id: "fixture-run", accountId: "fixture", reason: "scheduled", status: "started",
+      turnId: "fixture-turn", ts: new Date(initialNow).toISOString() }] : []
   }));
   const portServer = createServer();
   await new Promise(resolve => portServer.listen(0, "127.0.0.1", resolve));
@@ -223,4 +246,114 @@ test("drops queued reminders after the credit is consumed or expires", async t =
   await f.setControls({ now: f.expiry * 1000 + 1000, status: 200 });
   await until(f.stored, state => state.telegramAlertOutbox.every(item => !item.resetReminder));
   assert.equal((await f.messages()).filter(item => item.status === 200 && /unused usage reset/.test(item.body.text)).length, 0);
+});
+
+test("custom notification counts and delays persist, and a future alert never blocks an immediate one", async t => {
+  const f = await fixture(t);
+  await f.request("/api/settings", "PATCH", { telegramQuotaWarningPercents: [50], telegramAlertRules: { "quota-threshold": [0, 1, 2] } });
+  await f.setControls({ used: 60 });
+  await f.refresh();
+  await until(f.messages, items => items.length === 1);
+  await until(f.stored, state => state.telegramAlertOutbox.length === 2);
+  await f.setControls({ count: 2, expirations: [f.expiry, f.expiry] });
+  await f.refresh();
+  const immediate = await until(f.messages, items => items.length === 2);
+  assert.match(immediate[1].body.text, /Usage resets changed/);
+  await f.setControls({ now: f.initialNow + 61_000 });
+  await until(f.messages, items => items.length === 3);
+  await f.stop();
+  await f.start();
+  assert.equal((await f.messages()).length, 3);
+  await f.setControls({ now: f.initialNow + 121_000 });
+  const delivered = await until(f.messages, items => items.length === 4);
+  assert.equal(delivered.filter(item => /crossed 50% free/.test(item.body.text)).length, 3);
+  await f.refresh();
+  await delay(120);
+  assert.equal((await f.messages()).length, 4);
+});
+
+test("pending quota warnings stop after quota recovery or removal of a notification time", async t => {
+  const f = await fixture(t);
+  await f.request("/api/settings", "PATCH", { telegramQuotaWarningPercents: [50], telegramAlertRules: { "quota-threshold": [1, 2] } });
+  await f.setControls({ used: 60 });
+  await f.refresh();
+  await until(f.stored, state => state.telegramAlertOutbox.length === 2);
+  await f.request("/api/settings", "PATCH", { telegramAlertRules: { "quota-threshold": [2] } });
+  await until(f.stored, state => state.telegramAlertOutbox.length === 1);
+  await f.setControls({ used: 10 });
+  await f.refresh();
+  await until(f.stored, state => state.telegramAlertOutbox.length === 0);
+  await f.setControls({ now: f.initialNow + 180_000 });
+  await delay(120);
+  assert.deepEqual(await f.messages(), []);
+});
+
+test("quota reset reminders repeat at chosen lead times, ignore clock projections, and renew next cycle", async t => {
+  const f = await fixture(t);
+  await f.request("/api/settings", "PATCH", { telegramQuotaReminderHours: { "5h": [2, 1] }, telegramAlertRules: { "quota-reset": [] } });
+  await f.setControls({ now: f.initialNow + 2 * 3600_000 });
+  const first = await until(f.messages, items => items.length === 1);
+  assert.match(first[0].body.text, /2 hours before reset/);
+  await f.setControls({ fiveHourReset: Math.floor(f.initialNow / 1000) + 4 * 3600 + 30 });
+  await f.refresh();
+  await delay(120);
+  assert.equal((await f.messages()).length, 1);
+  await f.setControls({ now: f.initialNow + 3 * 3600_000 + 60_000 });
+  const next = await until(f.messages, items => items.length === 2);
+  assert.match(next[1].body.text, /1 hour before reset/);
+  await f.stop();
+  await f.start();
+  assert.equal((await f.messages()).length, 2);
+  await f.setControls({ fiveHourReset: Math.floor(f.initialNow / 1000) + 9 * 3600, now: f.initialNow + 7 * 3600_000 });
+  await f.refresh();
+  await until(f.messages, items => items.length === 3);
+});
+
+test("credit count alerts and credit expiry alerts are independently configurable", async t => {
+  const f = await fixture(t);
+  await f.request("/api/settings", "PATCH", { telegramAlertResetExpiry: false, telegramAlertRules: { "reset-credit-count": [0, 1] } });
+  await f.setControls({ count: 2, expirations: [f.expiry, f.expiry], now: f.expiry * 1000 - 24 * 3600_000 });
+  await f.refresh();
+  await until(f.messages, items => items.length === 1);
+  await f.setControls({ now: f.expiry * 1000 - 24 * 3600_000 + 61_000 });
+  const messages = await until(f.messages, items => items.length === 2);
+  assert.ok(messages.every(item => /Usage resets changed/.test(item.body.text)));
+  assert.ok(!messages.some(item => /unused usage reset/.test(item.body.text)));
+});
+
+test("Reserve recovery cancels pending activation follow-ups without disabling the recovery alert", async t => {
+  const f = await fixture(t);
+  await f.request("/api/settings", "PATCH", { telegramAlertRules: { "reserve-active": [0, 1], "reserve-recovered": [0] } });
+  await f.setControls({ ordinaryAllowed: false });
+  await f.refresh();
+  await until(f.messages, items => items.length === 1);
+  await f.setControls({ ordinaryAllowed: true });
+  await f.refresh();
+  const messages = await until(f.messages, items => items.length === 2);
+  assert.match(messages[1].body.text, /returned to standby/);
+  await f.setControls({ now: f.initialNow + 120_000 });
+  await delay(120);
+  assert.equal((await f.messages()).length, 2);
+});
+
+test("authentication and scheduled-turn failures have independent counts and cancel follow-ups after recovery", async t => {
+  const f = await fixture(t, undefined, { seedRun: true });
+  await f.request("/api/settings", "PATCH", { telegramAlertRules: { "auth-failure": [0, 1], "send-failure": [0, 1] } });
+  await f.setControls({ authFailure: true });
+  await f.refresh();
+  await f.refresh();
+  await until(f.messages, items => items.length === 1);
+  await f.setControls({ authFailure: false });
+  await f.refresh();
+  await until(f.stored, state => state.telegramAlertOutbox.length === 0);
+  await f.setControls({ now: f.initialNow + 120_000, turnOutcome: "failed" });
+  await f.refresh();
+  const messages = await until(f.messages, items => items.length === 2);
+  assert.match(messages[1].body.text, /Scheduled Codex turn ended as failed/);
+  await f.setControls({ now: f.initialNow + 121_000, turnOutcome: "completed" });
+  await f.refresh();
+  await until(f.stored, state => state.telegramAlertOutbox.length === 0);
+  await f.setControls({ now: f.initialNow + 240_000 });
+  await delay(120);
+  assert.equal((await f.messages()).length, 2);
 });

@@ -2574,7 +2574,7 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 .console-disclosure > summary .badge { margin-left: 8px; font-size: 10px; }
 .disclosure-body { padding: 8px 0 4px; }
 .disclosure-body .alert-settings { border: 0; background: transparent; padding: 0; margin: 0; min-width: 0; }
-.disclosure-body .alert-settings legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.disclosure-body .alert-settings > legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .disclosure-body .alert-settings-head { margin-bottom: 8px; }
 .grid-2 { align-items: start; }
 .chart-help { margin-top: 4px; }
@@ -2762,7 +2762,7 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 .alerts-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .alerts-heading h3 { font-size: 15px; margin: 0; }
 .schedule-dialog .alert-settings { border: 0; padding: 0; margin: 0; background: transparent; }
-.schedule-dialog .alert-settings legend { display: none; }
+.schedule-dialog .alert-settings > legend { display: none; }
 .schedule-dialog .alert-settings-head p { font-size: 12px; }
 .telegram-expiry-reminders { grid-column: 1 / -1; border: 0; padding: 0; margin: 12px 0; min-width: 0; }
 .schedule-dialog .alert-settings .telegram-expiry-reminders legend { display: block; }
@@ -2775,6 +2775,35 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 .telegram-expiry-reminder-row button { flex: 0 0 44px; min-height: 44px; padding: 0; font-size: 20px; }
 .telegram-expiry-reminder-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .telegram-expiry-reminder-actions .hint { margin: 0; font-size: 12px; }
+.telegram-alert-section { min-width: 0; border-top: 1px solid var(--line); padding-top: 0; }
+.telegram-alert-section > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; cursor: pointer; color: var(--text); font-size: 13px; font-weight: 650; list-style: none; }
+.telegram-alert-section > summary::-webkit-details-marker { display: none; }
+.telegram-alert-section > summary::before { content: "›"; color: var(--muted); font-size: 20px; line-height: 1; transform: rotate(0deg); transition: transform .16s ease; }
+.telegram-alert-section[open] > summary::before { transform: rotate(90deg); }
+.telegram-alert-section > summary > span { flex: 1; }
+.telegram-alert-section > summary > small { color: var(--muted); font-size: 11px; font-weight: 500; max-width: 60%; text-align: right; }
+.telegram-quota-scope { margin: 10px 0; }
+.telegram-quota-scope > .hint { margin: 0; font-size: 12px; }
+.telegram-quota-scope .telegram-watch-windows { margin-top: 4px; }
+.telegram-alert-section h5 { margin: 0 0 8px; font-size: 12px; font-weight: 650; }
+.telegram-alert-section > .hint { margin: 0 0 10px; font-size: 12px; }
+.telegram-alert-rows { display: grid; gap: 8px; max-width: 390px; }
+.telegram-alert-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.telegram-alert-actions .hint, .telegram-rule-card > .hint { margin: 0; font-size: 12px; }
+.telegram-watch-windows { display: flex; flex-wrap: wrap; gap: 2px 16px; margin-top: 12px; }
+.telegram-watch-windows .checkbox-line { min-height: 40px; margin: 0; }
+.telegram-reset-windows { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.telegram-reset-windows > div, .telegram-rule-card { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--panel) 72%, transparent); }
+.telegram-reset-windows h5, .telegram-rule-card h5 { margin: 0 0 8px; font-size: 12px; font-weight: 650; }
+.telegram-reset-windows button, .telegram-rule-card button { margin-top: 8px; min-height: 40px; }
+.telegram-reset-windows .hint, .telegram-rule-card .hint { display: inline-block; margin: 8px 0 0 8px; font-size: 11px; }
+.telegram-rule-card + .telegram-rule-card { margin-top: 8px; }
+.telegram-alert-section .telegram-expiry-reminders { margin: 4px 0 10px; }
+@media (max-width: 700px) {
+  .telegram-reset-windows { grid-template-columns: minmax(0, 1fr); }
+  .telegram-alert-rows { max-width: none; }
+  .telegram-reset-windows > div, .telegram-rule-card { padding: 10px; }
+}
 @media (max-width: 700px) {
   .account-console-header { padding: 16px 16px 8px; gap: 12px; }
   .account-console-header h2 { flex: 1; }

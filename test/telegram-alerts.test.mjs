@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import {
   buildQuotaAlertEvents,
   buildResetReminderEvents,
+  buildQuotaResetReminderEvents,
+  recordQuotaResetReminder,
+  telegramEventStillRelevant,
   pruneResetReminderState,
   recordResetReminder,
   resetReminderHours,
@@ -303,4 +306,50 @@ test("splits Telegram alerts below the message size limit", () => {
 
   assert.equal(messages.length, 2);
   assert.ok(messages.every((message) => message.length <= 60));
+});
+
+test("custom quota thresholds replace the built-in 95/100 levels and watched windows are independent", () => {
+  const events = buildQuotaAlertEvents(dashboard({ used: 10, weekly: 10 }), dashboard({ used: 100, weekly: 100 }), {
+    ...settings, telegramQuotaWarningPercents: [40, 70], telegramQuotaWindows: ["weekly"]
+  });
+  const warnings = events.filter((event) => event.type === "quota-threshold");
+  assert.deepEqual(warnings.map((event) => [event.windowKey, event.threshold]), [["weekly", 40], ["weekly", 70]]);
+});
+
+test("individual event rules can disable Reserve activation without disabling recovery or expiry", () => {
+  const options = { ...settings, telegramAlertRules: { "reserve-active": [] } };
+  assert.ok(!buildQuotaAlertEvents(dashboard({ reserve: true }), dashboard({ reserve: true, ordinaryUsageAllowed: false }), options, 1_900_000_000_000)
+    .some((event) => event.type === "reserve-active"));
+  assert.ok(buildQuotaAlertEvents(dashboard({ reserve: true, ordinaryUsageAllowed: false }), dashboard({ reserve: true }), options, 1_900_000_000_000)
+    .some((event) => event.type === "reserve-recovered"));
+});
+
+test("quota pre-reset reminders support each window and ignore small projected-time changes", () => {
+  const expiry = 2_000_000_000;
+  const value = dashboard({ reset: expiry, reserve: true });
+  value.rateLimits.secondary.resetsAt = expiry;
+  value.rateLimitsByLimitId.reserve.primary.resetsAt = expiry;
+  const options = { ...settings, telegramQuotaReminderHours: { "5h": [2, 1], weekly: [48, 24], reserve: [48] } };
+  const sent = {};
+  let events = buildQuotaResetReminderEvents(value, options, sent, (expiry - 3600) * 1000);
+  assert.deepEqual(events.map((event) => [event.windowKey, event.hoursBefore]), [["5h", 1], ["weekly", 24], ["reserve", 48]]);
+  for (const event of events) recordQuotaResetReminder(sent, event);
+  value.rateLimits.primary.resetsAt += 30;
+  assert.deepEqual(buildQuotaResetReminderEvents(value, options, JSON.parse(JSON.stringify(sent)), (expiry - 3500) * 1000), []);
+  value.rateLimits.primary.resetsAt += 18_000;
+  events = buildQuotaResetReminderEvents(value, options, sent, (expiry + 18_000 - 1800) * 1000);
+  assert.equal(events[0].windowKey, "5h");
+});
+
+test("delayed event eligibility stops warnings after recovery, reset, or disabling a threshold", () => {
+  const value = dashboard({ used: 90 });
+  const event = { type: "quota-threshold", windowKey: "5h", threshold: 80, resetsAt: 2_000_000_000 };
+  const now = 1_900_000_000_000;
+  assert.equal(telegramEventStillRelevant(value, event, settings, {}, now), true);
+  assert.equal(telegramEventStillRelevant(dashboard({ used: 10 }), event, settings, {}, now), false);
+  assert.equal(telegramEventStillRelevant(dashboard({ used: 90, reset: 2_000_018_000 }), event, settings, {}, now), false);
+  assert.equal(telegramEventStillRelevant(value, event, { ...settings, telegramQuotaWarningPercents: [90] }, {}, now), false);
+  assert.equal(telegramEventStillRelevant(value, { type: "auth-failure" }, settings, { authIssue: false }, now), false);
+  assert.equal(telegramEventStillRelevant(value, { type: "auth-failure" }, settings, { authIssue: true, intentionalLogout: true }, now), false);
+  assert.equal(telegramEventStillRelevant(value, { type: "send-failure", observedAtMs: now }, settings, { latestSuccessfulRunAtMs: now + 1 }, now), false);
 });

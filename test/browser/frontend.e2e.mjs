@@ -337,6 +337,12 @@ async function saveSchedule(page) {
   await page.waitForFunction(() => !document.querySelector("#scheduleDialog").open && document.querySelector("#scheduleMessage").textContent === "Schedule saved.");
 }
 
+async function openAlertGroup(page, index) {
+  const group = page.locator("#alerts-tab-panel .telegram-alert-section").nth(index);
+  if (!await group.evaluate(element => element.open)) await group.locator(":scope > summary").click();
+  return group;
+}
+
 async function exercise(browserType, fixture, viewport, label) {
   const executablePath = process.env[browserType.name() === "chromium" ? "CHROMIUM_EXECUTABLE_PATH" : "WEBKIT_EXECUTABLE_PATH"];
   const browser = await browserType.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
@@ -415,6 +421,7 @@ async function exercise(browserType, fixture, viewport, label) {
     await openSchedule(page);
     await page.locator("#scheduleTimeInputs input").first().fill("");
     await page.locator("#alerts-tab").click();
+    await openAlertGroup(page, 0);
     await page.locator("#telegramQuotaThresholdInput").fill("0");
     await page.locator("#run-tab").click();
     await page.locator("#settingsForm button[type=submit]").click();
@@ -508,6 +515,50 @@ async function exercise(browserType, fixture, viewport, label) {
     await openSchedule(page, "alerts");
     assert.deepEqual(await reminderInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["48", "24"]);
     await screenshot(page, `${label}-reset-reminders`);
+    const alertGroups = () => page.locator("#alerts-tab-panel details.telegram-alert-section");
+    const thresholdInputs = () => page.locator("#telegramQuotaThresholdRows input");
+    await openAlertGroup(page, 0);
+    assert.deepEqual(await thresholdInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["80", "95", "100"]);
+    await page.locator("#addTelegramQuotaThresholdBtn").click();
+    await thresholdInputs().nth(3).fill("90");
+    await page.locator("#telegramQuotaThresholdRows button[aria-label='Remove threshold 2']").click();
+    assert.deepEqual(await thresholdInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["80", "100", "90"]);
+    const thresholdDelays = page.locator("#telegramQuotaThresholdRulesRows input");
+    await page.locator("[data-add-rule='quota-threshold']").click();
+    await thresholdDelays.nth(1).fill("30");
+    const resetGroup = alertGroups().nth(1);
+    await openAlertGroup(page, 1);
+    const resetNotices = page.locator("#telegramQuotaResetRulesRows input");
+    await page.locator("#telegramQuotaResetRulesRows button[aria-label='Remove notification 1']").click();
+    assert.equal(await resetNotices.count(), 0, "an empty event rule disables only that event");
+    await page.locator("[data-add-reminder='5h']").click();
+    const fiveHourReminder = page.locator("#telegramReminder5hRows input").first();
+    await fiveHourReminder.fill("0");
+    await resetGroup.locator(":scope > summary").click();
+    await page.locator("#settingsForm button[type=submit]").click();
+    assert.equal(await resetGroup.evaluate(element => element.open), true, "invalid controls reveal their collapsed settings group");
+    assert.equal(await fiveHourReminder.evaluate(input => input.validity.valid), false);
+    await fiveHourReminder.fill("2");
+    await openAlertGroup(page, 2);
+    await page.locator("#telegramResetExpiryInput").uncheck();
+    await saveSchedule(page);
+    const alertSettings = await requestJson(fixture.base, "/api/settings");
+    assert.deepEqual(alertSettings.telegramQuotaWarningPercents, [80, 90, 100]);
+    assert.equal(alertSettings.telegramAlertRules["quota-threshold"].length, 2, "quota warnings support multiple notification times");
+    assert.deepEqual(alertSettings.telegramAlertRules["quota-reset"], []);
+    assert.deepEqual(alertSettings.telegramQuotaReminderHours["5h"], [2]);
+    assert.equal(alertSettings.telegramAlertResetExpiry, false);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
+    await openSchedule(page, "alerts");
+    await openAlertGroup(page, 0);
+    assert.deepEqual(await thresholdInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["80", "90", "100"]);
+    assert.deepEqual(await page.locator("#telegramQuotaThresholdRulesRows input").evaluateAll(inputs => inputs.map(input => input.value)), ["0", "30"]);
+    await openAlertGroup(page, 1);
+    assert.equal(await page.locator("#telegramQuotaResetRulesRows input").count(), 0);
+    assert.deepEqual(await page.locator("#telegramReminder5hRows input").evaluateAll(inputs => inputs.map(input => input.value)), ["2"]);
+    await openAlertGroup(page, 2);
+    assert.equal(await page.locator("#telegramResetExpiryInput").isChecked(), false);
     await page.locator("#closeScheduleBtn").click();
 
     await accountWorkflow(page, fixture, label, expectedHttpErrors);

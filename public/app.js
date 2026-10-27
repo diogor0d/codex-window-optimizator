@@ -1497,57 +1497,86 @@ function renderScheduleTimeInputs(times) {
   syncScheduleTimes();
 }
 
-function renderTelegramExpiryReminders(hours = []) {
-  const rows = hours.map((value, index) => {
-    const row = document.createElement("div");
-    row.className = "telegram-expiry-reminder-row";
-    const label = document.createElement("label");
-    label.textContent = `Reminder ${index + 1} (hours before expiry)`;
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "1";
-    input.max = "720";
-    input.step = "1";
-    input.required = true;
-    input.value = value ?? "";
-    input.dataset.expiryReminder = "true";
-    input.setAttribute("aria-label", `Reminder ${index + 1} hours before expiry`);
+const ALERT_RULES = {
+  "quota-threshold": ["telegramQuotaThresholdRulesRows", "telegramQuotaThresholdRulesSummary"],
+  "quota-reset": ["telegramQuotaResetRulesRows", "telegramQuotaResetRulesSummary"],
+  "reserve-active": ["telegramReserveActiveRows", "telegramReserveActiveSummary"],
+  "reserve-recovered": ["telegramReserveRecoveredRows", "telegramReserveRecoveredSummary"],
+  "reset-credit-count": ["telegramResetCreditRulesRows", "telegramResetCreditRulesSummary"],
+  "auth-failure": ["telegramAuthFailureRows", "telegramAuthFailureSummary"],
+  "send-failure": ["telegramSendFailureRows", "telegramSendFailureSummary"]
+};
+const QUOTA_WINDOWS = ["5h", "weekly", "reserve"];
+const REMINDER_IDS = { "5h": "telegramReminder5hRows", weekly: "telegramReminderWeeklyRows", reserve: "telegramReminderReserveRows" };
+function renderNumberRows(containerId, values, { kind, min, max, unit, firstId, addId, summaryId, removeName } = {}) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const rows = values.map((value, index) => {
+    const row = document.createElement("div"); row.className = "telegram-expiry-reminder-row";
+    const label = document.createElement("label"); label.textContent = `${kind} ${index + 1} (${unit})`;
+    const input = document.createElement("input"); input.type = "number"; input.min = String(min); input.max = String(max); input.step = "1"; input.required = true; input.value = value ?? "";
+    input.dataset.alertKind = kind; input.setAttribute("aria-label", `${kind} ${index + 1} ${unit}`);
+    if (firstId && index === 0) input.id = firstId;
     label.append(input);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "×";
-    button.dataset.index = index;
-    button.setAttribute("aria-label", `Remove expiry reminder ${index + 1}`);
-    row.append(label, button);
-    return row;
+    const button = document.createElement("button"); button.type = "button"; button.textContent = "×"; button.dataset.index = index; button.setAttribute("aria-label", `Remove ${removeName || kind.toLowerCase()} ${index + 1}`);
+    row.append(label, button); return row;
   });
-  $("#telegramExpiryReminderRows").replaceChildren(...rows);
-  updateTelegramExpiryReminderSummary(hours);
+  container.replaceChildren(...rows);
+  if (addId) document.getElementById(addId).disabled = values.length >= 10;
+  if (summaryId) document.getElementById(summaryId).textContent = values.length ? `${values.length} ${kind.toLowerCase()}${values.length === 1 ? "" : "s"} configured` : `${kind}s are off.`;
+  updateAlertDisclosureCounts();
 }
-
-function updateTelegramExpiryReminderSummary(hours) {
-  const rows = document.querySelectorAll("#telegramExpiryReminderRows input");
-  $("#addTelegramExpiryReminderBtn").disabled = rows.length >= 10;
-  $("#telegramExpiryReminderSummary").textContent = rows.length
-    ? `${rows.length} reminder${rows.length === 1 ? "" : "s"} configured${[...rows].map((input, index) => {
-        const value = Number(hours[index] || input.value);
-        return value > 0 ? ` · ${value % 24 === 0 ? `${value / 24}d` : `${value}h`}` : "";
-      }).join("")}`
-    : "Expiry reminders are off.";
-}
-
-function telegramExpiryReminderValues() {
-  return [...document.querySelectorAll("#telegramExpiryReminderRows input")].map(input => input.value);
-}
-
-function validateTelegramExpiryReminders() {
-  const inputs = [...document.querySelectorAll("#telegramExpiryReminderRows input")];
+function numberRowValues(containerId) { return [...document.querySelectorAll(`#${containerId} input`)].map(input => input.value); }
+function validateNumberRows(containerId, unit) {
+  const inputs = [...document.querySelectorAll(`#${containerId} input`)];
   const values = inputs.map(input => input.value.trim());
-  inputs.forEach((input, index) => {
-    input.setCustomValidity(values[index] && values.filter(value => value && Number(value) === Number(values[index])).length > 1
-      ? "Reminder hours must be distinct."
-      : "");
-  });
+  inputs.forEach((input, index) => input.setCustomValidity(values[index] && values.filter(value => value && Number(value) === Number(values[index])).length > 1 ? `Values must be distinct ${unit}.` : ""));
+}
+function renderTelegramExpiryReminders(hours = []) {
+  renderNumberRows("telegramExpiryReminderRows", hours, { kind: "Reminder", min: 1, max: 720, unit: "hours before expiry", removeName: "expiry reminder", addId: "addTelegramExpiryReminderBtn", summaryId: "telegramExpiryReminderSummary" });
+}
+function updateTelegramExpiryReminderSummary() { const n = document.querySelectorAll("#telegramExpiryReminderRows input").length; $("#addTelegramExpiryReminderBtn").disabled = n >= 10; $("#telegramExpiryReminderSummary").textContent = n ? `${n} reminder${n === 1 ? "" : "s"} configured` : "Expiry reminders are off."; }
+function telegramExpiryReminderValues() { return numberRowValues("telegramExpiryReminderRows"); }
+function validateTelegramExpiryReminders() { validateNumberRows("telegramExpiryReminderRows", "hours"); }
+function renderAlertRules(rules = {}, thresholds = [80, 95, 100]) {
+  renderNumberRows("telegramQuotaThresholdRows", thresholds, { kind: "Threshold", min: 1, max: 100, unit: "percent used", firstId: "telegramQuotaThresholdInput", addId: "addTelegramQuotaThresholdBtn", summaryId: "telegramQuotaThresholdSummary" });
+  for (const [key, [container, summary]] of Object.entries(ALERT_RULES)) {
+    renderNumberRows(container, rules[key] ?? [0], { kind: "Notification", min: 0, max: 10080, unit: "minutes after event", summaryId: summary });
+    const count = document.querySelectorAll(`#${container} input`).length;
+    const add = document.querySelector(`[data-add-rule="${key}"]`);
+    if (add) add.disabled = count >= 10;
+  }
+  for (const window of QUOTA_WINDOWS) {
+    const id = REMINDER_IDS[window];
+    renderNumberRows(id, (state.settings?.telegramQuotaReminderHours || {})[window] || [], { kind: "Reminder", min: 1, max: 720, unit: "hours before reset", summaryId: null });
+    const add = document.querySelector(`[data-add-reminder="${window}"]`);
+    const n = document.querySelectorAll(`#${id} input`).length;
+    add.disabled = n >= 10;
+    const summary = document.getElementById(`telegramReminder${window === "5h" ? "5h" : window === "weekly" ? "Weekly" : "Reserve"}Summary`);
+    summary.textContent = n ? `${n} reminder${n === 1 ? "" : "s"}` : "Off";
+  }
+}
+function validateAllAlertNumbers() {
+  validateTelegramExpiryReminders(); validateNumberRows("telegramQuotaThresholdRows", "percent");
+  for (const config of Object.values(ALERT_RULES)) validateNumberRows(config[0], "minutes");
+  for (const id of Object.values(REMINDER_IDS)) validateNumberRows(id, "hours");
+}
+function updateAlertDisclosureCounts() {
+  const count = id => document.querySelectorAll(`#${id} input`).length;
+  const thresholds = count("telegramQuotaThresholdRows");
+  const warningTimes = count("telegramQuotaThresholdRulesRows");
+  const watched = { "5h": $("#telegramWatch5hInput").checked, weekly: $("#telegramWatchWeeklyInput").checked, reserve: $("#telegramWatchReserveInput").checked };
+  const watching = Object.values(watched).some(Boolean);
+  const beforeReset = Object.entries(REMINDER_IDS).reduce((n, [key, id]) => n + (watched[key] ? count(id) : 0), 0);
+  const expiryTimes = $("#telegramResetExpiryInput").checked ? count("telegramExpiryReminderRows") : 0;
+  const counts = {
+    quota: watching && thresholds && warningTimes ? `${thresholds} thresholds · ${warningTimes} per crossing` : "Off",
+    "quota-resets": watching ? `${count("telegramQuotaResetRulesRows")} after · ${beforeReset} before` : "Off",
+    credits: `${expiryTimes ? `${expiryTimes} expiry` : "Expiry off"} · ${count("telegramResetCreditRulesRows")} count`,
+    reserve: `${count("telegramReserveActiveRows")} activation · ${count("telegramReserveRecoveredRows")} recovery`,
+    failures: `${count("telegramAuthFailureRows")} auth · ${count("telegramSendFailureRows")} scheduled turn`
+  };
+  for (const [key, value] of Object.entries(counts)) { const node = document.querySelector(`[data-alert-count="${key}"]`); if (node) node.textContent = value; }
 }
 
 function fillSettings(settings) {
@@ -1565,12 +1594,13 @@ function fillSettings(settings) {
   $("#skipActiveInput").checked = Boolean(settings.skipIfActive);
   $("#telegramEnabledInput").checked = Boolean(settings.telegramAlertsEnabled);
   $("#telegramEnabledInput").disabled = !settings.telegramConfigured && !settings.telegramAlertsEnabled;
-  $("#telegramQuotaThresholdInput").value = settings.telegramQuotaWarningPercent ?? 80;
   renderTelegramExpiryReminders(settings.telegramResetReminderHours ?? [48]);
-  $("#telegramQuotaResetsInput").checked = settings.telegramAlertQuotaResets !== false;
-  $("#telegramReserveInput").checked = settings.telegramAlertReserve !== false;
-  $("#telegramResetCreditsInput").checked = settings.telegramAlertResetCredits !== false;
-  $("#telegramFailuresInput").checked = settings.telegramAlertFailures !== false;
+  $("#telegramResetExpiryInput").checked = settings.telegramAlertResetExpiry !== false;
+  renderAlertRules(settings.telegramAlertRules || {}, settings.telegramQuotaWarningPercents ?? [settings.telegramQuotaWarningPercent ?? 80, 95, 100]);
+  const watched = settings.telegramQuotaWindows || QUOTA_WINDOWS;
+  $("#telegramWatch5hInput").checked = watched.includes("5h");
+  $("#telegramWatchWeeklyInput").checked = watched.includes("weekly");
+  $("#telegramWatchReserveInput").checked = watched.includes("reserve");
   $("#telegramTestBtn").disabled = !settings.telegramConfigured;
   badge(
     $("#telegramStatus"),
@@ -1578,6 +1608,7 @@ function fillSettings(settings) {
     settings.telegramConfigured ? settings.telegramAlertsEnabled ? "ok" : "warn" : "neutral"
   );
   $("#promptInput").value = settings.promptTemplate || "";
+  updateAlertDisclosureCounts();
 }
 
 async function refreshSettings() {
@@ -2578,9 +2609,13 @@ function connectEvents() {
 
 async function saveSettings(event) {
   event.preventDefault();
-  validateTelegramExpiryReminders();
+  validateAllAlertNumbers();
   const invalid = $("#settingsForm").querySelector("input:invalid, select:invalid, textarea:invalid");
   if (invalid) {
+    const panel = invalid.closest("[role=tabpanel]");
+    if (panel) selectSettingsTab(panel.id.replace("-tab-panel", ""));
+    const disclosure = invalid.closest("details");
+    if (disclosure) disclosure.open = true;
     invalid.reportValidity();
     invalid.focus();
     return;
@@ -2600,12 +2635,12 @@ async function saveSettings(event) {
     networkAccess: $("#networkInput").checked,
     skipIfActive: $("#skipActiveInput").checked,
     telegramAlertsEnabled: $("#telegramEnabledInput").checked,
-    telegramQuotaWarningPercent: Number.parseInt($("#telegramQuotaThresholdInput").value, 10),
+    telegramQuotaWarningPercents: numberRowValues("telegramQuotaThresholdRows").map(Number),
+    telegramQuotaWindows: QUOTA_WINDOWS.filter(window => ({ "5h": $("#telegramWatch5hInput").checked, weekly: $("#telegramWatchWeeklyInput").checked, reserve: $("#telegramWatchReserveInput").checked }[window])),
+    telegramQuotaReminderHours: Object.fromEntries(QUOTA_WINDOWS.map(window => [window, numberRowValues(REMINDER_IDS[window]).map(Number)])),
+    telegramAlertRules: Object.fromEntries(Object.entries(ALERT_RULES).map(([key, config]) => [key, numberRowValues(config[0]).map(Number)])),
     telegramResetReminderHours: telegramExpiryReminderValues().map(Number),
-    telegramAlertQuotaResets: $("#telegramQuotaResetsInput").checked,
-    telegramAlertReserve: $("#telegramReserveInput").checked,
-    telegramAlertResetCredits: $("#telegramResetCreditsInput").checked,
-    telegramAlertFailures: $("#telegramFailuresInput").checked,
+    telegramAlertResetExpiry: $("#telegramResetExpiryInput").checked,
     promptTemplate: $("#promptInput").value
   };
   const revision = state.settingsRevision;
@@ -2800,6 +2835,54 @@ function bindActions() {
     $("#scheduleTimeInputs").lastElementChild.querySelector("input").focus();
     markSettingsDirty();
   });
+  $("#settingsForm").addEventListener("click", (event) => {
+    const addRule = event.target.closest("[data-add-rule]");
+    const addReminder = event.target.closest("[data-add-reminder]");
+    const addThreshold = event.target.closest("#addTelegramQuotaThresholdBtn");
+    if (addThreshold) {
+      const values = numberRowValues("telegramQuotaThresholdRows");
+      if (values.length >= 10) return;
+      renderNumberRows("telegramQuotaThresholdRows", [...values, ""], { kind: "Threshold", min: 1, max: 100, unit: "percent used", firstId: "telegramQuotaThresholdInput", addId: "addTelegramQuotaThresholdBtn", summaryId: "telegramQuotaThresholdSummary" });
+      document.querySelectorAll("#telegramQuotaThresholdRows input").item(values.length)?.focus(); updateAlertDisclosureCounts(); markSettingsDirty(); return;
+    }
+    if (addRule) {
+      const [container, summary] = ALERT_RULES[addRule.dataset.addRule];
+      const inputs = numberRowValues(container);
+      if (inputs.length >= 10) return;
+      renderNumberRows(container, [...inputs, ""], { kind: "Notification", min: 0, max: 10080, unit: "minutes after event", summaryId: summary });
+      const add = document.querySelector(`[data-add-rule="${addRule.dataset.addRule}"]`); add.disabled = inputs.length + 1 >= 10;
+      document.querySelectorAll(`#${container} input`).item(inputs.length)?.focus(); updateAlertDisclosureCounts(); markSettingsDirty(); return;
+    }
+    if (addReminder) {
+      const window = addReminder.dataset.addReminder, id = REMINDER_IDS[window], values = numberRowValues(id);
+      if (values.length >= 10) return;
+      renderNumberRows(id, [...values, ""], { kind: "Reminder", min: 1, max: 720, unit: "hours before reset" });
+      addReminder.disabled = values.length + 1 >= 10;
+      const summary = document.getElementById(`telegramReminder${window === "5h" ? "5h" : window === "weekly" ? "Weekly" : "Reserve"}Summary`);
+      summary.textContent = `${values.length + 1} reminders`;
+      document.querySelectorAll(`#${id} input`).item(values.length)?.focus(); updateAlertDisclosureCounts(); markSettingsDirty(); return;
+    }
+    const remove = event.target.closest(".telegram-alert-rows button");
+    if (remove) {
+      const container = remove.closest(".telegram-alert-rows"), id = container.id;
+      const values = [...container.querySelectorAll("input")].map(input => input.value); values.splice(Number(remove.dataset.index), 1);
+      if (id === "telegramQuotaThresholdRows") renderNumberRows(id, values, { kind: "Threshold", min: 1, max: 100, unit: "percent used", firstId: "telegramQuotaThresholdInput", addId: "addTelegramQuotaThresholdBtn", summaryId: "telegramQuotaThresholdSummary" });
+      else if (Object.values(ALERT_RULES).some(config => config[0] === id)) {
+        const key = Object.keys(ALERT_RULES).find(key => ALERT_RULES[key][0] === id), summary = ALERT_RULES[key][1];
+        renderNumberRows(id, values, { kind: "Notification", min: 0, max: 10080, unit: "minutes after event", summaryId: summary });
+        const add = document.querySelector(`[data-add-rule="${key}"]`); add.disabled = values.length >= 10;
+      } else { renderNumberRows(id, values, { kind: "Reminder", min: 1, max: 720, unit: "hours before reset" }); const window = Object.keys(REMINDER_IDS).find(key => REMINDER_IDS[key] === id); document.getElementById(`telegramReminder${window === "5h" ? "5h" : window === "weekly" ? "Weekly" : "Reserve"}Summary`).textContent = values.length ? `${values.length} reminders` : "Off"; }
+      validateAllAlertNumbers(); updateAlertDisclosureCounts();
+      const remaining = container.querySelectorAll("input").length;
+      const nextRemove = container.querySelector(`button[data-index="${Math.min(Number(remove.dataset.index), remaining - 1)}"]`);
+      const fallback = id === "telegramQuotaThresholdRows" ? $("#addTelegramQuotaThresholdBtn") : Object.values(ALERT_RULES).some(config => config[0] === id) ? document.querySelector(`[data-add-rule="${Object.keys(ALERT_RULES).find(key => ALERT_RULES[key][0] === id)}"]`) : document.querySelector(`[data-add-reminder="${Object.keys(REMINDER_IDS).find(key => REMINDER_IDS[key] === id)}"]`);
+      (nextRemove || fallback)?.focus(); markSettingsDirty(); return;
+    }
+  });
+  $("#settingsForm").addEventListener("input", event => {
+    if (event.target.matches(".telegram-alert-rows input, #telegramExpiryReminderRows input")) { validateAllAlertNumbers(); updateAlertDisclosureCounts(); }
+    if (event.target.closest("#alerts-tab-panel")) updateAlertDisclosureCounts();
+  });
   $("#addTelegramExpiryReminderBtn").addEventListener("click", () => {
     if (document.querySelectorAll("#telegramExpiryReminderRows input").length >= 10) return;
     renderTelegramExpiryReminders([...telegramExpiryReminderValues(), ""]);
@@ -2819,7 +2902,7 @@ function bindActions() {
     renderTelegramExpiryReminders(values);
     validateTelegramExpiryReminders();
     ($(`#telegramExpiryReminderRows button[data-index="${Math.min(index, values.length - 1)}"]`) || $("#addTelegramExpiryReminderBtn")).focus();
-    markSettingsDirty();
+    updateAlertDisclosureCounts(); markSettingsDirty();
   });
   $("#scheduleTimeInputs").addEventListener("input", syncScheduleTimes);
   $("#scheduleTimeInputs").addEventListener("click", (event) => {

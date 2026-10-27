@@ -1,3 +1,5 @@
+import { normalizeTelegramSettings, TELEGRAM_EVENT_TYPES } from "./telegram-policy.mjs";
+
 function windowByDuration(snapshot, duration) {
   return [snapshot?.primary, snapshot?.secondary]
     .find((window) => window?.windowDurationMins === duration) || null;
@@ -85,7 +87,8 @@ export function resetCreditExpirations(dashboard, nowMs = Date.now()) {
 }
 
 export function buildResetReminderEvents(dashboard, settings, sent = {}, nowMs = Date.now()) {
-  if (!settings.telegramAlertResetCredits) return [];
+  settings = normalizeTelegramSettings(settings);
+  if (!settings.telegramAlertResetExpiry) return [];
   const hours = resetReminderHours(settings);
   const events = [];
   for (const [expiresAt, count] of resetCreditExpirations(dashboard, nowMs)) {
@@ -129,15 +132,13 @@ export function pruneResetReminderState(sent, nowMs = Date.now()) {
 }
 
 export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.now()) {
+  settings = normalizeTelegramSettings(settings);
   const events = [];
-  const warning = Number.isInteger(settings.telegramQuotaWarningPercent)
-    ? settings.telegramQuotaWarningPercent
-    : 80;
-  const thresholds = [...new Set([warning, 95, 100])].filter((value) => value > 0 && value <= 100).sort((a, b) => a - b);
+  const thresholds = settings.telegramQuotaWarningPercents;
   const previousWindows = Object.fromEntries(alertWindows(previous).map((entry) => [entry.key, entry]));
 
   for (const entry of alertWindows(current)) {
-    if (entry.key === "reserve" && !settings.telegramAlertReserve) {
+    if (!settings.telegramQuotaWindows.includes(entry.key)) {
       continue;
     }
     const before = previousWindows[entry.key]?.window;
@@ -146,33 +147,39 @@ export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.
       continue;
     }
     for (const threshold of thresholds) {
-      if (before.usedPercent < threshold && after.usedPercent >= threshold) {
+      if (settings.telegramAlertRules["quota-threshold"].length
+        && before.usedPercent < threshold && after.usedPercent >= threshold) {
         events.push({
           type: "quota-threshold",
+          windowKey: entry.key,
+          threshold,
+          resetsAt: after.resetsAt,
           text: `${entry.label} reached ${100 - after.usedPercent}% free (crossed ${100 - threshold}% free)`
         });
       }
     }
     const resetAdvanceSeconds = after.resetsAt - before.resetsAt;
     const minimumCycleAdvanceSeconds = after.windowDurationMins * 60 * 0.8;
-    if (settings.telegramAlertQuotaResets
+    if (settings.telegramAlertRules["quota-reset"].length
       && Number.isSafeInteger(before.resetsAt)
       && Number.isSafeInteger(after.resetsAt)
       && Number.isFinite(minimumCycleAdvanceSeconds)
       && resetAdvanceSeconds >= minimumCycleAdvanceSeconds) {
       events.push({
         type: "quota-reset",
+        windowKey: entry.key,
+        resetsAt: after.resetsAt,
         text: `${entry.label} reset to ${100 - after.usedPercent}% free; next reset ${formatTimestamp(after.resetsAt, settings.timezone)}`
       });
     }
   }
 
-  if (settings.telegramAlertReserve) {
-    if (previous?.ordinaryUsageAllowed !== false
+  {
+    if (settings.telegramAlertRules["reserve-active"].length && previous?.ordinaryUsageAllowed !== false
       && current?.ordinaryUsageAllowed === false
       && hasCurrentReserveAllowance(current, nowMs)) {
       events.push({ type: "reserve-active", text: "Ordinary usage is blocked; Luna Reserve fallback is active" });
-    } else if (previous?.ordinaryUsageAllowed === false
+    } else if (settings.telegramAlertRules["reserve-recovered"].length && previous?.ordinaryUsageAllowed === false
       && current?.ordinaryUsageAllowed === true
       && hasReserveAllowance(previous)
       && hasCurrentReserveAllowance(current, nowMs)) {
@@ -180,17 +187,69 @@ export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.
     }
   }
 
-  if (settings.telegramAlertResetCredits) {
+  if (settings.telegramAlertRules["reset-credit-count"].length) {
     const beforeCount = previous?.rateLimitResetCredits?.availableCount;
     const afterCount = current?.rateLimitResetCredits?.availableCount;
     if (Number.isSafeInteger(beforeCount) && Number.isSafeInteger(afterCount) && beforeCount !== afterCount) {
       events.push({
         type: "reset-credit-count",
+        availableCount: afterCount,
         text: `Usage resets changed from ${beforeCount} to ${afterCount}`
       });
     }
   }
   return events;
+}
+
+function sameQuotaCycle(before, after, durationMins) {
+  return Number.isSafeInteger(before) && Number.isSafeInteger(after)
+    && Math.abs(after - before) < durationMins * 60 * 0.8;
+}
+
+export function buildQuotaResetReminderEvents(dashboard, settings, sent = {}, nowMs = Date.now()) {
+  settings = normalizeTelegramSettings(settings);
+  const events = [];
+  for (const { key, label, window } of alertWindows(dashboard)) {
+    if (!settings.telegramQuotaWindows.includes(key) || !Number.isSafeInteger(window?.resetsAt)
+      || window.resetsAt * 1000 <= nowMs || window.resetsAt * 1000 > 8.64e15) continue;
+    const dueHours = settings.telegramQuotaReminderHours[key]
+      .filter((hours) => nowMs >= window.resetsAt * 1000 - hours * 3600_000);
+    const hoursBefore = dueHours.at(-1);
+    if (hoursBefore === undefined) continue;
+    const receipt = sent[key];
+    if (sameQuotaCycle(receipt?.resetsAt, window.resetsAt, window.windowDurationMins)
+      && receipt.hours?.includes(hoursBefore)) continue;
+    events.push({ type: "quota-reset-reminder", windowKey: key, expiresAt: window.resetsAt,
+      hoursBefore, dueHours, windowDurationMins: window.windowDurationMins,
+      text: `${label} resets ${formatTimestamp(window.resetsAt, settings.timezone)} (${settings.timezone}). Scheduled reminder: ${hoursBefore} hour${hoursBefore === 1 ? "" : "s"} before reset.` });
+  }
+  return events;
+}
+
+export function recordQuotaResetReminder(sent, event) {
+  const receipt = sent[event.windowKey];
+  const previousHours = sameQuotaCycle(receipt?.resetsAt, event.expiresAt, event.windowDurationMins)
+    ? receipt.hours || [] : [];
+  sent[event.windowKey] = { resetsAt: event.expiresAt, hours: [...new Set([...previousHours, ...event.dueHours])] };
+}
+
+export function telegramEventStillRelevant(dashboard, event, settings, context = {}, nowMs = Date.now()) {
+  settings = normalizeTelegramSettings(settings);
+  if (!TELEGRAM_EVENT_TYPES.includes(event.type) || !settings.telegramAlertRules[event.type].length) return false;
+  if (event.type.startsWith("quota-")) {
+    const window = alertWindows(dashboard).find((entry) => entry.key === event.windowKey)?.window;
+    if (!window || !settings.telegramQuotaWindows.includes(event.windowKey)) return false;
+    if (Number.isSafeInteger(event.resetsAt) && !sameQuotaCycle(event.resetsAt, window.resetsAt, window.windowDurationMins)) return false;
+    if (Number.isSafeInteger(window.resetsAt) && window.resetsAt * 1000 <= nowMs) return false;
+    return event.type === "quota-reset" || (settings.telegramQuotaWarningPercents.includes(event.threshold)
+      && window.usedPercent >= event.threshold);
+  }
+  if (event.type === "reserve-active") return dashboard?.ordinaryUsageAllowed === false && hasCurrentReserveAllowance(dashboard, nowMs);
+  if (event.type === "reserve-recovered") return dashboard?.ordinaryUsageAllowed === true && hasCurrentReserveAllowance(dashboard, nowMs);
+  if (event.type === "reset-credit-count") return dashboard?.rateLimitResetCredits?.availableCount === event.availableCount;
+  if (event.type === "auth-failure") return context.authIssue === true && !context.intentionalLogout;
+  if (event.type === "send-failure") return !(context.latestSuccessfulRunAtMs > event.observedAtMs);
+  return false;
 }
 
 export function formatTelegramAlert(accountLabel, events) {

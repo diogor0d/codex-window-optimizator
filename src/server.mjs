@@ -7,7 +7,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { advanceAuthenticationFailure, interpretCodexLoginStatus, mergeAuthenticationProbe } from "./auth-status.mjs";
 import { recordRateLimitsNotification, recordRateLimitsRead } from "./rate-limits.mjs";
-import { buildQuotaAlertEvents, buildResetReminderEvents, formatTelegramAlertMessages, pruneResetReminderState, recordResetReminder, resetCreditExpirations, resetReminderHours, validateResetReminderHours, withoutTelegramCredentials } from "./telegram-alerts.mjs";
+import { buildQuotaAlertEvents, buildQuotaResetReminderEvents, buildResetReminderEvents, formatTelegramAlertMessages, pruneResetReminderState, recordQuotaResetReminder, recordResetReminder, telegramEventStillRelevant, validateResetReminderHours, withoutTelegramCredentials } from "./telegram-alerts.mjs";
+import { normalizeTelegramSettings, patchTelegramSettings, TELEGRAM_EVENT_TYPES, TELEGRAM_QUOTA_WINDOWS } from "./telegram-policy.mjs";
 import { adaptivePollingInterval, appendUsageSample, latestUsageActivityAt, normalizeUsageHistory, observedUsageKeys } from "./usage-history.mjs";
 import { chooseModel, readModelCatalog } from "./models.mjs";
 
@@ -79,7 +80,8 @@ const DEFAULT_STORE = {
     telegramAlertReserve: true,
     telegramAlertResetCredits: true,
     telegramResetReminderHours: [48],
-    telegramAlertFailures: true
+    telegramAlertFailures: true,
+    ...normalizeTelegramSettings()
   },
   selectedAccountId: "default",
   accounts: [],
@@ -88,7 +90,7 @@ const DEFAULT_STORE = {
   activityEvents: [],
   authEvents: [],
   telegramAlertOutbox: [],
-  telegramAlertState: { authIssues: {}, authFailureCounts: {}, intentionalLogouts: {}, resetReminders: {} },
+  telegramAlertState: { authIssues: {}, authFailureCounts: {}, intentionalLogouts: {}, resetReminders: {}, quotaReminders: {} },
   dashboard: structuredClone(DEFAULT_DASHBOARD)
 };
 
@@ -105,6 +107,7 @@ const accountProcesses = new Map();
 let stateRefreshPromise = null;
 let authStatusBroadcastPromise = null;
 let telegramFlushPromise = null;
+let telegramSendingItemId = null;
 let telegramRetryTimer = null;
 let shuttingDown = false;
 
@@ -358,9 +361,7 @@ async function loadStore() {
   try {
     const raw = await readFile(STORE_PATH, "utf8");
     const saved = JSON.parse(raw);
-    if (saved.settings && saved.settings.telegramResetReminderHours === undefined) {
-      saved.settings.telegramResetReminderHours = resetReminderHours(saved.settings);
-    }
+    saved.settings = normalizeTelegramSettings(saved.settings);
     store = mergeDefaults(saved, DEFAULT_STORE);
   } catch (error) {
     if (error.code !== "ENOENT") {
@@ -374,6 +375,7 @@ async function loadStore() {
 }
 
 function normalizeStore() {
+  store.settings = normalizeTelegramSettings(store.settings);
   store.settings.approvalPolicy = normalizeApprovalPolicy(store.settings.approvalPolicy);
   for (const key of [
     "telegramAlertsEnabled",
@@ -391,8 +393,6 @@ function normalizeStore() {
     || store.settings.telegramQuotaWarningPercent > 100) {
     store.settings.telegramQuotaWarningPercent = DEFAULT_STORE.settings.telegramQuotaWarningPercent;
   }
-  store.settings.telegramResetReminderHours = resetReminderHours(store.settings);
-  delete store.settings.telegramResetExpiryHours;
   store.telegramAlertOutbox = Array.isArray(store.telegramAlertOutbox)
     ? store.telegramAlertOutbox.filter((item) => item
       && typeof item === "object"
@@ -409,6 +409,13 @@ function normalizeStore() {
         attempts: Number.isSafeInteger(item.attempts) && item.attempts >= 0 ? item.attempts : 0,
         nextAttemptAt: Number.isFinite(Date.parse(item.nextAttemptAt || "")) ? item.nextAttemptAt : null,
         deliveredAt: Number.isFinite(Date.parse(item.deliveredAt || "")) ? item.deliveredAt : null,
+        scheduledAt: Number.isFinite(Date.parse(item.scheduledAt || "")) ? item.scheduledAt : null,
+        alert: item.alert && TELEGRAM_EVENT_TYPES.includes(item.alert.event?.type)
+          && Number.isInteger(item.alert.delayMinutes) && item.alert.delayMinutes >= 0 && item.alert.delayMinutes <= 10080
+          && Number.isFinite(item.alert.event.observedAtMs)
+          ? { event: item.alert.event, delayMinutes: item.alert.delayMinutes } : null,
+        quotaReminder: TELEGRAM_QUOTA_WINDOWS.includes(item.quotaReminder?.windowKey)
+          ? { windowKey: item.quotaReminder.windowKey } : null,
         resetReminder: item.resetReminder && Number.isSafeInteger(item.resetReminder.expiresAt)
           && validateResetReminderHours([item.resetReminder.hoursBefore])
           ? { expiresAt: item.resetReminder.expiresAt, hoursBefore: item.resetReminder.hoursBefore }
@@ -446,6 +453,11 @@ function normalizeStore() {
   store.telegramAlertState.resetReminders = Object.fromEntries(
     Object.entries(store.telegramAlertState.resetReminders || {})
       .map(([accountId, sent]) => [accountId, pruneResetReminderState(sent)])
+  );
+  store.telegramAlertState.quotaReminders = Object.fromEntries(
+    Object.entries(store.telegramAlertState.quotaReminders || {}).map(([accountId, windows]) => [accountId,
+      Object.fromEntries(TELEGRAM_QUOTA_WINDOWS.filter((key) => Number.isSafeInteger(windows?.[key]?.resetsAt)
+        && validateResetReminderHours(windows[key].hours)).map((key) => [key, windows[key]]))])
   );
   if (!Array.isArray(store.accounts) || store.accounts.length === 0) {
     const migrated = defaultAccount();
@@ -571,6 +583,35 @@ async function deliverTelegramMessage(text) {
   }
 }
 
+function pendingTelegramReminder(item, account) {
+  if (item.resetReminder) return buildResetReminderEvents(account.dashboard, store.settings,
+    store.telegramAlertState.resetReminders[account.id]).find((event) => event.expiresAt === item.resetReminder.expiresAt);
+  if (item.quotaReminder) return buildQuotaResetReminderEvents(account.dashboard, store.settings,
+    store.telegramAlertState.quotaReminders[account.id]).find((event) => event.windowKey === item.quotaReminder.windowKey);
+  return null;
+}
+
+function telegramItemCurrent(item) {
+  const account = store.accounts.find((account) => account.id === item.accountId);
+  if (!account || deletingAccountIds.has(account.id)) return false;
+  if (item.resetReminder || item.quotaReminder) return Boolean(pendingTelegramReminder(item, account));
+  if (!item.alert) return true; // Messages already queued by an older release.
+  if (!store.settings.telegramAlertRules[item.alert.event.type]?.includes(item.alert.delayMinutes)) return false;
+  const latestSuccessfulRunAtMs = Math.max(0, ...store.scheduledRuns
+    .filter((run) => run.accountId === account.id && run.status === "completed")
+    .map((run) => Date.parse(run.completedAt || run.ts) || 0));
+  return telegramEventStillRelevant(account.dashboard, item.alert.event, store.settings, {
+    authIssue: store.telegramAlertState.authIssues[account.id] === true,
+    intentionalLogout: store.telegramAlertState.intentionalLogouts[account.id] === true,
+    latestSuccessfulRunAtMs
+  });
+}
+
+function removeTelegramItem(item) {
+  const index = store.telegramAlertOutbox.findIndex((entry) => entry.id === item.id);
+  if (index >= 0) store.telegramAlertOutbox.splice(index, 1);
+}
+
 function flushTelegramOutbox() {
   if (telegramFlushPromise || !telegramConfigured() || !store.settings.telegramAlertsEnabled || !store.telegramAlertOutbox.length) {
     return telegramFlushPromise;
@@ -579,44 +620,36 @@ function flushTelegramOutbox() {
     // Persist queued messages before making any external send.
     await saveStore();
     while (store.telegramAlertOutbox.length && store.settings.telegramAlertsEnabled) {
-      const item = store.telegramAlertOutbox[0];
-      if (item.resetReminder) {
-        const account = store.accounts.find((account) => account.id === item.accountId);
-        if (!account || deletingAccountIds.has(account.id) || !store.settings.telegramAlertResetCredits
-          || !resetCreditExpirations(account.dashboard).has(item.resetReminder.expiresAt)) {
-          store.telegramAlertOutbox.shift();
-          await saveStore();
-          continue;
-        }
-        const reminder = buildResetReminderEvents(account.dashboard, store.settings,
-          store.telegramAlertState.resetReminders[account.id])
-          .find((event) => event.expiresAt === item.resetReminder.expiresAt);
-        if (!reminder) {
-          store.telegramAlertOutbox.shift();
-          await saveStore();
-          continue;
-        }
-        item.text = formatTelegramAlertMessages(account.label, [reminder])[0];
-        item.resetReminder = reminder;
-      }
-      if (item.deliveredAt) {
-        store.telegramAlertOutbox.shift();
+      const obsolete = store.telegramAlertOutbox.find((item) => item.deliveredAt || !telegramItemCurrent(item));
+      if (obsolete) {
+        removeTelegramItem(obsolete);
         await saveStore();
         continue;
       }
-      if (Date.parse(item.nextAttemptAt || "") > Date.now()) {
-        break;
+      const item = store.telegramAlertOutbox.find((item) => !(Date.parse(item.nextAttemptAt || "") > Date.now())
+        && !(Date.parse(item.scheduledAt || "") > Date.now()));
+      if (!item) break;
+      const account = store.accounts.find((account) => account.id === item.accountId);
+      const sentReminder = pendingTelegramReminder(item, account);
+      if (sentReminder) {
+        item.text = formatTelegramAlertMessages(account.label, [sentReminder])[0];
       }
-      const sentReminder = item.resetReminder;
+      telegramSendingItemId = item.id;
       try {
         await deliverTelegramMessage(item.text);
+        telegramSendingItemId = null;
         item.deliveredAt = nowIso();
         if (sentReminder && store.accounts.some((account) => account.id === item.accountId)) {
-          const sent = store.telegramAlertState.resetReminders[item.accountId] ||= {};
-          recordResetReminder(sent, sentReminder);
+          if (item.resetReminder) {
+            const sent = store.telegramAlertState.resetReminders[item.accountId] ||= {};
+            recordResetReminder(sent, sentReminder);
+          } else {
+            const sent = store.telegramAlertState.quotaReminders[item.accountId] ||= {};
+            recordQuotaResetReminder(sent, sentReminder);
+          }
         }
         await saveStore();
-        store.telegramAlertOutbox.shift();
+        removeTelegramItem(item);
         await saveStore();
         addActivity("telegram", "info", "Telegram alert sent", {
           accountId: item.accountId,
@@ -625,6 +658,7 @@ function flushTelegramOutbox() {
           attempts: item.attempts + 1
         });
       } catch (error) {
+        telegramSendingItemId = null;
         if (item.deliveredAt) {
           addActivity("telegram", "error", "Telegram alert was delivered but outbox persistence failed", {
             error: error.message,
@@ -645,7 +679,7 @@ function flushTelegramOutbox() {
           break;
         }
         if (!error.transient) {
-          store.telegramAlertOutbox.shift();
+          removeTelegramItem(item);
           await saveStore();
           addActivity("telegram", "error", "Telegram permanently rejected an alert", {
             error: error.message,
@@ -669,6 +703,7 @@ function flushTelegramOutbox() {
   })().catch((error) => {
     addActivity("telegram", "error", "Telegram outbox processing failed", { error: error.message });
   }).finally(() => {
+    telegramSendingItemId = null;
     telegramFlushPromise = null;
   });
   return telegramFlushPromise;
@@ -682,28 +717,35 @@ function queueTelegramEvents(account, events) {
     return false;
   }
   let queued = false;
-  for (const text of formatTelegramAlertMessages(account.label, events)) {
-    if (store.telegramAlertOutbox.length >= 500) {
-      addActivity("telegram", "error", "Telegram alert outbox is full; new alerts are paused", {
-        accountId: account.id,
-        eventTypes: events.map((event) => event.type)
-      });
-      break;
+  const observedAtMs = Date.now();
+  for (const source of events) {
+    const event = { ...source, observedAtMs };
+    const reminder = ["reset-credit-expiry", "quota-reset-reminder"].includes(event.type);
+    const delays = reminder ? [0] : store.settings.telegramAlertRules[event.type] || [];
+    if (!reminder && delays.length) {
+      // A new occurrence replaces undelivered notifications for the same condition.
+      const identity = (value) => JSON.stringify([value.type, value.windowKey, value.threshold, value.runId]);
+      store.telegramAlertOutbox = store.telegramAlertOutbox.filter((item) => item.id === telegramSendingItemId
+        || item.accountId !== account.id || !item.alert || identity(item.alert.event) !== identity(event));
     }
-    store.telegramAlertOutbox.push({
-      id: randomUUID(),
-      createdAt: nowIso(),
-      accountId: account.id,
-      accountLabel: account.label,
-      eventTypes: [...new Set(events.map((event) => event.type))],
-      text,
-      resetReminder: events.length === 1 && events[0].type === "reset-credit-expiry"
-        ? { expiresAt: events[0].expiresAt, hoursBefore: events[0].hoursBefore }
-        : null,
-      attempts: 0,
-      nextAttemptAt: null
-    });
-    queued = true;
+    for (const delayMinutes of delays) {
+      if (store.telegramAlertOutbox.length >= 500) {
+        addActivity("telegram", "error", "Telegram alert outbox is full; new alerts are paused", { accountId: account.id, eventTypes: [event.type] });
+        break;
+      }
+      const text = delayMinutes === 0 ? event.text
+        : `${event.text}\nFollow-up ${delayMinutes} min after the event reported ${new Date(observedAtMs).toLocaleString("en-GB", { timeZone: store.settings.timezone })}.`;
+      store.telegramAlertOutbox.push({
+        id: randomUUID(), createdAt: nowIso(), accountId: account.id, accountLabel: account.label,
+        eventTypes: [event.type], text: formatTelegramAlertMessages(account.label, [{ text }])[0],
+        resetReminder: event.type === "reset-credit-expiry" ? { expiresAt: event.expiresAt, hoursBefore: event.hoursBefore } : null,
+        quotaReminder: event.type === "quota-reset-reminder" ? { windowKey: event.windowKey } : null,
+        alert: reminder ? null : { event, delayMinutes },
+        scheduledAt: new Date(observedAtMs + delayMinutes * 60_000).toISOString(),
+        attempts: 0, nextAttemptAt: null
+      });
+      queued = true;
+    }
   }
   if (queued) {
     void saveStore()
@@ -718,6 +760,7 @@ function queueTelegramEvents(account, events) {
 function queueAccountQuotaAlerts(account, previousDashboard) {
   queueTelegramEvents(account, buildQuotaAlertEvents(previousDashboard, account.dashboard, store.settings));
   queueAccountResetReminders(account);
+  queueAccountWindowReminders(account);
 }
 
 function queueAccountResetReminders(account) {
@@ -737,14 +780,24 @@ function queueAccountResetReminders(account) {
 }
 
 function queueResetReminders() {
-  for (const account of store.accounts) queueAccountResetReminders(account);
+  for (const account of store.accounts) {
+    queueAccountResetReminders(account);
+    queueAccountWindowReminders(account);
+  }
 }
 
-function queueOperationalFailureAlert(account, message) {
-  if (!store.settings.telegramAlertFailures) {
-    return false;
+function queueAccountWindowReminders(account) {
+  if (deletingAccountIds.has(account.id)) return;
+  const sent = store.telegramAlertState.quotaReminders[account.id] ||= {};
+  for (const event of buildQuotaResetReminderEvents(account.dashboard, store.settings, sent)) {
+    if (store.telegramAlertOutbox.some((item) => !item.deliveredAt && item.accountId === account.id
+      && item.quotaReminder?.windowKey === event.windowKey)) continue;
+    queueTelegramEvents(account, [event]);
   }
-  return queueTelegramEvents(account, [{ type: "failure", text: message }]);
+}
+
+function queueOperationalFailureAlert(account, message, type = "send-failure", details = {}) {
+  return queueTelegramEvents(account, [{ type, text: message, ...details }]);
 }
 
 function recordAuthenticationFailure(account, message) {
@@ -760,7 +813,7 @@ function recordAuthenticationFailure(account, message) {
   if (!next.shouldAlert) {
     return false;
   }
-  if (queueOperationalFailureAlert(account, message)) {
+  if (queueOperationalFailureAlert(account, message, "auth-failure")) {
     store.telegramAlertState.authIssues[account.id] = true;
     void saveStore();
     return true;
@@ -1522,7 +1575,8 @@ function syncScheduledRunFromTurn(accountId, message, persist) {
     && !run.failureAlertQueued) {
     run.failureAlertQueued = queueOperationalFailureAlert(
       requireAccount(accountId),
-      `Scheduled Codex turn ended as ${outcome.status}; check Activity for details`
+      `Scheduled Codex turn ended as ${outcome.status}; check Activity for details`,
+      "send-failure", { runId: run.id }
     );
   }
   if (persist) {
@@ -1642,7 +1696,7 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
       }
     }
     if (reason === "scheduled" && !isAuthenticationError(error)) {
-      queueOperationalFailureAlert(account, "Scheduled Codex send failed; check Activity for details");
+      queueOperationalFailureAlert(account, "Scheduled Codex send failed; check Activity for details", "send-failure", { runId: run.id });
     }
     return run;
   }
@@ -1854,7 +1908,7 @@ function validateTimezone(value) {
 }
 
 async function patchSettings(body) {
-  const next = { ...store.settings };
+  const next = patchTelegramSettings(store.settings, body);
   if (body.timezone !== undefined) {
     if (!validateTimezone(body.timezone)) {
       throw new Error("Invalid timezone");
@@ -1883,24 +1937,6 @@ async function patchSettings(body) {
       }
       next[key] = body[key];
     }
-  }
-  if (body.telegramQuotaWarningPercent !== undefined) {
-    if (!Number.isInteger(body.telegramQuotaWarningPercent)
-      || body.telegramQuotaWarningPercent < 1
-      || body.telegramQuotaWarningPercent > 100) {
-      throw new Error("telegramQuotaWarningPercent must be an integer from 1 to 100");
-    }
-    next.telegramQuotaWarningPercent = body.telegramQuotaWarningPercent;
-  }
-  const reminderHours = body.telegramResetReminderHours !== undefined ? body.telegramResetReminderHours
-    : (body.telegramResetExpiryHours !== undefined ? [body.telegramResetExpiryHours] : undefined);
-  if (reminderHours !== undefined) {
-    if (!validateResetReminderHours(reminderHours)) {
-      const error = new Error("telegramResetReminderHours must contain up to 10 distinct integer hours from 1 to 720");
-      error.statusCode = 400;
-      throw error;
-    }
-    next.telegramResetReminderHours = [...reminderHours].sort((a, b) => b - a);
   }
   for (const key of ["promptTemplate", "model", "effort", "summary", "approvalPolicy", "workspaceDir"]) {
     if (body[key] !== undefined) {
@@ -2212,6 +2248,7 @@ async function handleApi(req, res, url) {
       delete store.telegramAlertState.authFailureCounts[account.id];
       delete store.telegramAlertState.intentionalLogouts[account.id];
       delete store.telegramAlertState.resetReminders[account.id];
+      delete store.telegramAlertState.quotaReminders[account.id];
       const removedCredentials = await removeAccountHome(account.codeHome);
       store.accounts = store.accounts.filter((item) => item.id !== account.id);
       if (store.selectedAccountId === account.id) {

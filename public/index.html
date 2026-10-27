@@ -470,24 +470,51 @@
                   <input id="telegramEnabledInput" name="telegramAlertsEnabled" type="checkbox">
                   Enable Telegram alerts
                 </label>
-                <div class="grid-2">
-                  <label>
-                    Used quota warning threshold (%)
-                    <input id="telegramQuotaThresholdInput" name="telegramQuotaWarningPercent" type="number" min="1" max="100" step="1">
-                  </label>
+                <div class="telegram-quota-scope">
+                  <p class="hint">Quota windows for warnings and reset alerts</p>
+                  <div class="telegram-watch-windows" aria-label="Quota windows to watch">
+                    <label class="checkbox-line"><input id="telegramWatch5hInput" type="checkbox">5-hour window</label>
+                    <label class="checkbox-line"><input id="telegramWatchWeeklyInput" type="checkbox">Weekly window</label>
+                    <label class="checkbox-line"><input id="telegramWatchReserveInput" type="checkbox">Luna Reserve</label>
+                  </div>
+                </div>
+                <details class="telegram-alert-section">
+                  <summary><span>Quota warnings</span><small data-alert-count="quota">3 thresholds</small></summary>
+                  <p class="hint">Warn when quota used crosses any threshold. Leave the list empty to turn warnings off.</p>
+                  <div id="telegramQuotaThresholdRows" class="telegram-alert-rows"></div>
+                  <div class="telegram-alert-actions"><button id="addTelegramQuotaThresholdBtn" type="button">Add threshold</button><span id="telegramQuotaThresholdSummary" class="hint" aria-live="polite"></span></div>
+                  <div class="telegram-rule-card"><h5>After a quota warning</h5><p class="hint">Notification times are minutes after the event; 0 sends immediately.</p><div id="telegramQuotaThresholdRulesRows" class="telegram-alert-rows"></div><button type="button" data-add-rule="quota-threshold">Add notification time</button><span id="telegramQuotaThresholdRulesSummary" class="hint" aria-live="polite"></span></div>
+                </details>
+                <details class="telegram-alert-section">
+                  <summary><span>Quota resets</span><small data-alert-count="quota-resets">Loading</small></summary>
+                  <p class="hint">Choose reminders before each reset. Times are in hours before reset; an empty list disables reminders for that window.</p>
+                  <div class="telegram-rule-card"><h5>At reset</h5><p class="hint">Notification times are minutes after the reset event; 0 sends immediately.</p><div id="telegramQuotaResetRulesRows" class="telegram-alert-rows"></div><button type="button" data-add-rule="quota-reset">Add notification time</button><span id="telegramQuotaResetRulesSummary" class="hint" aria-live="polite"></span></div>
+                  <div class="telegram-reset-windows">
+                    <div><h5>5-hour window</h5><div id="telegramReminder5hRows" class="telegram-alert-rows"></div><button type="button" data-add-reminder="5h">Add reminder</button><span id="telegramReminder5hSummary" class="hint" aria-live="polite"></span></div>
+                    <div><h5>Weekly window</h5><div id="telegramReminderWeeklyRows" class="telegram-alert-rows"></div><button type="button" data-add-reminder="weekly">Add reminder</button><span id="telegramReminderWeeklySummary" class="hint" aria-live="polite"></span></div>
+                    <div><h5>Luna Reserve</h5><div id="telegramReminderReserveRows" class="telegram-alert-rows"></div><button type="button" data-add-reminder="reserve">Add reminder</button><span id="telegramReminderReserveSummary" class="hint" aria-live="polite"></span></div>
+                  </div>
+                </details>
+                <details class="telegram-alert-section" open>
+                  <summary><span>Reset credits</span><small data-alert-count="credits">Loading</small></summary>
+                  <p class="hint">Get reminders before unused credits expire, or when the number available changes.</p>
+                  <label class="checkbox-line"><input id="telegramResetExpiryInput" type="checkbox">Send credit expiry alerts</label>
                   <fieldset class="telegram-expiry-reminders">
-                    <legend>Unused usage reset credit expiry reminders</legend>
-                    <p class="hint">Remind me before unused usage reset credits expire, when an expiry date is known. Default: one reminder 2 days before expiry.</p>
+                    <legend>Expiry reminder times</legend>
+                    <p class="hint">Default: one reminder 2 days before expiry. Reminders need a known expiry date.</p>
                     <div id="telegramExpiryReminderRows" class="telegram-expiry-reminder-rows"></div>
                     <div class="telegram-expiry-reminder-actions"><button id="addTelegramExpiryReminderBtn" type="button">Add reminder</button><span id="telegramExpiryReminderSummary" class="hint" aria-live="polite"></span></div>
                   </fieldset>
-                </div>
-                <div class="alert-toggle-grid">
-                  <label class="checkbox-line"><input id="telegramQuotaResetsInput" type="checkbox">Quota-window resets</label>
-                  <label class="checkbox-line"><input id="telegramReserveInput" type="checkbox">Luna Reserve changes</label>
-                  <label class="checkbox-line"><input id="telegramResetCreditsInput" type="checkbox">Usage resets and expiry</label>
-                  <label class="checkbox-line"><input id="telegramFailuresInput" type="checkbox">Auth and send failures</label>
-                </div>
+                  <h5>When the credit count changes</h5><p class="hint">Notification times are minutes after the event; 0 sends immediately.</p><div id="telegramResetCreditRulesRows" class="telegram-alert-rows"></div><div class="telegram-alert-actions"><button type="button" data-add-rule="reset-credit-count">Add notification time</button><span id="telegramResetCreditRulesSummary" class="hint" aria-live="polite"></span></div>
+                </details>
+                <details class="telegram-alert-section"><summary><span>Reserve status</span><small data-alert-count="reserve">Loading</small></summary><p class="hint">Choose notifications when Reserve becomes active or recovers. Times are minutes after the event; 0 sends immediately.</p>
+                  <div class="telegram-rule-card"><h5>Reserve active</h5><div id="telegramReserveActiveRows" class="telegram-alert-rows"></div><button type="button" data-add-rule="reserve-active">Add notification time</button><span id="telegramReserveActiveSummary" class="hint" aria-live="polite"></span></div>
+                  <div class="telegram-rule-card"><h5>Reserve recovered</h5><div id="telegramReserveRecoveredRows" class="telegram-alert-rows"></div><button type="button" data-add-rule="reserve-recovered">Add notification time</button><span id="telegramReserveRecoveredSummary" class="hint" aria-live="polite"></span></div>
+                </details>
+                <details class="telegram-alert-section"><summary><span>Failures</span><small data-alert-count="failures">Loading</small></summary><p class="hint">Choose whether to notify immediately or repeat after a delay. Times are minutes after the event; 0 sends immediately.</p>
+                  <div class="telegram-rule-card"><h5>Authentication failures</h5><div id="telegramAuthFailureRows" class="telegram-alert-rows"></div><button type="button" data-add-rule="auth-failure">Add notification time</button><span id="telegramAuthFailureSummary" class="hint" aria-live="polite"></span></div>
+                  <div class="telegram-rule-card"><h5>Scheduled turn failures</h5><div id="telegramSendFailureRows" class="telegram-alert-rows"></div><button type="button" data-add-rule="send-failure">Add notification time</button><span id="telegramSendFailureSummary" class="hint" aria-live="polite"></span></div>
+                </details>
                 <div class="button-row">
                   <button id="telegramTestBtn" type="button">Send test alert</button>
                   <span id="telegramMessage" class="form-message" role="status"></span>
