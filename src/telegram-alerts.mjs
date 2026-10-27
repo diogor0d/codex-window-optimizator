@@ -55,6 +55,79 @@ export function withoutTelegramCredentials(environment) {
   return sanitized;
 }
 
+export function validateResetReminderHours(value) {
+  return Array.isArray(value) && value.length <= 10
+    && value.every((hours) => Number.isInteger(hours) && hours >= 1 && hours <= 720)
+    && new Set(value).size === value.length;
+}
+
+export function resetReminderHours(settings) {
+  if (validateResetReminderHours(settings.telegramResetReminderHours)) {
+    return [...settings.telegramResetReminderHours].sort((a, b) => b - a);
+  }
+  // Preserve the single expiry warning configured by older versions.
+  if (validateResetReminderHours([settings.telegramResetExpiryHours])) {
+    return [settings.telegramResetExpiryHours];
+  }
+  return [48];
+}
+
+export function resetCreditExpirations(dashboard, nowMs = Date.now()) {
+  const summary = dashboard?.rateLimitResetCredits;
+  const counts = new Map();
+  if (!Number.isSafeInteger(summary?.availableCount) || summary.availableCount <= 0) return counts;
+  for (const expiresAt of (Array.isArray(summary.expiresAt) ? summary.expiresAt : []).slice(0, summary.availableCount)) {
+    if (Number.isSafeInteger(expiresAt) && expiresAt * 1000 > nowMs && expiresAt * 1000 <= 8.64e15) {
+      counts.set(expiresAt, (counts.get(expiresAt) || 0) + 1);
+    }
+  }
+  return counts;
+}
+
+export function buildResetReminderEvents(dashboard, settings, sent = {}, nowMs = Date.now()) {
+  if (!settings.telegramAlertResetCredits) return [];
+  const hours = resetReminderHours(settings);
+  const events = [];
+  for (const [expiresAt, count] of resetCreditExpirations(dashboard, nowMs)) {
+    const dueHours = hours.filter((hoursBefore) => nowMs >= expiresAt * 1000 - hoursBefore * 3600_000);
+    // On startup or after downtime, catch up once with the most urgent due reminder.
+    const hoursBefore = dueHours.at(-1);
+    if (hoursBefore === undefined) continue;
+    const notifiedCount = sent[`${expiresAt}:${hoursBefore}`] || 0;
+    if (notifiedCount >= count) continue;
+    const reminderCount = count - notifiedCount;
+    const leadTime = hoursBefore % 24 === 0
+      ? `${hoursBefore / 24} day${hoursBefore === 24 ? "" : "s"}`
+      : `${hoursBefore} hour${hoursBefore === 1 ? "" : "s"}`;
+    events.push({
+      type: "reset-credit-expiry",
+      expiresAt,
+      hoursBefore,
+      count,
+      dueHours,
+      text: `${reminderCount} unused usage reset${reminderCount === 1 ? "" : "s"} expire${reminderCount === 1 ? "s" : ""} ${formatTimestamp(expiresAt, settings.timezone)} (${settings.timezone}). Use ${reminderCount === 1 ? "it" : "them"} before expiry. Reminder: ${leadTime} before expiry.`
+    });
+  }
+  return events;
+}
+
+export function recordResetReminder(sent, event) {
+  for (const hoursBefore of event.dueHours) {
+    const key = `${event.expiresAt}:${hoursBefore}`;
+    sent[key] = Math.max(sent[key] || 0, event.count);
+  }
+}
+
+export function pruneResetReminderState(sent, nowMs = Date.now()) {
+  return Object.fromEntries(Object.entries(sent && typeof sent === "object" ? sent : {})
+    .filter(([key, count]) => {
+      const [expiresAt, hoursBefore, extra] = key.split(":");
+      return extra === undefined && Number.isSafeInteger(Number(expiresAt))
+        && Number(expiresAt) * 1000 > nowMs && validateResetReminderHours([Number(hoursBefore)])
+        && Number.isSafeInteger(count) && count > 0;
+    }));
+}
+
 export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.now()) {
   const events = [];
   const warning = Number.isInteger(settings.telegramQuotaWarningPercent)
@@ -115,38 +188,6 @@ export function buildQuotaAlertEvents(previous, current, settings, nowMs = Date.
         type: "reset-credit-count",
         text: `Usage resets changed from ${beforeCount} to ${afterCount}`
       });
-    }
-
-    const horizonMs = Math.max(1, settings.telegramResetExpiryHours || 24) * 60 * 60 * 1000;
-    const previousSummary = previous?.rateLimitResetCredits;
-    const previousReadMs = Date.parse(previousSummary?.updatedAt || "");
-    const currentReadMs = Date.parse(current?.rateLimitResetCredits?.updatedAt || "") || nowMs;
-    const expirations = current?.rateLimitResetCredits?.expiresAt || [];
-    const previousCounts = new Map();
-    for (const expiresAt of previousSummary?.expiresAt || []) {
-      if (Number.isSafeInteger(expiresAt)) {
-        previousCounts.set(expiresAt, (previousCounts.get(expiresAt) || 0) + 1);
-      }
-    }
-    const counts = new Map();
-    for (const expiresAt of expirations) {
-      if (Number.isSafeInteger(expiresAt)) {
-        counts.set(expiresAt, (counts.get(expiresAt) || 0) + 1);
-      }
-    }
-    for (const [expiresAt, count] of counts) {
-      const expiryMs = expiresAt * 1000;
-      const newlyObserved = previousSummary && count > (previousCounts.get(expiresAt) || 0);
-      const crossedHorizon = Number.isFinite(previousReadMs) && expiryMs - previousReadMs > horizonMs;
-      if (expiryMs > currentReadMs
-        && expiryMs - currentReadMs <= horizonMs
-        && (newlyObserved || crossedHorizon)) {
-        const alertCount = newlyObserved ? count - (previousCounts.get(expiresAt) || 0) : count;
-        events.push({
-          type: "reset-credit-expiry",
-          text: `${alertCount} usage reset${alertCount === 1 ? "" : "s"} expire${alertCount === 1 ? "s" : ""} ${formatTimestamp(expiresAt, settings.timezone)}`
-        });
-      }
     }
   }
   return events;

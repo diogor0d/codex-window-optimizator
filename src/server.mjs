@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { advanceAuthenticationFailure, interpretCodexLoginStatus, mergeAuthenticationProbe } from "./auth-status.mjs";
 import { recordRateLimitsNotification, recordRateLimitsRead } from "./rate-limits.mjs";
-import { buildQuotaAlertEvents, formatTelegramAlertMessages, withoutTelegramCredentials } from "./telegram-alerts.mjs";
+import { buildQuotaAlertEvents, buildResetReminderEvents, formatTelegramAlertMessages, pruneResetReminderState, recordResetReminder, resetCreditExpirations, resetReminderHours, validateResetReminderHours, withoutTelegramCredentials } from "./telegram-alerts.mjs";
 import { adaptivePollingInterval, appendUsageSample, latestUsageActivityAt, normalizeUsageHistory, observedUsageKeys } from "./usage-history.mjs";
 import { chooseModel, readModelCatalog } from "./models.mjs";
 
@@ -78,7 +78,7 @@ const DEFAULT_STORE = {
     telegramAlertQuotaResets: true,
     telegramAlertReserve: true,
     telegramAlertResetCredits: true,
-    telegramResetExpiryHours: 24,
+    telegramResetReminderHours: [48],
     telegramAlertFailures: true
   },
   selectedAccountId: "default",
@@ -88,7 +88,7 @@ const DEFAULT_STORE = {
   activityEvents: [],
   authEvents: [],
   telegramAlertOutbox: [],
-  telegramAlertState: { authIssues: {}, authFailureCounts: {}, intentionalLogouts: {} },
+  telegramAlertState: { authIssues: {}, authFailureCounts: {}, intentionalLogouts: {}, resetReminders: {} },
   dashboard: structuredClone(DEFAULT_DASHBOARD)
 };
 
@@ -357,7 +357,11 @@ async function loadStore() {
   await ensureDirs();
   try {
     const raw = await readFile(STORE_PATH, "utf8");
-    store = mergeDefaults(JSON.parse(raw), DEFAULT_STORE);
+    const saved = JSON.parse(raw);
+    if (saved.settings && saved.settings.telegramResetReminderHours === undefined) {
+      saved.settings.telegramResetReminderHours = resetReminderHours(saved.settings);
+    }
+    store = mergeDefaults(saved, DEFAULT_STORE);
   } catch (error) {
     if (error.code !== "ENOENT") {
       console.error(`Failed to read ${STORE_PATH}; starting with defaults`, error);
@@ -387,11 +391,8 @@ function normalizeStore() {
     || store.settings.telegramQuotaWarningPercent > 100) {
     store.settings.telegramQuotaWarningPercent = DEFAULT_STORE.settings.telegramQuotaWarningPercent;
   }
-  if (!Number.isInteger(store.settings.telegramResetExpiryHours)
-    || store.settings.telegramResetExpiryHours < 1
-    || store.settings.telegramResetExpiryHours > 720) {
-    store.settings.telegramResetExpiryHours = DEFAULT_STORE.settings.telegramResetExpiryHours;
-  }
+  store.settings.telegramResetReminderHours = resetReminderHours(store.settings);
+  delete store.settings.telegramResetExpiryHours;
   store.telegramAlertOutbox = Array.isArray(store.telegramAlertOutbox)
     ? store.telegramAlertOutbox.filter((item) => item
       && typeof item === "object"
@@ -407,7 +408,11 @@ function normalizeStore() {
         text: item.text,
         attempts: Number.isSafeInteger(item.attempts) && item.attempts >= 0 ? item.attempts : 0,
         nextAttemptAt: Number.isFinite(Date.parse(item.nextAttemptAt || "")) ? item.nextAttemptAt : null,
-        deliveredAt: Number.isFinite(Date.parse(item.deliveredAt || "")) ? item.deliveredAt : null
+        deliveredAt: Number.isFinite(Date.parse(item.deliveredAt || "")) ? item.deliveredAt : null,
+        resetReminder: item.resetReminder && Number.isSafeInteger(item.resetReminder.expiresAt)
+          && validateResetReminderHours([item.resetReminder.hoursBefore])
+          ? { expiresAt: item.resetReminder.expiresAt, hoursBefore: item.resetReminder.hoursBefore }
+          : null
       }))
     : [];
   if (!store.telegramAlertState || typeof store.telegramAlertState !== "object" || Array.isArray(store.telegramAlertState)) {
@@ -437,6 +442,10 @@ function normalizeStore() {
   }
   store.telegramAlertState.intentionalLogouts = Object.fromEntries(
     Object.entries(store.telegramAlertState.intentionalLogouts).filter(([, value]) => value === true)
+  );
+  store.telegramAlertState.resetReminders = Object.fromEntries(
+    Object.entries(store.telegramAlertState.resetReminders || {})
+      .map(([accountId, sent]) => [accountId, pruneResetReminderState(sent)])
   );
   if (!Array.isArray(store.accounts) || store.accounts.length === 0) {
     const migrated = defaultAccount();
@@ -563,12 +572,33 @@ async function deliverTelegramMessage(text) {
 }
 
 function flushTelegramOutbox() {
-  if (telegramFlushPromise || !telegramConfigured() || !store.settings.telegramAlertsEnabled) {
+  if (telegramFlushPromise || !telegramConfigured() || !store.settings.telegramAlertsEnabled || !store.telegramAlertOutbox.length) {
     return telegramFlushPromise;
   }
   telegramFlushPromise = (async () => {
-    while (store.telegramAlertOutbox.length) {
+    // Persist queued messages before making any external send.
+    await saveStore();
+    while (store.telegramAlertOutbox.length && store.settings.telegramAlertsEnabled) {
       const item = store.telegramAlertOutbox[0];
+      if (item.resetReminder) {
+        const account = store.accounts.find((account) => account.id === item.accountId);
+        if (!account || deletingAccountIds.has(account.id) || !store.settings.telegramAlertResetCredits
+          || !resetCreditExpirations(account.dashboard).has(item.resetReminder.expiresAt)) {
+          store.telegramAlertOutbox.shift();
+          await saveStore();
+          continue;
+        }
+        const reminder = buildResetReminderEvents(account.dashboard, store.settings,
+          store.telegramAlertState.resetReminders[account.id])
+          .find((event) => event.expiresAt === item.resetReminder.expiresAt);
+        if (!reminder) {
+          store.telegramAlertOutbox.shift();
+          await saveStore();
+          continue;
+        }
+        item.text = formatTelegramAlertMessages(account.label, [reminder])[0];
+        item.resetReminder = reminder;
+      }
       if (item.deliveredAt) {
         store.telegramAlertOutbox.shift();
         await saveStore();
@@ -577,9 +607,14 @@ function flushTelegramOutbox() {
       if (Date.parse(item.nextAttemptAt || "") > Date.now()) {
         break;
       }
+      const sentReminder = item.resetReminder;
       try {
         await deliverTelegramMessage(item.text);
         item.deliveredAt = nowIso();
+        if (sentReminder && store.accounts.some((account) => account.id === item.accountId)) {
+          const sent = store.telegramAlertState.resetReminders[item.accountId] ||= {};
+          recordResetReminder(sent, sentReminder);
+        }
         await saveStore();
         store.telegramAlertOutbox.shift();
         await saveStore();
@@ -662,6 +697,9 @@ function queueTelegramEvents(account, events) {
       accountLabel: account.label,
       eventTypes: [...new Set(events.map((event) => event.type))],
       text,
+      resetReminder: events.length === 1 && events[0].type === "reset-credit-expiry"
+        ? { expiresAt: events[0].expiresAt, hoursBefore: events[0].hoursBefore }
+        : null,
       attempts: 0,
       nextAttemptAt: null
     });
@@ -679,6 +717,27 @@ function queueTelegramEvents(account, events) {
 
 function queueAccountQuotaAlerts(account, previousDashboard) {
   queueTelegramEvents(account, buildQuotaAlertEvents(previousDashboard, account.dashboard, store.settings));
+  queueAccountResetReminders(account);
+}
+
+function queueAccountResetReminders(account) {
+  if (deletingAccountIds.has(account.id)) return;
+  const sent = pruneResetReminderState(store.telegramAlertState.resetReminders[account.id]);
+  store.telegramAlertState.resetReminders[account.id] = sent;
+  for (const event of buildResetReminderEvents(account.dashboard, store.settings, sent)) {
+    const pending = store.telegramAlertOutbox.find((item) => !item.deliveredAt
+      && item.accountId === account.id && item.resetReminder?.expiresAt === event.expiresAt);
+    if (pending) {
+      // Delivery rebuilds the message from the latest inventory and most urgent due time.
+      // Keep a single pending reminder per expiry, including while delivery is in flight.
+      continue;
+    }
+    queueTelegramEvents(account, [event]);
+  }
+}
+
+function queueResetReminders() {
+  for (const account of store.accounts) queueAccountResetReminders(account);
 }
 
 function queueOperationalFailureAlert(account, message) {
@@ -1711,8 +1770,10 @@ function scheduleNextStateRefresh(soonerOnly = false) {
 function startStateRefresh() {
   if (!telegramRetryTimer) {
     telegramRetryTimer = setInterval(() => {
+      queueResetReminders();
       void flushTelegramOutbox();
     }, 60 * 1000);
+    queueResetReminders();
     void flushTelegramOutbox();
   }
   if (stateRefreshTimer) {
@@ -1831,13 +1892,15 @@ async function patchSettings(body) {
     }
     next.telegramQuotaWarningPercent = body.telegramQuotaWarningPercent;
   }
-  if (body.telegramResetExpiryHours !== undefined) {
-    if (!Number.isInteger(body.telegramResetExpiryHours)
-      || body.telegramResetExpiryHours < 1
-      || body.telegramResetExpiryHours > 720) {
-      throw new Error("telegramResetExpiryHours must be an integer from 1 to 720");
+  const reminderHours = body.telegramResetReminderHours !== undefined ? body.telegramResetReminderHours
+    : (body.telegramResetExpiryHours !== undefined ? [body.telegramResetExpiryHours] : undefined);
+  if (reminderHours !== undefined) {
+    if (!validateResetReminderHours(reminderHours)) {
+      const error = new Error("telegramResetReminderHours must contain up to 10 distinct integer hours from 1 to 720");
+      error.statusCode = 400;
+      throw error;
     }
-    next.telegramResetExpiryHours = body.telegramResetExpiryHours;
+    next.telegramResetReminderHours = [...reminderHours].sort((a, b) => b - a);
   }
   for (const key of ["promptTemplate", "model", "effort", "summary", "approvalPolicy", "workspaceDir"]) {
     if (body[key] !== undefined) {
@@ -1858,6 +1921,7 @@ async function patchSettings(body) {
   await saveStore();
   addActivity("settings", "info", "Settings updated", { settings: store.settings });
   if (store.settings.telegramAlertsEnabled) {
+    queueResetReminders();
     void flushTelegramOutbox();
   }
   return publicSettings();
@@ -2147,6 +2211,7 @@ async function handleApi(req, res, url) {
       delete store.telegramAlertState.authIssues[account.id];
       delete store.telegramAlertState.authFailureCounts[account.id];
       delete store.telegramAlertState.intentionalLogouts[account.id];
+      delete store.telegramAlertState.resetReminders[account.id];
       const removedCredentials = await removeAccountHome(account.codeHome);
       store.accounts = store.accounts.filter((item) => item.id !== account.id);
       if (store.selectedAccountId === account.id) {

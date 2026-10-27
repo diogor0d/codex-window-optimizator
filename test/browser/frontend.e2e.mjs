@@ -485,6 +485,31 @@ async function exercise(browserType, fixture, viewport, label) {
     await openSchedule(page, "run");
     assert.equal(await page.locator("#promptInput").inputValue(), "Unsaved shared draft");
     await saveSchedule(page);
+
+    // Expiry reminders default to 48 hours, support editing/removal, and persist as hours.
+    await openSchedule(page, "alerts");
+    const reminderInputs = () => page.locator("#telegramExpiryReminderRows input");
+    assert.deepEqual(await reminderInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["48"]);
+    await page.locator("#addTelegramExpiryReminderBtn").click();
+    await reminderInputs().nth(1).fill("24");
+    await page.locator("#addTelegramExpiryReminderBtn").click();
+    await reminderInputs().nth(2).fill("72");
+    await page.locator("#telegramExpiryReminderRows button[aria-label='Remove expiry reminder 3']").click();
+    assert.deepEqual(await reminderInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["48", "24"]);
+    await reminderInputs().nth(1).fill("0");
+    await page.locator("#settingsForm button[type=submit]").click();
+    await page.locator("#alerts-tab-panel:not([hidden])").waitFor();
+    assert.equal(await reminderInputs().nth(1).evaluate(input => input.validity.valid), false);
+    await reminderInputs().nth(1).fill("24");
+    await saveSchedule(page);
+    assert.deepEqual((await requestJson(fixture.base, "/api/settings")).telegramResetReminderHours, [48, 24]);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
+    await openSchedule(page, "alerts");
+    assert.deepEqual(await reminderInputs().evaluateAll(inputs => inputs.map(input => input.value)), ["48", "24"]);
+    await screenshot(page, `${label}-reset-reminders`);
+    await page.locator("#closeScheduleBtn").click();
+
     await accountWorkflow(page, fixture, label, expectedHttpErrors);
 
     // Seeded failures and success must use distinct semantic classes/tones.

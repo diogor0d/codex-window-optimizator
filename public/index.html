@@ -475,10 +475,12 @@
                     Used quota warning threshold (%)
                     <input id="telegramQuotaThresholdInput" name="telegramQuotaWarningPercent" type="number" min="1" max="100" step="1">
                   </label>
-                  <label>
-                    Reset expiry warning (hours)
-                    <input id="telegramExpiryHoursInput" name="telegramResetExpiryHours" type="number" min="1" max="720" step="1">
-                  </label>
+                  <fieldset class="telegram-expiry-reminders">
+                    <legend>Unused usage reset credit expiry reminders</legend>
+                    <p class="hint">Remind me before unused usage reset credits expire, when an expiry date is known. Default: one reminder 2 days before expiry.</p>
+                    <div id="telegramExpiryReminderRows" class="telegram-expiry-reminder-rows"></div>
+                    <div class="telegram-expiry-reminder-actions"><button id="addTelegramExpiryReminderBtn" type="button">Add reminder</button><span id="telegramExpiryReminderSummary" class="hint" aria-live="polite"></span></div>
+                  </fieldset>
                 </div>
                 <div class="alert-toggle-grid">
                   <label class="checkbox-line"><input id="telegramQuotaResetsInput" type="checkbox">Quota-window resets</label>

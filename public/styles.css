@@ -2764,6 +2764,17 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 .schedule-dialog .alert-settings { border: 0; padding: 0; margin: 0; background: transparent; }
 .schedule-dialog .alert-settings legend { display: none; }
 .schedule-dialog .alert-settings-head p { font-size: 12px; }
+.telegram-expiry-reminders { grid-column: 1 / -1; border: 0; padding: 0; margin: 12px 0; min-width: 0; }
+.schedule-dialog .alert-settings .telegram-expiry-reminders legend { display: block; }
+.telegram-expiry-reminders legend { font-size: 13px; font-weight: 600; }
+.telegram-expiry-reminders > .hint { margin: 6px 0 10px; font-size: 12px; }
+.telegram-expiry-reminder-rows { display: grid; gap: 8px; }
+.telegram-expiry-reminder-row { display: flex; align-items: end; gap: 8px; }
+.telegram-expiry-reminder-row label { flex: 1; min-width: 0; font-size: 12px; }
+.telegram-expiry-reminder-row input { display: block; width: 100%; min-height: 44px; margin-top: 4px; }
+.telegram-expiry-reminder-row button { flex: 0 0 44px; min-height: 44px; padding: 0; font-size: 20px; }
+.telegram-expiry-reminder-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.telegram-expiry-reminder-actions .hint { margin: 0; font-size: 12px; }
 @media (max-width: 700px) {
   .account-console-header { padding: 16px 16px 8px; gap: 12px; }
   .account-console-header h2 { flex: 1; }

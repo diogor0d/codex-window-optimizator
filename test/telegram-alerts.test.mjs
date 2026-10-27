@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 
 import {
   buildQuotaAlertEvents,
+  buildResetReminderEvents,
+  pruneResetReminderState,
+  recordResetReminder,
+  resetReminderHours,
+  validateResetReminderHours,
   formatTelegramAlert,
   formatTelegramAlertMessages,
   withoutTelegramCredentials
@@ -190,43 +195,95 @@ test("alerts on reset inventory changes and groups duplicate expirations", () =>
   assert.ok(events.some((event) => event.type === "reset-credit-count" && /1 to 3/.test(event.text)));
 });
 
-test("alerts when duplicate reset expirations enter the warning horizon", () => {
-  const expiry = Math.floor(Date.parse("2026-09-09T09:30:00.000Z") / 1000);
-  const previous = dashboard();
-  previous.rateLimitResetCredits = {
-    availableCount: 2,
-    expiresAt: [expiry, expiry],
-    updatedAt: "2026-09-08T09:00:00.000Z"
-  };
-  const current = dashboard();
-  current.rateLimitResetCredits = {
-    availableCount: 2,
-    expiresAt: [expiry, expiry],
-    updatedAt: "2026-09-08T10:00:00.000Z"
-  };
+const reminderNow = Date.parse("2026-10-27T10:00:00Z");
+const reminderExpiry = reminderNow / 1000 + 3 * 86400;
+const reminderSettings = { timezone: "Europe/Lisbon", telegramAlertResetCredits: true };
+function creditDashboard(expirations = [reminderExpiry], count = expirations.length) {
+  return { rateLimitResetCredits: { availableCount: count, expiresAt: expirations } };
+}
 
-  const events = buildQuotaAlertEvents(previous, current, settings, Date.parse(current.rateLimitResetCredits.updatedAt));
-  const expiryEvent = events.find((event) => event.type === "reset-credit-expiry");
-  assert.match(expiryEvent.text, /2 usage resets expire/);
+test("reminder settings default to two days and migrate the legacy warning", () => {
+  assert.deepEqual(resetReminderHours({}), [48]);
+  assert.deepEqual(resetReminderHours({ telegramResetExpiryHours: 24 }), [24]);
+  assert.deepEqual(resetReminderHours({ telegramResetReminderHours: [2, 48] }), [48, 2]);
+  assert.deepEqual(resetReminderHours({ telegramResetReminderHours: [] }), []);
+  for (const invalid of [null, "48", [0], [721], [1.5], [48, 48], Array.from({ length: 11 }, (_, i) => i + 1)]) {
+    assert.equal(validateResetReminderHours(invalid), false);
+  }
 });
 
-test("alerts for a newly observed expiration already inside the horizon", () => {
-  const expiry = Math.floor(Date.parse("2026-09-08T20:00:00.000Z") / 1000);
-  const previous = dashboard();
-  previous.rateLimitResetCredits = {
-    availableCount: 1,
-    expiresAt: [2_000_000_000],
-    updatedAt: "2026-09-08T10:00:00.000Z"
-  };
-  const current = dashboard();
-  current.rateLimitResetCredits = {
-    availableCount: 1,
-    expiresAt: [expiry],
-    updatedAt: "2026-09-08T10:05:00.000Z"
-  };
+test("default reminder fires at exactly two days before expiry and only once", () => {
+  const value = creditDashboard();
+  const dueAt = reminderExpiry * 1000 - 48 * 3600_000;
+  assert.deepEqual(buildResetReminderEvents(value, reminderSettings, {}, dueAt - 1), []);
+  const [event] = buildResetReminderEvents(value, reminderSettings, {}, dueAt);
+  assert.match(event.text, /1 unused usage reset expires/);
+  assert.match(event.text, /2 days before expiry/);
+  assert.match(event.text, /Europe\/Lisbon/);
+  const sent = {};
+  recordResetReminder(sent, event);
+  const restarted = JSON.parse(JSON.stringify(sent));
+  assert.deepEqual(buildResetReminderEvents(value, reminderSettings, restarted, dueAt + 60_000), []);
+});
 
-  const events = buildQuotaAlertEvents(previous, current, settings);
-  assert.ok(events.some((event) => event.type === "reset-credit-expiry"));
+test("multiple reminders each fire once using wall clock even with unchanged credit readings", () => {
+  const value = creditDashboard([reminderExpiry, reminderExpiry]);
+  const settings = { ...reminderSettings, telegramResetReminderHours: [48, 24, 2] };
+  const sent = {};
+  for (const hours of [48, 24, 2]) {
+    const now = reminderExpiry * 1000 - hours * 3600_000;
+    const [event] = buildResetReminderEvents(value, settings, sent, now);
+    assert.equal(event.hoursBefore, hours);
+    assert.match(event.text, /2 unused usage resets expire/);
+    recordResetReminder(sent, event);
+    assert.deepEqual(buildResetReminderEvents(value, settings, sent, now), []);
+  }
+});
+
+test("late discovery and downtime catch up with one most urgent overdue reminder", () => {
+  const settings = { ...reminderSettings, telegramResetReminderHours: [48, 24, 2] };
+  const now = reminderExpiry * 1000 - 3600_000;
+  const [event, extra] = buildResetReminderEvents(creditDashboard(), settings, {}, now);
+  assert.equal(event.hoursBefore, 2);
+  assert.equal(extra, undefined);
+  const sent = {};
+  recordResetReminder(sent, event);
+  assert.deepEqual(Object.values(sent), [1, 1, 1]);
+  assert.deepEqual(buildResetReminderEvents(creditDashboard(), settings, sent, now + 60_000), []);
+});
+
+test("ignores consumed, expired, unknown and disabled credit reminders", () => {
+  const dueAt = reminderExpiry * 1000 - 1000;
+  for (const value of [creditDashboard([], 0), creditDashboard([null, "unknown"]), creditDashboard([reminderExpiry - 100], 0), { rateLimitResetCredits: null }]) {
+    assert.deepEqual(buildResetReminderEvents(value, reminderSettings, {}, dueAt), []);
+  }
+  assert.deepEqual(buildResetReminderEvents(creditDashboard(), reminderSettings, {}, reminderExpiry * 1000), []);
+  assert.deepEqual(buildResetReminderEvents(creditDashboard(), { ...reminderSettings, telegramAlertResetCredits: false }, {}, dueAt), []);
+  assert.deepEqual(buildResetReminderEvents(creditDashboard(), { ...reminderSettings, telegramResetReminderHours: [] }, {}, dueAt), []);
+});
+
+test("groups equal expirations and alerts only newly observed credits sharing an expiry", () => {
+  const now = reminderExpiry * 1000 - 24 * 3600_000;
+  const [initial] = buildResetReminderEvents(creditDashboard(), reminderSettings, {}, now);
+  const sent = {};
+  recordResetReminder(sent, initial);
+  const [added] = buildResetReminderEvents(creditDashboard([reminderExpiry, reminderExpiry]), reminderSettings, sent, now);
+  assert.match(added.text, /1 unused usage reset expires/);
+  recordResetReminder(sent, added);
+  assert.deepEqual(buildResetReminderEvents(creditDashboard(), reminderSettings, sent, now), []);
+  assert.deepEqual(buildResetReminderEvents(creditDashboard([reminderExpiry, reminderExpiry]), reminderSettings, sent, now), []);
+});
+
+test("keeps account receipts independently and prunes expired or malformed receipt keys", () => {
+  const first = {};
+  const second = {};
+  const now = reminderExpiry * 1000 - 3600_000;
+  const [event] = buildResetReminderEvents(creditDashboard(), reminderSettings, first, now);
+  recordResetReminder(first, event);
+  assert.equal(buildResetReminderEvents(creditDashboard(), reminderSettings, second, now).length, 1);
+  const key = `${reminderExpiry}:48`;
+  assert.deepEqual(pruneResetReminderState({ ...first, bad: 1, [`${reminderExpiry}:0`]: 1, "1:48": 1 }, now), { [key]: 1 });
+  assert.deepEqual(pruneResetReminderState(first, reminderExpiry * 1000), {});
 });
 
 test("formats one compact Telegram message per account", () => {
