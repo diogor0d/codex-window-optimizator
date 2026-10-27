@@ -2770,9 +2770,9 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 .telegram-expiry-reminders > .hint { margin: 6px 0 10px; font-size: 12px; }
 .telegram-expiry-reminder-rows { display: grid; gap: 8px; }
 .telegram-expiry-reminder-row { display: flex; align-items: end; gap: 8px; }
-.telegram-expiry-reminder-row label { flex: 1; min-width: 0; font-size: 12px; }
-.telegram-expiry-reminder-row input { display: block; width: 100%; min-height: 44px; margin-top: 4px; }
-.telegram-expiry-reminder-row button { flex: 0 0 44px; min-height: 44px; padding: 0; font-size: 20px; }
+.telegram-expiry-reminder-row label { flex: 1; min-width: 0; margin-bottom: 0; font-size: 12px; }
+.telegram-expiry-reminder-row input { display: block; width: 100%; height: 44px; min-height: 44px; margin-top: 4px; }
+.telegram-expiry-reminder-row button { display: grid; place-items: center; flex: 0 0 44px; height: 44px; min-height: 44px; padding: 0; font-size: 20px; line-height: 1; }
 .telegram-expiry-reminder-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .telegram-expiry-reminder-actions .hint { margin: 0; font-size: 12px; }
 .telegram-alert-section { min-width: 0; border-top: 1px solid var(--line); padding-top: 0; }
@@ -2795,7 +2795,7 @@ dialog::backdrop { background: rgba(10, 18, 35, .4); backdrop-filter: blur(6px);
 .telegram-reset-windows { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .telegram-reset-windows > div, .telegram-rule-card { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--panel) 72%, transparent); }
 .telegram-reset-windows h5, .telegram-rule-card h5 { margin: 0 0 8px; font-size: 12px; font-weight: 650; }
-.telegram-reset-windows button, .telegram-rule-card button { margin-top: 8px; min-height: 40px; }
+.telegram-reset-windows > div > button, .telegram-rule-card > button { margin-top: 8px; min-height: 40px; }
 .telegram-reset-windows .hint, .telegram-rule-card .hint { display: inline-block; margin: 8px 0 0 8px; font-size: 11px; }
 .telegram-rule-card + .telegram-rule-card { margin-top: 8px; }
 .telegram-alert-section .telegram-expiry-reminders { margin: 4px 0 10px; }
