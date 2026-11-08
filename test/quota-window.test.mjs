@@ -59,6 +59,24 @@ test("keeps partly consumed weekly quota separate from the five-hour window", ()
   assert.equal(effective.windowDurationMins, 300);
 });
 
+test("Claude reports each window's percentage and keeps missing five-hour usage unknown", () => {
+  const dashboard = {
+    rateLimits: {
+      primary: { usedPercent: 25, resetsAt: future, windowDurationMins: 300 },
+      secondary: { usedPercent: 100, resetsAt: future, windowDurationMins: 10080 }
+    }
+  };
+  const win = accountWindow({ provider: "claude", quotaStatus: { live: true }, dashboard });
+  assert.equal(effectiveWindow(win).free, 75);
+  assert.equal(usageFree({ fiveHourUsed: 25, weeklyUsed: 100 }, "fiveHourUsed", "claude"), 75);
+  assert.equal(usageFree({ fiveHourUsed: null, weeklyUsed: 100 }, "fiveHourUsed", "claude"), null);
+  assert.equal(effectiveWindow(accountWindow({
+    provider: "claude", quotaStatus: { live: true },
+    dashboard: { rateLimits: { ...dashboard.rateLimits, primary: null } }
+  })), null);
+  assert.equal(accountWindow({ provider: "claude", quotaStatus: { live: false }, dashboard }).stale, true);
+});
+
 test("an explicit rate-limit state always reports no usable quota", () => {
   const effective = effectiveWindow(windowFor(0, 25, "rate_limit_reached"), 1_900_000_000_000);
 

@@ -11,6 +11,7 @@ import { buildQuotaAlertEvents, buildQuotaResetReminderEvents, buildResetReminde
 import { normalizeTelegramSettings, patchTelegramSettings, TELEGRAM_EVENT_TYPES, TELEGRAM_QUOTA_WINDOWS } from "./telegram-policy.mjs";
 import { adaptivePollingInterval, appendUsageSample, latestUsageActivityAt, normalizeUsageHistory, observedUsageKeys } from "./usage-history.mjs";
 import { chooseModel, readModelCatalog } from "./models.mjs";
+import { CLAUDE_POLL_MS, CLAUDE_SESSION_ID, ClaudeError, claudeClient } from "./claude-client.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -25,12 +26,14 @@ const DEFAULT_WORKSPACE_DIR = process.env.WORKSPACE_DIR || "/workspace";
 const SERVICE_NAME = "codex-window-runner";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+const claude = claudeClient(process.env.CLAUDE_WORKER_SOCKET, process.env.CLAUDE_QUOTA_VERIFIED_VERSION);
 
 process.env.TZ ||= "Europe/Lisbon";
 
 const DEFAULT_PROMPT = `Scheduled Codex window ping at {{local_time}}.
 
 Continue the active goal in this thread. If no goal is set, summarize current state and ask me to set one. Prefer small, reversible progress. Do not start unrelated work. Stop and ask before destructive actions, credential handling, broad network access, or anything requiring approval.`;
+const CLAUDE_PROMPT = "Scheduled Claude window ping at {{local_time}}. Reply with a short acknowledgment.";
 
 const ANSI_ESCAPE_RE = /[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 const VALID_APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "granular", "never"]);
@@ -104,11 +107,15 @@ const appServers = new Map();
 const loginSessions = new Map();
 const deletingAccountIds = new Set();
 const accountProcesses = new Map();
+const claudeRuns = new Map();
+const claudeQuota = new Map();
+const claudeRefreshes = new Map();
 let stateRefreshPromise = null;
 let authStatusBroadcastPromise = null;
 let telegramFlushPromise = null;
 let telegramSendingItemId = null;
 let telegramRetryTimer = null;
+let claudeRefreshTimer = null;
 let shuttingDown = false;
 
 function nowIso() {
@@ -122,6 +129,7 @@ function clone(value) {
 function defaultAccount() {
   return {
     id: "default",
+    provider: "codex",
     label: "Default account",
     enabled: true,
     codeHome: CODEX_HOME,
@@ -135,13 +143,14 @@ function defaultAccount() {
   };
 }
 
-function createAccount(label = "New account") {
+function createAccount(label = "New account", provider = "codex") {
   const id = `acct_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   return {
     id,
+    provider,
     label,
-    enabled: true,
-    codeHome: path.join(ACCOUNTS_DIR, id),
+    enabled: provider === "codex",
+    ...(provider === "codex" ? { codeHome: path.join(ACCOUNTS_DIR, id) } : {}),
     settings: {},
     createdAt: nowIso(),
     updatedAt: nowIso(),
@@ -192,6 +201,12 @@ function applyAccountSettings(current, patch) {
 }
 
 function effectiveSettings(account) {
+  if (account?.provider === "claude") {
+    return {
+      scheduleTimes: account.settings.scheduleTimes || store.settings.scheduleTimes,
+      promptTemplate: account.settings.promptTemplate || CLAUDE_PROMPT
+    };
+  }
   return { ...store.settings, ...(account?.settings || {}) };
 }
 
@@ -220,6 +235,12 @@ function normalizeAccount(account, fallback = defaultAccount()) {
   };
   normalized.updatedAt ||= nowIso();
   normalized.createdAt ||= normalized.updatedAt;
+  normalized.provider = account?.provider === "claude" ? "claude" : "codex";
+  if (normalized.provider === "claude") {
+    delete normalized.codeHome;
+    delete normalized.settings.model;
+    delete normalized.settings.workspaceDir;
+  }
   return normalized;
 }
 
@@ -254,11 +275,15 @@ function publicAccount(account) {
   };
   return {
     id: account.id,
+    provider: account.provider,
     label: account.label,
     enabled: account.enabled,
     isSelected: account.id === store.selectedAccountId,
     auth,
-    appServer: { running: getAppServer(account.id, false)?.running || false },
+    appServer: { running: account.provider === "claude" ? claudeRuns.has(account.id) : getAppServer(account.id, false)?.running || false },
+    ...(account.provider === "claude" ? {
+      quotaStatus: claudeQuotaStatus(account)
+    } : {}),
     settings: clone(account.settings || {}),
     effectiveSettings: effectiveSettings(account),
     thread: account.threadState,
@@ -334,7 +359,7 @@ async function ensureDirs() {
 }
 
 async function ensureAccountDirs(account) {
-  if (deletingAccountIds.has(account.id)) return;
+  if (account.provider === "claude" || deletingAccountIds.has(account.id)) return;
   await mkdir(account.codeHome, { recursive: true });
   if (deletingAccountIds.has(account.id)) return;
   const configPath = path.join(account.codeHome, "config.toml");
@@ -594,6 +619,8 @@ function pendingTelegramReminder(item, account) {
 function telegramItemCurrent(item) {
   const account = store.accounts.find((account) => account.id === item.accountId);
   if (!account || deletingAccountIds.has(account.id)) return false;
+  if (account.provider === "claude" && !claudeQuotaStatus(account).live
+    && (item.quotaReminder || item.alert?.event.type.startsWith("quota-"))) return false;
   if (item.resetReminder || item.quotaReminder) return Boolean(pendingTelegramReminder(item, account));
   if (!item.alert) return true; // Messages already queued by an older release.
   if (!store.settings.telegramAlertRules[item.alert.event.type]?.includes(item.alert.delayMinutes)) return false;
@@ -788,6 +815,7 @@ function queueResetReminders() {
 
 function queueAccountWindowReminders(account) {
   if (deletingAccountIds.has(account.id)) return;
+  if (account.provider === "claude" && !claudeQuotaStatus(account).live) return;
   const sent = store.telegramAlertState.quotaReminders[account.id] ||= {};
   for (const event of buildQuotaResetReminderEvents(account.dashboard, store.settings, sent)) {
     if (store.telegramAlertOutbox.some((item) => !item.deliveredAt && item.accountId === account.id
@@ -970,7 +998,7 @@ function markAuthValidated(account) {
     loggedIn: true,
     credentialPresent: true,
     authIssue: false,
-    mode: "codex",
+    mode: account.provider,
     detail: previous?.authIssue ? "Logged in (live request verified)" : previous?.detail || "Logged in",
     code: 0
   };
@@ -989,12 +1017,20 @@ async function getAuthStatus(accountOrId = store.selectedAccountId, force = fals
     return authStatusRefreshByAccount.get(account.id);
   }
   const refresh = (async () => {
-    const result = await runCodex(["login", "status"], { account, timeoutMs: 20000 });
+    const interpreted = account.provider === "claude"
+      ? await probeClaudeAuth(account)
+      : interpretCodexLoginStatus(await runCodex(["login", "status"], { account, timeoutMs: 20000 }));
+    if (!interpreted) return authStatusCacheByAccount.get(account.id)?.status || unknownAuthStatus();
     if (deletingAccountIds.has(account.id) || !store.accounts.some(item => item.id === account.id)) return unknownAuthStatus();
     authStatusProbeAtByAccount.set(account.id, Date.now());
-    const interpreted = interpretCodexLoginStatus(result);
     const previous = authStatusCacheByAccount.get(account.id)?.status;
-    const status = mergeAuthenticationProbe(previous, interpreted);
+    let status = account.provider === "claude" ? interpreted : mergeAuthenticationProbe(previous, interpreted);
+    if (account.provider === "claude" && previous?.authIssue && interpreted.loggedIn) {
+      status = { ...previous, credentialPresent: true, probeUnavailable: false };
+    }
+    if (account.provider === "claude" && (!status.loggedIn || status.probeUnavailable)) {
+      claudeQuota.set(account.id, { ...claudeQuota.get(account.id), live: false, detail: status.detail });
+    }
     const next = {
       checkedAt: Date.now(),
       status
@@ -1006,6 +1042,18 @@ async function getAuthStatus(accountOrId = store.selectedAccountId, force = fals
   });
   authStatusRefreshByAccount.set(account.id, refresh);
   return refresh;
+}
+
+async function probeClaudeAuth(account) {
+  try {
+    const { status } = await claude.call("status", account.id);
+    if (status === "ready") return { loggedIn: true, credentialPresent: true, authIssue: false, mode: "claude", detail: "Signed in to Claude Code", code: 0 };
+    if (status === "signed-out") return { ...unknownAuthStatus(), mode: "none", detail: "Signed out of Claude Code", code: 1 };
+    return { ...unknownAuthStatus(), mode: "auth-error", authIssue: true, detail: new ClaudeError(status).message };
+  } catch (error) {
+    if (error.code === "busy" || error.code === "interrupted") return null;
+    return { ...unknownAuthStatus(), detail: error.message, probeUnavailable: true };
+  }
 }
 
 function refreshAuthStatusesInBackground() {
@@ -1270,7 +1318,11 @@ function getAppServer(accountId = store.selectedAccountId, create = true) {
   if (!accountId) {
     return null;
   }
-  if (create) requireAccount(accountId);
+  if (create && requireAccount(accountId).provider === "claude") {
+    const error = new Error("This operation is available for Codex accounts.");
+    error.statusCode = 422;
+    throw error;
+  }
   if (!appServers.has(accountId) && create) {
     appServers.set(accountId, new CodexAppServer(accountId));
   }
@@ -1358,31 +1410,98 @@ async function refreshAccountState(account) {
   return outcome;
 }
 
+function claudeQuotaStatus(account) {
+  const state = claudeQuota.get(account.id);
+  const observedAt = account.dashboard.rateLimits?.updatedAt || null;
+  const live = Boolean(state?.live && Date.now() - Date.parse(observedAt) <= 2 * CLAUDE_POLL_MS);
+  return { live, observedAt, detail: live ? null : state?.detail || null };
+}
+
+function normalizedClaudeLimits(result) {
+  if (!result?.rateLimits) throw new ClaudeError("quota-format");
+  const { primary, secondary } = result.rateLimits;
+  const now = Date.now() / 1000;
+  function window(value, duration) {
+    if (value === null) return null;
+    if (value?.windowDurationMins !== duration || !Number.isFinite(value.usedPercent) || value.usedPercent < 0 || value.usedPercent > 100
+      || !Number.isSafeInteger(value.resetsAt) || value.resetsAt <= now || value.resetsAt > now + (duration + 1) * 60) {
+      throw new ClaudeError("quota-format");
+    }
+    return { usedPercent: value.usedPercent, resetsAt: value.resetsAt, windowDurationMins: duration };
+  }
+  const rateLimits = { primary: window(primary, 300), secondary: window(secondary, 10080) };
+  if (!rateLimits.primary && !rateLimits.secondary) throw new ClaudeError("quota-format");
+  return { rateLimits };
+}
+
+function refreshClaudeAccount(account, force = false) {
+  if (claudeRefreshes.has(account.id)) return claudeRefreshes.get(account.id);
+  const refresh = (async () => {
+    const result = { accountId: account.id, accountLabel: account.label, rateLimits: "skipped", error: null };
+    const state = claudeQuota.get(account.id);
+    if (deletingAccountIds.has(account.id) || !claude.configured || claudeRuns.has(account.id)
+      || state?.retryAt > Date.now() || (!force && state?.nextAt > Date.now())) return result;
+    try {
+      const auth = await getAuthStatus(account, force);
+      result.loggedIn = auth.loggedIn;
+      if (deletingAccountIds.has(account.id) || !store.accounts.includes(account)) return result;
+      if (auth.probeUnavailable) throw new ClaudeError("unavailable");
+      if (!auth.loggedIn && !auth.credentialPresent) {
+        claudeQuota.set(account.id, { live: false, nextAt: Date.now() + CLAUDE_POLL_MS, detail: auth.detail });
+        if (account.enabled) recordAuthenticationFailure(account, auth.detail);
+        return result;
+      }
+      const limits = normalizedClaudeLimits(await claude.call("usage", account.id));
+      if (deletingAccountIds.has(account.id) || !store.accounts.includes(account)) return result;
+      const previousDashboard = account.dashboard;
+      claudeQuota.set(account.id, { live: true, nextAt: Date.now() + CLAUDE_POLL_MS });
+      const recorded = recordRateLimits(account, limits);
+      result.rateLimits = "updated";
+      result.updatedAt = recorded.updatedAt;
+      markAuthValidated(account);
+      clearAuthenticationFailure(account);
+      queueAccountQuotaAlerts(account, previousDashboard);
+      await saveStore();
+    } catch (error) {
+      if (deletingAccountIds.has(account.id) || !store.accounts.includes(account)) return result;
+      if (error.code === "busy" || error.code === "interrupted") return result;
+      claudeQuota.set(account.id, { live: false, nextAt: Date.now() + CLAUDE_POLL_MS, retryAt: error.retryAt, detail: error.message });
+      result.rateLimits = "failed";
+      result.error = error.message;
+      if (["signed-out", "wrong-auth", "account-changed", "auth-expired"].includes(error.code)) {
+        markAuthIssue(account, error);
+        if (account.enabled) recordAuthenticationFailure(account, error.message);
+      }
+    }
+    return result;
+  })().finally(() => claudeRefreshes.delete(account.id));
+  claudeRefreshes.set(account.id, refresh);
+  return refresh;
+}
+
 async function refreshAllAccountStates(trigger = "manual") {
   if (!stateRefreshPromise) {
-    stateRefreshPromise = (async () => {
-      const accounts = await Promise.all(store.accounts.map((account) => refreshAccountState(account)));
-      const summary = {
-        attempted: accounts.length,
-        updated: accounts.filter((account) => account.rateLimits === "updated").length,
-        skipped: accounts.filter((account) => account.rateLimits === "skipped").length,
-        failed: accounts.filter((account) => account.rateLimits === "failed").length
-      };
-      if (summary.updated) {
-        await saveStore();
-      }
-      addActivity("refresh", summary.failed ? "warn" : "info", "State refresh completed", {
-        trigger,
-        ...summary,
-        accounts
-      });
-      broadcast("status", { ts: nowIso() });
-      return { ts: nowIso(), ...summary, accounts };
-    })().finally(() => {
+    stateRefreshPromise = Promise.all(store.accounts.filter((account) => account.provider === "codex").map(refreshAccountState)).finally(() => {
       stateRefreshPromise = null;
     });
   }
-  return stateRefreshPromise;
+  const [codex, claudeResults] = await Promise.all([
+    stateRefreshPromise,
+    trigger === "adaptive" ? [] : Promise.all(store.accounts.filter((account) => account.provider === "claude")
+      .map((account) => refreshClaudeAccount(account, trigger === "request")))
+  ]);
+  lastStateRefreshFailed = codex.some((result) => result.rateLimits === "failed");
+  const accounts = [...codex, ...claudeResults];
+  const summary = {
+    attempted: accounts.length,
+    updated: accounts.filter((account) => account.rateLimits === "updated").length,
+    skipped: accounts.filter((account) => account.rateLimits === "skipped").length,
+    failed: accounts.filter((account) => account.rateLimits === "failed").length
+  };
+  if (summary.updated) await saveStore();
+  addActivity("refresh", summary.failed ? "warn" : "info", "State refresh completed", { trigger, ...summary, accounts });
+  broadcast("status", { ts: nowIso() });
+  return { ts: nowIso(), ...summary, accounts };
 }
 
 function updateDashboardState(accountId, message) {
@@ -1596,6 +1715,13 @@ function reconcileScheduledRuns() {
       ts: event.ts
     }, false);
   }
+  for (const run of store.scheduledRuns) {
+    if (run.provider === "claude" && ["starting", "started"].includes(run.status)) {
+      run.status = "interrupted";
+      run.error = new ClaudeError("interrupted").message;
+      run.completedAt = nowIso();
+    }
+  }
 }
 
 function addScheduledRun(run) {
@@ -1612,6 +1738,7 @@ function addScheduledRun(run) {
 
 async function startTurn({ accountId = store.selectedAccountId, reason, scheduleKey = null, scheduledTime = null, prompt = null }) {
   const account = requireAccount(accountId);
+  if (account.provider === "claude") return startClaudeTurn(account, { reason, scheduleKey, scheduledTime, prompt });
   const appServer = getAppServer(account.id);
   const run = {
     id: randomUUID(),
@@ -1702,6 +1829,73 @@ async function startTurn({ accountId = store.selectedAccountId, reason, schedule
   }
 }
 
+function startClaudeTurn(account, { reason, scheduleKey, scheduledTime, prompt }) {
+  const resumed = CLAUDE_SESSION_ID.test(account.threadState.sessionId || "");
+  const sessionId = resumed ? account.threadState.sessionId : randomUUID();
+  const run = {
+    id: randomUUID(), provider: "claude", ts: nowIso(), accountId: account.id, accountLabel: account.label,
+    scheduleKey, scheduledTime, reason, status: "started", threadId: sessionId, turnId: randomUUID(), error: null
+  };
+  if (claudeRuns.has(account.id)) {
+    run.status = "skipped_active_turn";
+    run.turnId = null;
+    addScheduledRun(run);
+    return run;
+  }
+  const input = prompt || renderPrompt(effectiveSettings(account).promptTemplate, scheduledTime, reason);
+  addScheduledRun(run);
+  const task = finishClaudeTurn(account, run, input, sessionId, resumed).finally(() => {
+    claudeRuns.delete(account.id);
+    broadcast("status", { ts: nowIso() });
+  });
+  claudeRuns.set(account.id, task);
+  return { ...run };
+}
+
+async function finishClaudeTurn(account, run, prompt, sessionId, resumed) {
+  const startedAt = Date.now();
+  const attribution = { accountId: account.id, accountLabel: account.label, threadId: sessionId, turnId: run.turnId, reason: run.reason };
+  let reply;
+  try {
+    await saveStore();
+    if (deletingAccountIds.has(account.id) || !store.accounts.includes(account)) throw new ClaudeError("interrupted");
+    const response = await claude.call("run", account.id, { prompt, sessionId, resume: resumed });
+    if (response.sessionId !== sessionId || typeof response.reply !== "string") throw new ClaudeError("failed");
+    if (deletingAccountIds.has(account.id) || !store.accounts.includes(account)) throw new ClaudeError("interrupted");
+    reply = redactString(response.reply).slice(0, 4000);
+    Object.assign(account.threadState, { threadId: sessionId, sessionId, updatedAt: nowIso() });
+    account.dashboard.lastUserMessage = { ...attribution, ts: run.ts, text: redactString(prompt).slice(0, 4000) };
+    account.dashboard.lastAgentMessage = { ...attribution, ts: nowIso(), text: reply };
+    markAuthValidated(account);
+    clearAuthenticationFailure(account);
+    run.status = "completed";
+  } catch (error) {
+    run.status = error.code === "interrupted" ? "interrupted" : error.code === "busy" ? "skipped_active_turn" : "failed";
+    run.error = error instanceof ClaudeError ? error.message : new ClaudeError("failed").message;
+    if (error.code === "session-missing") Object.assign(account.threadState, { sessionId: null, threadId: null });
+    if (store.accounts.includes(account) && !deletingAccountIds.has(account.id)) {
+      if (["signed-out", "auth-expired", "wrong-auth", "account-changed"].includes(error.code)) {
+        markAuthIssue(account, error);
+        claudeQuota.set(account.id, { ...claudeQuota.get(account.id), live: false, detail: error.message });
+        if (run.reason === "scheduled") recordAuthenticationFailure(account, error.message);
+      } else if (run.reason === "scheduled" && run.status === "failed") {
+        queueOperationalFailureAlert(account, "Scheduled Claude send failed; check Activity for details", "send-failure", { runId: run.id });
+      }
+    }
+  }
+  if (!store.accounts.includes(account)) return;
+  run.completedAt = nowIso();
+  const turn = { id: run.turnId, status: run.status, error: run.error, durationMs: Date.now() - startedAt };
+  if (run.status !== "skipped_active_turn") {
+    account.dashboard.lastCompletedTurn = { ts: run.completedAt, threadId: sessionId, turnId: run.turnId, ...turn };
+  }
+  if (reply !== undefined) {
+    addActivity("claude", "info", "item/completed", { ...attribution, item: { type: "agentMessage", text: reply } });
+  }
+  addActivity("claude", run.status === "failed" ? "error" : "info", "turn/completed", { ...attribution, turn });
+  addScheduledRun(run);
+}
+
 function getLocalParts(date, timezone) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
@@ -1724,7 +1918,7 @@ function getLocalParts(date, timezone) {
 function nextRunSummary() {
   const timezone = store.settings.timezone;
   const now = getLocalParts(new Date(), timezone);
-  const enabledAccounts = store.accounts.filter((account) => account.enabled);
+  const enabledAccounts = store.accounts.filter(accountScheduled);
   const timeSets = enabledAccounts.map((account) => effectiveSettings(account).scheduleTimes);
   const times = [...new Set(timeSets.length ? timeSets.flat() : store.settings.scheduleTimes)].sort();
   const todayNext = times.find((time) => time > now.time);
@@ -1735,13 +1929,17 @@ function nextRunSummary() {
   };
 }
 
+function accountScheduled(account) {
+  return account.enabled && !deletingAccountIds.has(account.id) && (account.provider === "codex" || claude.configured);
+}
+
 async function schedulerTick() {
   if (!store.settings.schedulerEnabled) {
     return;
   }
   const local = getLocalParts(new Date(), store.settings.timezone);
   const key = `${local.date}T${local.time}`;
-  for (const account of store.accounts.filter((item) => item.enabled)) {
+  for (const account of store.accounts.filter(accountScheduled)) {
     if (!effectiveSettings(account).scheduleTimes.includes(local.time)) {
       continue;
     }
@@ -1754,6 +1952,7 @@ async function schedulerTick() {
       store.threadState = account.threadState;
     }
     await saveStore();
+    if (!store.accounts.includes(account) || !accountScheduled(account) || shuttingDown) continue;
     addActivity("scheduler", "info", "Schedule matched", {
       accountId: account.id,
       accountLabel: account.label,
@@ -1781,6 +1980,7 @@ function startScheduler() {
 
 function stateRefreshSchedule(nowMs = Date.now()) {
   const activityTimes = store.accounts
+    .filter((account) => account.provider === "codex")
     .map((account) => latestUsageActivityAt(account.usageHistory))
     .filter(Boolean)
     .sort();
@@ -1810,8 +2010,7 @@ function scheduleNextStateRefresh(soonerOnly = false) {
     stateRefreshTimer = null;
     stateRefreshNextAt = null;
     try {
-      const result = await refreshAllAccountStates("adaptive");
-      lastStateRefreshFailed = result.failed > 0;
+      await refreshAllAccountStates("adaptive");
     } catch (error) {
       lastStateRefreshFailed = true;
       addActivity("refresh", "error", "Adaptive state refresh failed", { error: error.message });
@@ -1830,18 +2029,25 @@ function startStateRefresh() {
     queueResetReminders();
     void flushTelegramOutbox();
   }
+  if (claude.configured && !claudeRefreshTimer) {
+    claudeRefreshTimer = setInterval(() => void refreshDueClaudeAccounts(), 30_000);
+  }
   if (stateRefreshTimer) {
     return;
   }
   void refreshAllAccountStates("startup")
-    .then((result) => {
-      lastStateRefreshFailed = result.failed > 0;
-    })
     .catch((error) => {
       lastStateRefreshFailed = true;
       addActivity("refresh", "error", "Startup state refresh failed", { error: error.message });
     })
     .finally(() => scheduleNextStateRefresh());
+}
+
+async function refreshDueClaudeAccounts() {
+  const results = await Promise.all(store.accounts
+    .filter((account) => account.provider === "claude")
+    .map((account) => refreshClaudeAccount(account)));
+  if (results.some(({ rateLimits }) => rateLimits !== "skipped")) broadcast("status", { ts: nowIso() });
 }
 
 function parseAdminEmails() {
@@ -2077,6 +2283,27 @@ async function logoutCodex(accountId = store.selectedAccountId) {
   return result;
 }
 
+function claudeHttpError(error) {
+  if (!(error instanceof ClaudeError)) return error;
+  error.statusCode = error.code === "busy" ? 409
+    : ["unavailable", "disabled"].includes(error.code) ? 503 : 422;
+  return error;
+}
+
+async function logoutClaude(account) {
+  if (claudeRuns.has(account.id)) throw claudeHttpError(new ClaudeError("busy"));
+  await claude.call("logout", account.id).catch((error) => { throw claudeHttpError(error); });
+  const status = { ...unknownAuthStatus(), mode: "none", detail: "Signed out of Claude Code", code: 0 };
+  authStatusCacheByAccount.set(account.id, { checkedAt: Date.now(), status });
+  authStatusProbeAtByAccount.delete(account.id);
+  claudeQuota.set(account.id, { live: false, detail: status.detail, nextAt: Date.now() + CLAUDE_POLL_MS });
+  clearAuthenticationFailure(account);
+  store.telegramAlertState.intentionalLogouts[account.id] = true;
+  await saveStore();
+  addAuthEvent("Signed out of Claude Code", { accountId: account.id, accountLabel: account.label });
+  return { code: 0 };
+}
+
 async function handleApi(req, res, url) {
   if (!isAuthorized(req)) {
     return sendError(res, 403, "Forbidden");
@@ -2088,7 +2315,6 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/refresh") {
     const result = await refreshAllAccountStates("request");
-    lastStateRefreshFailed = result.failed > 0;
     scheduleNextStateRefresh();
     return sendJson(res, 200, result);
   }
@@ -2104,13 +2330,18 @@ async function handleApi(req, res, url) {
       ? history[firstInRange - 1]
       : firstInRange === -1 ? history.at(-1) || null : null;
     const schedule = stateRefreshSchedule();
+    const claudeState = claudeQuota.get(account.id);
     return sendJson(res, 200, {
       accountId: account.id,
       range,
       baseline,
       samples: firstInRange === -1 ? [] : history.slice(Math.max(0, firstInRange)),
       observedAt: account.usageObservedAt,
-      polling: {
+      polling: account.provider === "claude" ? {
+        intervalMs: CLAUDE_POLL_MS,
+        lastActivityAt: latestUsageActivityAt(history),
+        nextAt: claudeState?.nextAt && new Date(Math.max(claudeState.nextAt, claudeState.retryAt || 0)).toISOString()
+      } : {
         intervalMs: schedule.intervalMs,
         lastActivityAt: schedule.lastActivityAt,
         nextAt: stateRefreshNextAt || schedule.nextAt
@@ -2134,15 +2365,17 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/status") {
     refreshAuthStatusesInBackground();
+    const claudeAvailable = await claude.available();
     const selected = requireAccount();
     const auth = authStatusCacheByAccount.get(selected.id)?.status || unknownAuthStatus();
     return sendJson(res, 200, {
       ts: nowIso(),
+      claudeAvailable,
       selectedAccountId: selected.id,
       selectedAccount: publicAccount(selected),
       accounts: store.accounts.map(publicAccount),
       auth,
-      appServer: { running: getAppServer(selected.id, false)?.running || false },
+      appServer: publicAccount(selected).appServer,
       scheduler: {
         enabled: store.settings.schedulerEnabled,
         next: nextRunSummary()
@@ -2163,15 +2396,20 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/accounts") {
     const body = await readJson(req);
-    const account = createAccount(typeof body.label === "string" && body.label.trim() ? body.label.trim() : `Account ${store.accounts.length + 1}`);
-    if (typeof body.enabled === "boolean") account.enabled = body.enabled;
+    const provider = body.provider === undefined ? "codex" : body.provider;
+    if (provider !== "codex" && provider !== "claude") return sendError(res, 400, "provider must be codex or claude");
+    const account = createAccount(typeof body.label === "string" && body.label.trim() ? body.label.trim() : `Account ${store.accounts.length + 1}`, provider);
+    if (provider === "codex" && typeof body.enabled === "boolean") account.enabled = body.enabled;
+    if (provider === "claude") {
+      await claude.call("prepare", account.id).catch((error) => { throw claudeHttpError(error); });
+    }
     store.accounts.push(account);
     store.selectedAccountId = account.id;
     store.threadState = account.threadState;
     store.dashboard = account.dashboard;
     await ensureAccountDirs(account);
     await saveStore();
-    addActivity("account", "info", "Account added", { accountId: account.id, accountLabel: account.label });
+    addActivity("account", "info", "Account added", { accountId: account.id, accountLabel: account.label, provider });
     return sendJson(res, 200, { selectedAccountId: account.id, account: publicAccount(account), accounts: store.accounts.map(publicAccount) });
   }
 
@@ -2179,6 +2417,7 @@ async function handleApi(req, res, url) {
     const accountId = decodeURIComponent(url.pathname.split("/").at(-1));
     const account = requireAccount(accountId);
     const body = await readJson(req);
+    if (Object.hasOwn(body, "provider")) return sendError(res, 400, "An account's provider cannot be changed");
     if (body.settings !== undefined) {
       if (!body.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) {
         return sendError(res, 400, "settings must be an object");
@@ -2186,6 +2425,9 @@ async function handleApi(req, res, url) {
       for (const key of Object.keys(body.settings)) {
         if (!ACCOUNT_SETTING_KEYS.includes(key)) {
           return sendError(res, 400, `Unknown account setting: ${key}`);
+        }
+        if (account.provider === "claude" && (key === "model" || key === "workspaceDir")) {
+          return sendError(res, 422, `settings.${key} is available for Codex accounts`);
         }
         const value = body.settings[key];
         if (key === "scheduleTimes") {
@@ -2196,6 +2438,9 @@ async function handleApi(req, res, url) {
           return sendError(res, 400, `settings.${key} must be a string or null`);
         }
       }
+    }
+    if (account.provider === "claude" && body.enabled && !await claude.available()) {
+      return sendError(res, 503, new ClaudeError(claude.configured ? "unavailable" : "disabled").message);
     }
     if (typeof body.label === "string" && body.label.trim()) {
       account.label = body.label.trim();
@@ -2237,19 +2482,29 @@ async function handleApi(req, res, url) {
     }
     deletingAccountIds.add(account.id);
     try {
-      getAppServer(account.id, false)?.stop();
-      await stopAccountProcesses(account.id);
+      let removedCredentials;
+      if (account.provider === "claude") {
+        const removed = await claude.call("remove", account.id).catch((error) => { throw claudeHttpError(error); });
+        if (removed.removed !== true) throw claudeHttpError(new ClaudeError("failed"));
+        await claudeRuns.get(account.id);
+        await claudeRefreshes.get(account.id);
+        removedCredentials = true;
+      } else {
+        getAppServer(account.id, false)?.stop();
+        await stopAccountProcesses(account.id);
+      }
       await saveChain;
+      if (account.provider === "codex") removedCredentials = await removeAccountHome(account.codeHome);
       appServers.delete(account.id);
       loginSessions.delete(account.id);
       authStatusCacheByAccount.delete(account.id);
       authStatusProbeAtByAccount.delete(account.id);
+      claudeQuota.delete(account.id);
       delete store.telegramAlertState.authIssues[account.id];
       delete store.telegramAlertState.authFailureCounts[account.id];
       delete store.telegramAlertState.intentionalLogouts[account.id];
       delete store.telegramAlertState.resetReminders[account.id];
       delete store.telegramAlertState.quotaReminders[account.id];
-      const removedCredentials = await removeAccountHome(account.codeHome);
       store.accounts = store.accounts.filter((item) => item.id !== account.id);
       if (store.selectedAccountId === account.id) {
         store.selectedAccountId = store.accounts[0].id;
@@ -2302,8 +2557,10 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/run-now") {
     const body = await readJson(req);
+    const account = requireAccount(body.accountId || store.selectedAccountId);
+    if (account.provider === "claude" && !claude.configured) return sendError(res, 503, new ClaudeError("disabled").message);
     const run = await startTurn({
-      accountId: body.accountId || store.selectedAccountId,
+      accountId: account.id,
       reason: "manual",
       prompt: typeof body.prompt === "string" && body.prompt.trim() ? body.prompt : null
     });
@@ -2358,7 +2615,9 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/auth/device/start") {
     const body = await readJson(req);
-    return sendJson(res, 200, startDeviceLogin(body.accountId || store.selectedAccountId));
+    const account = requireAccount(body.accountId || store.selectedAccountId);
+    if (account.provider === "claude") return sendError(res, 422, "Sign in through Claude Code in the container.");
+    return sendJson(res, 200, startDeviceLogin(account.id));
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/device/current") {
@@ -2367,7 +2626,8 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
     const body = await readJson(req);
-    const result = await logoutCodex(body.accountId || store.selectedAccountId);
+    const account = requireAccount(body.accountId || store.selectedAccountId);
+    const result = account.provider === "claude" ? await logoutClaude(account) : await logoutCodex(account.id);
     return sendJson(res, result.code === 0 ? 200 : 500, result);
   }
 
@@ -2440,7 +2700,7 @@ async function bootstrap() {
 
   startScheduler();
 
-  await Promise.all(store.accounts.map(async (account) => {
+  await Promise.all(store.accounts.filter((account) => account.provider === "codex").map(async (account) => {
     const auth = await getAuthStatus(account, true);
     if (auth.probeUnavailable && !auth.loggedIn) {
       addActivity("auth", "warn", "Codex login status check was unavailable during startup", {
@@ -2483,6 +2743,7 @@ async function bootstrap() {
     clearInterval(schedulerTimer);
     clearTimeout(stateRefreshTimer);
     clearInterval(telegramRetryTimer);
+    clearInterval(claudeRefreshTimer);
     server.close();
     await telegramFlushPromise?.catch(() => {});
     await stateRefreshPromise?.catch(() => {});

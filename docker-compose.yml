@@ -2,6 +2,7 @@ services:
   codex-window-runner:
     build:
       context: .
+      target: runner
       args:
         CODEX_PACKAGE_VERSION: "0.154.0-alpha.3"
     container_name: codex-window-runner
@@ -12,6 +13,8 @@ services:
       DATA_DIR: /data/app
       CODEX_HOME: /data/codex-home
       WORKSPACE_DIR: /workspace
+      CLAUDE_WORKER_SOCKET: /run/claude-worker/worker.sock
+      CLAUDE_QUOTA_VERIFIED_VERSION: ${CLAUDE_QUOTA_VERIFIED_VERSION:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       # Optional defense in depth when the app is behind Cloudflare Access.
@@ -21,6 +24,24 @@ services:
     volumes:
       - codex_window_runner_data:/data
       - ./workspace:/workspace
+      - claude_worker_socket:/run/claude-worker:ro
+
+  claude-worker:
+    profiles: [claude]
+    build:
+      context: .
+      target: claude-worker
+    init: true
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CLAUDE_QUOTA_VERIFIED_VERSION: ${CLAUDE_QUOTA_VERIFIED_VERSION:-}
+    volumes:
+      - claude_worker_socket:/run/claude-worker
+      - claude_worker_accounts:/claude/accounts
 
 volumes:
   codex_window_runner_data:
+  claude_worker_socket:
+  claude_worker_accounts:

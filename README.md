@@ -96,6 +96,44 @@ Under *Accounts → Edit run settings*. Leave a field empty to use the shared de
 
 The *Next send* bar covers the union of enabled accounts' schedules.
 
+### Claude Code subscriptions
+
+Claude support is opt-in and gated on a live quota pilot for the pinned Claude Code version. The separate worker holds one private CLI home per account and shares only a Unix socket with the dashboard. Sign-in runs directly in Anthropic's CLI. Claude accounts can send text manually or on the shared schedule, and each account resumes its own conversation. Each Claude account has a short acknowledgment prompt by default and can override it in Accounts. The worker runs with Claude's default model, with tools, customizations, MCP, and browser integration disabled.
+
+The worker reads the built-in `/usage` screen in UTC without sending a model prompt. It checks the 5-hour and all-model weekly windows every ten minutes and respects the CLI's backoff. Cached readings and unrecognized screens leave the previous values marked stale. Usage charts and Telegram quota rules use successful observations. The parser depends on the pinned terminal layout, so re-run the pilot after each Claude Code upgrade.
+
+Start the passive pilot in a separate Compose project. Turn off paid usage credits on the subscription before testing sends.
+
+```sh
+docker compose --env-file /dev/null -p cwr-claude-pilot --profile claude up -d --build claude-worker
+```
+
+What it does: builds and starts only the Claude worker, with isolated volumes and no published port. Requires a running Docker daemon and network access to build the image.
+
+```sh
+docker compose --env-file /dev/null -p cwr-claude-pilot --profile claude exec claude-worker node src/claude-worker.mjs login acct_000000000001
+```
+
+What it does: signs into your own subscription and writes credentials to this pilot account's private volume, then opens Claude Code setup. Complete the official sign-in and setup in your terminal, open `/usage`, then exit.
+
+```sh
+docker compose --env-file /dev/null -p cwr-claude-pilot --profile claude exec claude-worker node src/claude-worker.mjs inspect acct_000000000001
+```
+
+What it does: opens a fresh, tool-free Claude Code terminal in the same home. Complete any first-run setup for its empty work directory, open `/usage`, note both windows and reset times, then exit.
+
+```sh
+docker compose --env-file /dev/null -p cwr-claude-pilot --profile claude exec claude-worker node src/claude-worker.mjs pilot acct_000000000001
+```
+
+What it does: runs the passive reader and prints only normalized quota values. Compare both windows with the manual read, then repeat after quota changes in another Claude session. The pilot must pick up the new values without a model turn.
+
+After the passive pilot passes, set `CLAUDE_QUOTA_VERIFIED_VERSION` to the tested image's Claude Code version in an isolated dashboard deployment and run Compose with the `claude` profile. Use a separate project, container name, loopback port, and workspace if another dashboard is running on the same host. Add a Claude Code account in the dashboard and follow its terminal sign-in instructions in that project. Include the same `-p` and `-f` options in that sign-in command when using a named project or Compose override. Verify one manual send, one scheduled send, and a quota refresh. Use a new account slot for a different subscription identity. Back up the existing runner store before enabling Claude in your regular deployment. Restoring a release that predates provider support requires the pre-upgrade store.
+
+The November 8, 2026 pilot on Linux arm64 / Node 22 verified Claude Code `2.1.303` against its live `/usage` screen, including both quota percentages and displayed reset times. Manual and scheduled acknowledgments completed in the same saved conversation. A passive refresh after a separate native CLI conversation preserved the dashboard session. That small external test did not move the displayed whole-percent usage values, so a live consumption delta was not measurable. The CLI's displayed reset times varied by one minute between reads. The parser waits for `Refreshing…` to disappear and records the displayed minute precision.
+
+Back up the worker's account volume separately if you want to preserve its credentials and conversations. Treat that backup as a password store. The shared worker socket is an admin interface for the dashboard.
+
 ## Security model
 
 This is a **private admin app** with full control over Codex sessions. Do not expose it to the public internet.
@@ -118,6 +156,8 @@ Environment variables (defaults shown are the in-container values):
 | `CODEX_HOME` | `/data/codex-home` | Default account's Codex home |
 | `CODEX_ACCOUNTS_DIR` | `/data/codex-accounts` | Codex homes for additional accounts |
 | `WORKSPACE_DIR` | `/workspace` | Codex cwd and writable root |
+| `CLAUDE_WORKER_SOCKET` | `/run/claude-worker/worker.sock` in Compose | Private socket shared with the optional Claude worker |
+| `CLAUDE_QUOTA_VERIFIED_VERSION` | unset | Enable Claude only when it matches the CLI version that passed the live quota pilot |
 | `ADMIN_EMAILS` | unset | Optional Cloudflare Access email allowlist |
 | `TELEGRAM_BOT_TOKEN` | unset | Telegram bot token; keep only in the server's ignored `.env` |
 | `TELEGRAM_CHAT_ID` | unset | Destination user, group, or channel chat ID |
@@ -180,7 +220,7 @@ The bundled compose binds `127.0.0.1:8787:8080`. To listen on another interface,
 
 ## Known trade-offs
 
-- Node's standard library plus Server-Sent Events instead of a framework stack — same behavior for a single-user service, zero native dependencies.
+- The Codex dashboard uses Node's standard library and Server-Sent Events. The optional Claude worker uses a native pseudo-terminal module and a headless terminal emulator.
 - `codex app-server` is experimental upstream; a protocol change may require adapter updates.
 - Device-code login depends on Codex and your ChatGPT workspace allowing it. Fallback: copy a valid `auth.json` into the account's persistent `CODEX_HOME`.
 - A `bubblewrap not found` warning at startup is expected on slim images; Codex uses its bundled copy.
@@ -191,9 +231,9 @@ The bundled compose binds `127.0.0.1:8787:8080`. To listen on another interface,
 
 ## Frontend verification
 
-`npm run check` checks JavaScript syntax. `npm test` runs the unit and local HTTP integration tests.
+`npm run check` checks JavaScript syntax. After installing the locked dependencies with `npm ci`, `npm test` runs the unit and local integration tests with simulated CLIs.
 
-`npm run test:e2e` uses Playwright to launch the real server with a temporary data directory and a simulated Codex app-server. It never uses your account credentials or sends Telegram alerts. Install Playwright separately with its Chromium and WebKit browsers; production remains dependency-free:
+`npm run test:e2e` uses Playwright to launch the real server with a temporary data directory and a simulated Codex app-server. It never uses your account credentials or sends Telegram alerts. Install Playwright separately with its Chromium and WebKit browsers:
 
 ```sh
 npm install --no-save --package-lock=false playwright

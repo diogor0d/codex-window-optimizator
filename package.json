@@ -6,12 +6,15 @@
   "description": "A containerized web service that schedules messages into a persistent Codex CLI app-server thread.",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check public/app.js && node --check public/service-worker.js",
+    "check": "node --check src/server.mjs && node --check src/claude-client.mjs && node --check src/claude-usage.mjs && node --check src/claude-worker.mjs && node --check public/app.js && node --check public/service-worker.js",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "node test/browser/frontend.e2e.mjs"
   },
   "engines": {
     "node": ">=22"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@xterm/headless": "5.5.0",
+    "node-pty": "1.1.0"
+  }
 }

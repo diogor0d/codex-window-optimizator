@@ -27,6 +27,7 @@ const state = {
   activityEvents: [],
   showRawEvents: false,
   accounts: [],
+  claudeAvailable: false,
   selectedAccountId: null,
   runs: [],
   refreshInFlight: false,
@@ -242,6 +243,8 @@ function statusSnapshot(status) {
   const accounts = (status.accounts || []).map((account) => ({
     id: account.id,
     label: account.label,
+    provider: account.provider || "codex",
+    ...(account.provider === "claude" ? { quotaStatus: { live: false, observedAt: account.quotaStatus?.observedAt || null } } : {}),
     enabled: account.enabled,
     isSelected: account.id === status.selectedAccountId,
     auth: snapshotAuth(account.auth),
@@ -374,6 +377,7 @@ function accountWindow(account) {
     secondary: secondary === primary ? null : secondary,
     rateLimitReachedType: limits.rateLimitReachedType || null,
     planType: limits.planType ? String(limits.planType) : null,
+    ...(account?.provider === "claude" ? { provider: "claude", stale: account.quotaStatus?.live !== true } : {}),
     updatedAt: [limits.updatedAt, reserveSnapshot?.updatedAt, resetCredits.resetCreditsUpdatedAt]
       .filter(Boolean)
       .sort()
@@ -391,6 +395,7 @@ function accountWindow(account) {
 }
 
 function effectiveWindow(win, now = Date.now()) {
+  if (win?.provider === "claude") return win.primary;
   const ordinary = win?.primary || win?.secondary;
   if (!ordinary) {
     return null;
@@ -523,7 +528,11 @@ function resetCreditExpiry(win) {
 
 function isFreshWindow(win, now = Date.now()) {
   const resetMs = Number(effectiveWindow(win, now)?.resetsAt) * 1000;
-  return Number.isFinite(resetMs) && resetMs > now;
+  return !win?.stale && Number.isFinite(resetMs) && resetMs > now;
+}
+
+function isFreshWeekly(win, now = Date.now()) {
+  return !win?.stale && Number(win?.secondary?.resetsAt) * 1000 > now;
 }
 
 function fmtCountdown(msLeft) {
@@ -566,8 +575,8 @@ function fmtWeeklyReset(ms) {
   });
 }
 
-function usageFree(sample, key) {
-  if (key === "fiveHourUsed" && sample?.weeklyUsed >= 100) {
+function usageFree(sample, key, provider = "codex") {
+  if (provider === "codex" && key === "fiveHourUsed" && sample?.weeklyUsed >= 100) {
     return 0;
   }
   return Number.isFinite(sample?.[key]) ? clampPercent(100 - sample[key]) : null;
@@ -605,14 +614,14 @@ function buildUsageChartModel(histories, key, startMs, endMs) {
     const observedAt = usageObservationAt(data, key);
     const observedMs = Date.parse(observedAt || "");
     const observations = samples.filter((sample) => Date.parse(sample.ts) <= observedMs);
-    const validSamples = observations.filter((sample) => Number.isFinite(usageFree(sample, key)));
+    const validSamples = observations.filter((sample) => Number.isFinite(usageFree(sample, key, account.provider)));
     return { account, index, data, samples, observations, validSamples, observedAt, observedMs };
   });
   const timestampSet = new Set(series.flatMap((item) => item.observations.map((sample) => Date.parse(sample.ts))
     .filter((time) => time >= startMs && time <= endMs)));
   for (const item of series) {
     const beforeRange = item.observations.filter((sample) => Date.parse(sample.ts) < startMs).at(-1);
-    if (beforeRange && Number.isFinite(usageFree(beforeRange, key)) && item.observedMs >= startMs) timestampSet.add(startMs);
+    if (beforeRange && Number.isFinite(usageFree(beforeRange, key, item.account.provider)) && item.observedMs >= startMs) timestampSet.add(startMs);
     if (Number.isFinite(item.observedMs) && item.observedMs >= startMs && item.observedMs <= endMs
       && item.observations.some((sample) => Date.parse(sample.ts) <= item.observedMs)) {
       timestampSet.add(item.observedMs);
@@ -636,7 +645,7 @@ function usageChartValueAt(series, key, timeMs) {
     } else high = middle - 1;
   }
   if (!selected) return { value: null, status: "unavailable", sample: null };
-  const value = usageFree(selected, key);
+  const value = usageFree(selected, key, series.account.provider);
   return Number.isFinite(value)
     ? { value, status: data.savedSnapshot ? "cached" : timeMs > observedMs ? "last-known" : "available", sample: selected }
     : { value: null, status: "unavailable", sample: selected };
@@ -694,8 +703,8 @@ function usageInsightStats(series, key, startMs, endMs) {
       && Date.parse(sample.ts) <= Math.min(endMs, item.observedMs));
     const baseline = item.observations.filter((sample) => Date.parse(sample.ts) < startMs).at(-1);
     const samples = baseline && item.observedMs >= startMs ? [baseline, ...inRange] : inRange;
-    const points = samples.filter((sample) => Number.isFinite(usageFree(sample, key)))
-      .map((sample) => ({ sample, remaining: usageFree(sample, key) }));
+    const points = samples.filter((sample) => Number.isFinite(usageFree(sample, key, item.account.provider)))
+      .map((sample) => ({ sample, remaining: usageFree(sample, key, item.account.provider) }));
     if (!points.length) return { account: item.account, summary: "No observations" };
     const first = points[0];
     const last = points.at(-1);
@@ -706,7 +715,7 @@ function usageInsightStats(series, key, startMs, endMs) {
     let partialRefills = 0;
     let previousUsed = null;
     for (const sample of samples) {
-      const remaining = usageFree(sample, key);
+      const remaining = usageFree(sample, key, item.account.provider);
       if (!Number.isFinite(remaining)) {
         previousUsed = null;
         continue;
@@ -793,7 +802,7 @@ function renderUsageChart(host, model, range, visibleAccounts, inspectorId) {
     let baselineValue = null;
     for (const sample of samples) {
       const time = Date.parse(sample.ts);
-      const value = usageFree(sample, model.key);
+      const value = usageFree(sample, model.key, item.account.provider);
       if (time < model.startMs) {
         baselineValue = Number.isFinite(value) ? value : null;
         continue;
@@ -1046,9 +1055,10 @@ function renderUsageHistory() {
     const data = state.usageHistory.get(historyKey)?.data;
     const latest = data?.samples?.at(-1) || data?.baseline;
     const sourceLabel = data?.savedSnapshot ? "Cached snapshot · "
-      : state.usageHistoryErrors.has(historyKey) ? "Refresh failed · " : "";
+      : state.usageHistoryErrors.has(historyKey) ? "Refresh failed · "
+        : account.provider === "claude" && !account.quotaStatus?.live ? "Stale · " : "";
     const value = (key) => {
-      const free = usageFree(latest, key);
+      const free = usageFree(latest, key, account.provider);
       return Number.isFinite(free) ? `${free}%` : "—";
     };
     return `
@@ -1083,7 +1093,7 @@ function renderUsageHistory() {
           <th>${escapeHtml(account.label)}</th>
           <td><time datetime="${escapeHtml(sample.ts)}">${escapeHtml(new Date(sample.ts).toLocaleString())}</time></td>
           ${["fiveHourUsed", "weeklyUsed"].map((key) => {
-            const free = usageFree(sample, key);
+            const free = usageFree(sample, key, account.provider);
             return `<td>${Number.isFinite(free) ? `${free}%` : "—"}</td>`;
           }).join("")}
         </tr>`).join("")}</tbody>
@@ -1208,18 +1218,34 @@ function readableSource(value) {
   return text.replaceAll("_", " ");
 }
 
-function updateWindowSummary(dashboard = {}) {
+function updateWindowSummary(dashboard = {}, account = {}) {
   const limits = dashboard.rateLimits;
-  const win = accountWindow({ dashboard });
+  const isClaude = account.provider === "claude";
+  const win = accountWindow({ ...account, dashboard });
   const resetCredits = accountResetCredits({ dashboard });
-  const current = effectiveWindow(win);
+  const current = isClaude ? win?.primary : effectiveWindow(win);
+  const currentStale = isClaude && current && (win.stale || current.resetsAt * 1000 <= Date.now());
   const remainingValue = current?.free;
   const reset = Number.isFinite(current?.resetsAt) ? formatUnixSeconds(current.resetsAt) : "Unknown";
   const duration = Number.isFinite(current?.windowDurationMins) ? `${current.windowDurationMins} min` : "Unknown";
   const plan = limits?.planType ? `${limits.planType} / ${duration}` : duration;
   const lastTurn = dashboard.lastCompletedTurn;
 
-  $("#windowPlan").textContent = plan;
+  $("#accountUsageTitle").textContent = isClaude ? "5-hour usage window" : "Current usage window";
+  $("#windowPlan").textContent = isClaude ? "Claude subscription" : plan;
+  $("#claudeWeeklyFact").hidden = !isClaude;
+  const weekly = win?.secondary;
+  $("#claudeWeeklyUsage").textContent = weekly?.hasData
+    ? `${weekly.free}% ${isFreshWeekly(win) ? "remaining" : "last reported"} · ${formatUnixSeconds(weekly.resetsAt)}`
+    : "Unknown";
+  $("#claudeQuotaStatus").hidden = !isClaude;
+  if (isClaude) {
+    const { live, observedAt, detail } = account.quotaStatus || {};
+    $("#claudeQuotaStatus").textContent = [
+      observedAt ? `${live ? "Last observed" : "Stale · last observed"} ${new Date(observedAt).toLocaleString()}` : "No quota reading yet",
+      detail
+    ].filter(Boolean).join(" · ");
+  }
   const reserve = win?.reserve?.weekly;
   const reserveMode = reserveState(win);
   $("#windowReserve").textContent = reserve?.hasData ? `${reserve.free}% remaining` : "Unavailable";
@@ -1239,8 +1265,10 @@ function updateWindowSummary(dashboard = {}) {
   if (focusedCreditId) document.getElementById(focusedCreditId)?.focus({ preventScroll: true });
   $("#lastPing").textContent = compactText(dashboard.lastUserMessage?.text);
   $("#lastReply").textContent = compactText(dashboard.lastAgentMessage?.text);
-  $("#windowUsageLabel").textContent = Number.isFinite(remainingValue) ? `${remainingValue}% remaining` : "Usage unknown";
-  $("#windowResetHint").textContent = Number.isFinite(current?.resetsAt) ? `Limiting window resets ${reset}` : "Reset unknown";
+  $("#windowUsageLabel").textContent = Number.isFinite(remainingValue)
+    ? `${remainingValue}% ${currentStale ? "last reported" : "remaining"}` : "Usage unknown";
+  $("#windowResetHint").textContent = Number.isFinite(current?.resetsAt)
+    ? `${currentStale ? "Last reported reset" : isClaude ? "Window resets" : "Limiting window resets"} ${reset}` : "Reset unknown";
   $("#windowUsageBar").style.width = `${clampPercent(remainingValue)}%`;
 
   if (lastTurn?.status === "completed" && !lastTurn.error) {
@@ -1258,6 +1286,7 @@ function updateWindowSummary(dashboard = {}) {
 
 function updateStatus(status) {
   state.accounts = status.accounts || [];
+  state.claudeAvailable = status.claudeAvailable === true;
   state.selectedAccountId = status.selectedAccountId || status.selectedAccount?.id || null;
   renderAccounts();
   const selectedAccount = status.selectedAccount || {};
@@ -1267,7 +1296,8 @@ function updateStatus(status) {
     : status.auth.logoutConfirmationPending
       ? "Logged-out status pending confirmation"
     : status.auth.detail || (status.auth.loggedIn ? "Logged in" : "Not logged in");
-  $("#appServerState").textContent = status.appServer.running ? "Running" : "Stopped";
+  $("#appServerLabel").textContent = selectedAccount.provider === "claude" ? "Claude send" : "App server";
+  $("#appServerState").textContent = status.appServer.running ? "Running" : selectedAccount.provider === "claude" ? "Idle" : "Stopped";
   $("#threadState").textContent = selectedAccount.thread?.threadId || status.thread.threadId || "None";
   state.schedulerEnabled = status.scheduler.enabled;
   $("#scheduleNext").textContent = status.scheduler.enabled
@@ -1279,7 +1309,7 @@ function updateStatus(status) {
   badge($("#loginBadge"), status.auth.probeUnavailable ? "Check unavailable" : status.auth.logoutConfirmationPending ? "Confirmation pending" : status.auth.loggedIn ? "Logged in" : status.auth.authIssue ? "Authentication failed" : "Logged out", authUncertain ? "warn" : status.auth.loggedIn ? "ok" : "bad");
   badge($("#schedulerBadge"), status.scheduler.enabled ? "Enabled" : "Paused", status.scheduler.enabled ? "ok" : "warn");
   renderScheduleSummary();
-  updateWindowSummary(status.dashboard || {});
+  updateWindowSummary(status.dashboard || {}, selectedAccount);
   renderFleet();
   renderUsageHistory();
 
@@ -1289,6 +1319,10 @@ function updateStatus(status) {
 
 function selectedAccountId() {
   return state.selectedAccountId || $("#accountSelect")?.value || null;
+}
+
+function providerLabel(account) {
+  return account?.provider === "claude" ? "Claude Code" : "Codex";
 }
 
 function renderAccounts() {
@@ -1305,7 +1339,15 @@ function renderAccounts() {
     $("#accountDiagnostics").open = false;
     for (const id of ["accountMessage", "accountDetailsMessage", "accountOverridesMessage", "accountDangerMessage", "manualMessage", "runMessage", "loginMessage"]) feedback(id, "");
   }
-  select.replaceChildren(...state.accounts.map((account) => new Option(account.label, account.id, false, account.id === selected?.id)));
+  const isClaude = selected?.provider === "claude";
+  select.replaceChildren(...state.accounts.map((account) => new Option(`${account.label} · ${providerLabel(account)}`, account.id, false, account.id === selected?.id)));
+  document.querySelectorAll("[data-codex-only]").forEach((element) => { element.hidden = isClaude; });
+  $("#accountResetCredits").hidden = isClaude;
+  $("#accountOverridesHint").textContent = isClaude
+    ? "Leave times empty to use the shared schedule. Claude uses its default model and replies with text."
+    : "Leave fields empty to use the shared settings in Schedule.";
+  $("#newAccountProviderInput").options[1].disabled = !state.claudeAvailable;
+  $("#claudeProviderHint").hidden = state.claudeAvailable;
   const draft = state.accountDrafts.get(selected?.id);
   $("#accountLabelInput").value = draft?.label ?? selected?.label ?? "";
   $("#accountEnabledInput").checked = selected?.enabled === true;
@@ -1314,10 +1356,10 @@ function renderAccounts() {
     if (draft?.overrides) {
       for (const [id, value] of Object.entries(draft.overrides)) $("#" + id).value = value;
     }
-  } else if (selected?.auth?.loggedIn) void refreshModels(selected.id);
+  } else if (!isClaude && selected?.auth?.loggedIn) void refreshModels(selected.id);
   $("#accountRunSettingsTitle").textContent = `Run settings · ${selected?.label || "Account"}`;
   const custom = selected?.settings || {};
-  $("#accountRunSettingsSummary").textContent = `${custom.scheduleTimes?.length ? `Custom times: ${custom.scheduleTimes.join(", ")}` : "Shared schedule"} · ${custom.model || "Shared model"}${custom.promptTemplate ? " · Custom prompt" : ""}`;
+  $("#accountRunSettingsSummary").textContent = `${custom.scheduleTimes?.length ? `Custom times: ${custom.scheduleTimes.join(", ")}` : "Shared schedule"} · ${isClaude ? "Claude default model" : custom.model || "Shared model"}${custom.promptTemplate ? " · Custom prompt" : ""}`;
   $("#sendTarget").textContent = selected
     ? `To ${selected.label} · leave the prompt empty to use this account’s scheduled prompt.`
     : "Add an account to send a message.";
@@ -1329,19 +1371,24 @@ function renderAccounts() {
 function updateAccountControls() {
   if (typeof document === "undefined") return;
   const account = state.accounts.find((item) => item.id === state.selectedAccountId);
+  const claudeUnavailable = account?.provider === "claude" && !state.claudeAvailable;
   const signingIn = state.loginSession?.accountId === account?.id && state.loginSession?.status === "running";
   for (const id of ["accountSelect", "addAccountOpenBtn", "saveAccountBtn", "saveAccountOverridesBtn", "editAccountRunSettingsBtn", "accountEnabledInput", "logoutBtn", "removeAccountBtn"]) {
     const element = $("#" + id);
     if (element) element.disabled = Boolean(state.accountBusy || state.sendBusy || element.dataset.pending || (!account && id !== "addAccountOpenBtn") || (signingIn && ["logoutBtn", "removeAccountBtn"].includes(id)));
   }
   $("#deviceLoginBtn").disabled = Boolean(state.accountBusy || signingIn || !account);
+  $("#deviceLoginBtn").disabled ||= claudeUnavailable;
+  $("#logoutBtn").disabled ||= claudeUnavailable || (account?.provider === "claude" && account.appServer?.running);
+  $("#accountEnabledInput").disabled ||= claudeUnavailable && !account?.enabled;
   $("#removeAccountBtn").disabled ||= state.accounts.length <= 1;
   $("#removeAccountBtn").title = state.accounts.length <= 1 ? "Keep at least one account in the dashboard." : "";
   $("#confirmRemoveAccountBtn").disabled = Boolean(state.accountBusy || state.sendBusy || !state.removalTarget || state.accounts.length <= 1);
   for (const id of ["closeRemoveAccountBtn", "cancelRemoveAccountBtn"]) $("#" + id).disabled = state.removalBusy;
   for (const id of ["accountDetailsForm", "accountOverridesForm"]) $("#" + id).inert = state.accountBusy;
   if (!state.sendBusy) {
-    $("#manualSendBtn").disabled = $("#runNowBtn").disabled = state.accountBusy || !account || !account.auth?.loggedIn;
+    $("#manualSendBtn").disabled = $("#runNowBtn").disabled = state.accountBusy || !account || !account.auth?.loggedIn || claudeUnavailable
+      || (account.provider === "claude" && account.appServer?.running);
   }
   if (account && !account.auth?.loggedIn) $("#sendTarget").textContent = `Sign in to ${account.label} in Accounts before sending.`;
 }
@@ -1470,11 +1517,13 @@ function fillAccountOverrides(account) {
   $("#accountPromptInput").value = overrides.promptTemplate || "";
   $("#accountScheduleInput").placeholder = (effective.scheduleTimes || []).join(", ") || "Inherited";
   $("#accountWorkspaceInput").placeholder = effective.workspaceDir || "Inherited";
-  if (account?.auth?.loggedIn) void refreshModels(account.id);
+  if (account?.provider === "claude") {
+    $("#accountModelHint").textContent = "";
+  } else if (account?.auth?.loggedIn) void refreshModels(account.id);
   else {
     $("#accountModelHint").textContent = "Sign in to see the models available to this account.";
   }
-  $("#accountPromptInput").placeholder = "Inherited global template";
+  $("#accountPromptInput").placeholder = account?.provider === "claude" ? effective.promptTemplate || "Claude default prompt" : "Inherited global template";
 }
 
 function fillModelSelect(select, value, defaultLabel) {
@@ -1492,6 +1541,7 @@ function fillModelSelect(select, value, defaultLabel) {
 
 async function refreshModels(accountId) {
   if (!accountId || state.modelCatalogRequests.has(accountId)) return;
+  if (state.accounts.find(({ id }) => id === accountId)?.provider === "claude") return;
   const cached = state.modelCatalogs.get(accountId);
   if (cached && Date.now() - cached.loadedAt < (cached.data ? 300000 : 10000)) {
     if (cached.data && selectedAccountId() === accountId) renderModelCatalog(cached);
@@ -1524,12 +1574,15 @@ async function saveAccountOverrides(event) {
   event.preventDefault();
   const accountId = selectedAccountId();
   const scheduleTimes = $("#accountScheduleInput").value.split(",").map((item) => item.trim()).filter(Boolean);
+  const account = state.accounts.find(({ id }) => id === accountId);
   const settings = {
     scheduleTimes: scheduleTimes.length ? scheduleTimes : null,
-    workspaceDir: $("#accountWorkspaceInput").value.trim() || null,
-    model: $("#accountModelInput").value.trim() || null,
     promptTemplate: $("#accountPromptInput").value.trim() || null
   };
+  if (account?.provider !== "claude") {
+    settings.workspaceDir = $("#accountWorkspaceInput").value.trim() || null;
+    settings.model = $("#accountModelInput").value.trim() || null;
+  }
   await accountAction($("#saveAccountOverridesBtn"), "accountOverridesMessage", async () => {
     feedback("accountOverridesMessage", "Saving…");
     await patchSelectedAccount({ settings }, accountId);
@@ -1905,7 +1958,7 @@ function summarizeEvent(event) {
     if (item?.type === "agentMessage") {
       return {
         kind: "message",
-        title: "Codex replied",
+        title: event.source === "claude" ? "Claude replied" : "Codex replied",
         body: compactText(item.text, ""),
         tags: ["assistant", `turn ${shortId(payload.turnId)}`].filter(Boolean),
         payload: {
@@ -2088,6 +2141,21 @@ function renderAccountAccess() {
   const account = state.accounts.find((item) => item.id === state.selectedAccountId);
   const auth = account?.auth || {};
   const uncertain = auth.probeUnavailable || auth.logoutConfirmationPending;
+  const isClaude = account?.provider === "claude";
+  $("#claudeLoginInstructions").hidden = !isClaude || !state.claudeAvailable || Boolean(auth.loggedIn && !auth.authIssue);
+  if (isClaude) {
+    $("#loginProgress").hidden = true;
+    $(".account-access-head").hidden = false;
+    $("#accountAccessTitle").textContent = auth.loggedIn ? `Connected to ${account.label}` : `Connect ${account.label}`;
+    $("#accountAccessHint").textContent = !state.claudeAvailable ? "The Claude worker is unavailable or has not been enabled."
+      : auth.authIssue || uncertain ? auth.detail
+        : auth.loggedIn ? "Ready for text messages. Scheduled sends follow the switch below." : "Sign in with your Claude subscription.";
+    $("#deviceLoginBtn").hidden = !state.claudeAvailable;
+    $("#deviceLoginBtn").textContent = "Check sign-in";
+    $("#claudeLoginCommand").textContent = /^acct_[a-f0-9]{12}$/.test(account.id)
+      ? `docker compose --profile claude exec claude-worker node src/claude-worker.mjs login ${account.id}` : "";
+    return;
+  }
   $(".account-access-head").hidden = Boolean(auth.loggedIn && !auth.authIssue && !uncertain && state.loginSession?.status !== "running");
   $("#accountAccessTitle").textContent = auth.loggedIn ? `Connected to ${account.label}` : `Connect ${account?.label || "an account"}`;
   $("#accountAccessHint").textContent = auth.logoutConfirmationPending ? "Confirming this account’s sign-in status…"
@@ -2137,7 +2205,7 @@ function renderLoginOutput(session) {
 
 async function refreshLoginSession() {
   const accountId = selectedAccountId();
-  if (!accountId) return;
+  if (!accountId || state.accounts.find(({ id }) => id === accountId)?.provider === "claude") return;
   const session = await api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId)}`);
   if (accountId === selectedAccountId()) renderLoginOutput(session);
 }
@@ -2386,6 +2454,7 @@ function renderFleet() {
   const accountReadings = accounts.map((account) => ({ account, win: accountWindow(account) }));
   const readings = accountReadings.filter(
     (entry) => entry.account.auth?.loggedIn && isFreshWindow(entry.win, now)
+      && (entry.account.provider !== "claude" || entry.win.primary?.hasData)
   );
   const staleReadings = accountReadings.filter(
     (entry) => entry.account.auth?.loggedIn
@@ -2400,7 +2469,7 @@ function renderFleet() {
   const weeklyReadings = accountReadings.filter(
     (entry) => entry.account.auth?.loggedIn
       && entry.win?.secondary?.hasData
-      && Number(entry.win.secondary.resetsAt) * 1000 > now
+      && isFreshWeekly(entry.win, now)
   );
   const reserveReadings = accountReadings.filter(
     (entry) => entry.account.auth?.loggedIn
@@ -2411,6 +2480,7 @@ function renderFleet() {
   const reserveActive = reserveReadings.filter((entry) => reserveState(entry.win, now) === "active");
   const nearLimit = readings.filter((entry) => effectiveWindow(entry.win, now).used >= NEAR_LIMIT_USED);
   const updatedTimes = accountReadings
+    .filter(({ win }) => !win?.stale)
     .map((entry) => Date.parse(entry.win?.updatedAt || ""))
     .filter(Number.isFinite);
   const latestUpdatedAt = updatedTimes.length ? Math.max(...updatedTimes) : null;
@@ -2503,29 +2573,31 @@ function renderFleet() {
         const win = accountWindow(account);
         const resetCredits = accountResetCredits(account);
         const loggedIn = Boolean(account.auth?.loggedIn);
+        const isClaude = account.provider === "claude";
         let rowClasses = "strip-row";
         let trackCell;
         let metaCell = "";
         const labelCell = `
           <span class="strip-label-stack">
             <span class="strip-label"><a class="account-name-link" href="#account" data-open-account="${escapeHtml(account.id)}">${escapeHtml(account.label)}</a></span>
-            <span class="account-row-state">${account.enabled ? "Scheduled sends on" : "Scheduled sends off"}</span>
+            <span class="account-row-state">${providerLabel(account)} · ${account.enabled ? "Scheduled sends on" : "Scheduled sends off"}</span>
             ${win?.planType && win.planType !== "unknown" ? `<span class="mini-badge neutral strip-plan">${escapeHtml(win.planType)}</span>` : ""}
           </span>`;
-        if (account.auth?.authIssue) {
+        if (account.auth?.authIssue && !(isClaude && win)) {
           rowClasses += " muted";
           trackCell = `<span class="strip-note" title="${escapeHtml(account.auth.detail || "Authentication failed")}">authentication issue - re-login from Accounts</span>`;
-        } else if (!loggedIn) {
+        } else if (!loggedIn && !(isClaude && win)) {
           rowClasses += " muted";
           trackCell = '<span class="strip-note">logged out — re-login from Accounts</span>';
         } else if (!win) {
           rowClasses += " muted";
-          trackCell = '<span class="strip-note">no reading yet — waiting for a live quota refresh</span>';
+          trackCell = `<span class="strip-note">${escapeHtml(account.quotaStatus?.detail || "no reading yet — waiting for a live quota refresh")}</span>`;
         } else {
-          const current = effectiveWindow(win, now);
+          const current = isClaude ? win.primary : effectiveWindow(win, now);
           const reserve = win.reserve?.weekly;
           const reserveMode = reserveState(win, now);
           const fresh = current ? isFreshWindow(win, now) : false;
+          const weeklyFresh = isFreshWeekly(win, now);
           if (fresh && current?.used >= NEAR_LIMIT_USED) {
             rowClasses += " near";
           }
@@ -2537,6 +2609,7 @@ function renderFleet() {
           }
           trackCell = `
             <div class="strip-cell">
+              ${isClaude && win.updatedAt ? `<span class="strip-note">${win.stale ? "Stale · " : ""}Observed ${escapeHtml(new Date(win.updatedAt).toLocaleString())}</span>` : ""}
               ${current ? `
               <div class="strip-track" data-quota-level="${quotaLevel(fresh ? current.free : null)}" role="img" aria-label="${escapeHtml(
                 fresh
@@ -2544,21 +2617,22 @@ function renderFleet() {
                   : `${account.label}: stale reading, last reported ${current.free}% remaining`
               )}">
                 <div class="strip-fill" style="width:${current.free}%"></div>
-              </div>` : '<span class="strip-note">ordinary quota not reported</span>'}
+              </div>` : `<span class="strip-note">${isClaude ? "5-hour quota unknown" : "ordinary quota not reported"}</span>`}
               ${win.secondary?.hasData ? `
-              <div class="strip-week ${Number(win.secondary.resetsAt) * 1000 > now ? "" : "stale"}">
+              <div class="strip-week ${weeklyFresh ? "" : "stale"}">
                 <span class="week-tag">wk</span>
-                <div class="week-track" data-quota-level="${quotaLevel(Number(win.secondary.resetsAt) * 1000 > now ? win.secondary.free : null)}" role="img" aria-label="${escapeHtml(
-                  Number(win.secondary.resetsAt) * 1000 > now
+                <div class="week-track" data-quota-level="${quotaLevel(weeklyFresh ? win.secondary.free : null)}" role="img" aria-label="${escapeHtml(
+                  weeklyFresh
                     ? `${account.label} weekly window: ${win.secondary.free}% remaining`
                     : `${account.label} weekly window: stale reading, last reported ${win.secondary.free}% remaining`
                 )}">
                   <div class="week-fill" style="width:${win.secondary.free}%"></div>
                 </div>
-                <span class="week-free" data-week-free="${win.secondary.free}">${win.secondary.free}% ${Number(win.secondary.resetsAt) * 1000 > now ? "remaining" : "last"}</span>
+                <span class="week-free" data-week-free="${win.secondary.free}">${win.secondary.free}% ${weeklyFresh ? "remaining" : "last"}</span>
                 <span class="week-reset">${
                   win.secondary.resetsAt
-                    ? `<span data-week-resets="${win.secondary.resetsAt}" title="Weekly quota reset: ${escapeHtml(formatUnixSeconds(win.secondary.resetsAt))}"></span>`
+                    ? win.stale ? escapeHtml(`Last reset time reported: ${formatUnixSeconds(win.secondary.resetsAt)}`)
+                      : `<span data-week-resets="${win.secondary.resetsAt}" title="Weekly quota reset: ${escapeHtml(formatUnixSeconds(win.secondary.resetsAt))}"></span>`
                     : "reset unknown"
                 }</span>
               </div>` : ""}
@@ -2579,21 +2653,22 @@ function renderFleet() {
               <span class="free-num">${current.free}<small>${fresh ? "% remaining" : "% last reported"}</small></span>
               <span class="reset-line">${
                 current.resetsAt
-                  ? `<span data-resets="${current.resetsAt}" title="${
+                  ? win.stale ? escapeHtml(`Last reset time reported: ${formatUnixSeconds(current.resetsAt)}`)
+                    : `<span data-resets="${current.resetsAt}" title="${
                       fresh ? "Window resets at this time" : "Reading expired; waiting for Codex to report the next window"
                     }"></span>`
                   : "reset unknown"
               }</span>
             </div>` : "";
         }
-        return `<div class="${rowClasses}" data-account-row="${escapeHtml(account.id)}">${labelCell}${trackCell}${metaCell}${resetCreditStack(resetCredits, account.id, now)}</div>`;
+        return `<div class="${rowClasses}" data-account-row="${escapeHtml(account.id)}">${labelCell}${trackCell}${metaCell}${isClaude ? "" : resetCreditStack(resetCredits, account.id, now)}</div>`;
       }).join("");
 
   filterAccountRows();
   if (focusedCreditId) document.getElementById(focusedCreditId)?.focus({ preventScroll: true });
 
   const weeklyHorizonLanes = accountReadings.map(({ account, win }) => {
-    if (!account.auth?.loggedIn) {
+    if (!account.auth?.loggedIn || win?.stale) {
       return null;
     }
     const resets = [
@@ -2642,9 +2717,10 @@ function renderFleet() {
       `).join("")}`;
 
   const lanes = accounts.filter((account) => {
-    const resetsAt = effectiveWindow(accountWindow(account), now)?.resetsAt;
+    const win = accountWindow(account);
+    const resetsAt = effectiveWindow(win, now)?.resetsAt;
     const resetMs = Number(resetsAt) * 1000;
-    return account.auth?.loggedIn && resetMs > now && resetMs <= now + FLEET_TIMETABLE_MS;
+    return account.auth?.loggedIn && !win?.stale && resetMs > now && resetMs <= now + FLEET_TIMETABLE_MS;
   });
   timetableHost.innerHTML = !lanes.length
     ? '<p class="tt-empty">No upcoming window resets tracked yet.</p>'
@@ -2742,7 +2818,9 @@ function tickFleet() {
 
   const nextResetsAt = state.accounts
     .filter((account) => account.enabled && account.auth?.loggedIn)
-    .map((account) => effectiveWindow(accountWindow(account), now)?.resetsAt)
+    .map(accountWindow)
+    .filter((win) => !win?.stale)
+    .map((win) => effectiveWindow(win, now)?.resetsAt)
     .filter((resetsAt) => Number.isFinite(resetsAt) && resetsAt * 1000 > now)
     .sort((a, b) => a - b)[0];
   $("#fleetNextReset").closest(".fleet-stat").classList.toggle("reset-soon", resetIsSoon(nextResetsAt * 1000, now));
@@ -3307,6 +3385,12 @@ function bindActions() {
     markSettingsDirty();
   });
   $("#deviceLoginBtn").addEventListener("click", () => void accountAction($("#deviceLoginBtn"), "accountMessage", async () => {
+    if (state.accounts.find(({ id }) => id === selectedAccountId())?.provider === "claude") {
+      const auth = await api(`/api/auth/status?accountId=${encodeURIComponent(selectedAccountId())}`);
+      await refreshStatus();
+      feedback("accountMessage", auth.detail, auth.loggedIn ? "success" : "neutral");
+      return;
+    }
     feedback("accountMessage", "Preparing sign-in…");
     renderLoginOutput(await api("/api/auth/device/start", { method: "POST", body: JSON.stringify({ accountId: selectedAccountId() }) }));
     feedback("accountMessage", "");
@@ -3438,7 +3522,8 @@ function bindActions() {
     void accountAction($("#addAccountBtn"), "addAccountMessage", async () => {
       const label = $("#newAccountLabelInput").value.trim();
       if (!label) throw new Error("Enter an account name.");
-      const result = await api("/api/accounts", { method: "POST", body: JSON.stringify({ label, enabled: false }) });
+      const provider = $("#newAccountProviderInput").value;
+      const result = await api("/api/accounts", { method: "POST", body: JSON.stringify({ label, provider, enabled: false }) });
       state.selectedAccountId = result.selectedAccountId;
       state.accounts = result.accounts || [];
       renderAccounts();

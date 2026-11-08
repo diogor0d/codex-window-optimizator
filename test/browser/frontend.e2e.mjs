@@ -261,7 +261,7 @@ async function accountWorkflow(page, fixture, label, expectedHttpErrors) {
   assert.equal(await page.locator("#accountLabelInput").inputValue(), "Alpha renamed");
   await page.locator("#saveAccountBtn").click();
   await page.locator("#accountDetailsMessage").getByText("Name saved.", { exact: true }).waitFor();
-  await page.waitForFunction(() => document.querySelector("#accountSelect option:checked").textContent === "Alpha renamed");
+  await page.waitForFunction(() => document.querySelector("#accountSelect option:checked").textContent === "Alpha renamed · Codex");
   await page.locator("#editAccountRunSettingsBtn").click();
   assert.equal(await page.locator("#accountOverrides").evaluate(element => element.open), true);
   await page.locator("#accountPromptInput").fill("Draft account prompt");
@@ -1023,8 +1023,66 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.waitForFunction(() => document.querySelector("#connectionBanner").hidden && document.querySelector("#accountSelect").options.length === 2);
     offlineCheck = false;
     await assertNoPageErrors(page, pageErrors);
+
+    await exerciseClaudeAccount(browser, fixture, contextOptions);
   } finally {
     await browser.close();
+  }
+}
+
+async function exerciseClaudeAccount(browser, fixture, contextOptions) {
+  // Keep synthetic response routing separate from the installed offline shell.
+  const page = await browser.newPage({ ...contextOptions, serviceWorkers: "block" });
+  const pageErrors = [];
+  page.on("pageerror", error => pageErrors.push(error.message));
+  page.setDefaultTimeout(12_000);
+  try {
+    const claudeId = "acct_000000000001";
+    const observedAt = new Date().toISOString();
+    const reset = Math.floor(Date.now() / 1000) + 3600;
+    const original = await requestJson(fixture.base, "/api/status");
+    const claudeAccount = {
+      id: claudeId, provider: "claude", label: "Synthetic Claude", enabled: false, isSelected: true,
+      auth: { loggedIn: true, credentialPresent: true, authIssue: false, detail: "Signed in to Claude Code" },
+      appServer: { running: false }, settings: {}, effectiveSettings: { scheduleTimes: ["08:00"], promptTemplate: "Reply with a short acknowledgment." },
+      thread: { threadId: "synthetic-session" }, quotaStatus: { live: true, observedAt },
+      dashboard: { rateLimits: {
+        primary: { usedPercent: 27, resetsAt: reset, windowDurationMins: 300 },
+        secondary: { usedPercent: 100, resetsAt: reset + 86400, windowDurationMins: 10080 },
+        updatedAt: observedAt
+      } }
+    };
+    await page.route(`**/api/usage-history?accountId=${claudeId}*`, route => route.fulfill({
+      json: { accountId: claudeId, samples: [], baseline: null, observedAt: {}, polling: { intervalMs: 600000 } }
+    }));
+    const claudeStatus = () => ({
+      ...original, claudeAvailable: true, selectedAccountId: claudeId, selectedAccount: claudeAccount,
+      accounts: [...original.accounts, claudeAccount], auth: claudeAccount.auth,
+      appServer: claudeAccount.appServer, thread: claudeAccount.thread, dashboard: claudeAccount.dashboard
+    });
+    await page.route("**/api/status", route => route.fulfill({ json: claudeStatus() }));
+    await page.goto(fixture.base, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.querySelector("#accountSelect").value === "acct_000000000001");
+    await navigate(page, "account");
+    assert.equal(await page.locator("#accountSelect option:checked").textContent(), "Synthetic Claude · Claude Code");
+    assert.equal(await page.locator("#windowUsageLabel").textContent(), "73% remaining");
+    assert.match(await page.locator("#claudeWeeklyUsage").textContent(), /0% remaining/);
+    assert.equal(await page.locator("#accountResetCredits").isVisible(), false);
+    assert.equal(await page.locator("#claudeLoginInstructions").isVisible(), false);
+    await page.locator("#editAccountRunSettingsBtn").click();
+    assert.equal(await page.locator("#accountModelInput").isVisible(), false);
+    assert.equal(await page.locator("#accountWorkspaceInput").isVisible(), false);
+    assert.equal(await page.locator("#accountScheduleInput").isVisible(), true);
+    await page.locator("#closeAccountRunSettingsBtn").click();
+    claudeAccount.auth.loggedIn = false;
+    claudeAccount.quotaStatus.live = false;
+    await page.locator("#refreshBtn").click();
+    await page.waitForFunction(() => document.querySelector("#claudeQuotaStatus").textContent.includes("Stale"));
+    assert.equal(await page.locator("#windowUsageLabel").textContent(), "73% last reported");
+    assert.match(await page.locator("#claudeLoginCommand").textContent(), /login acct_000000000001$/);
+    await assertNoPageErrors(page, pageErrors);
+  } finally {
+    await page.close();
   }
 }
 

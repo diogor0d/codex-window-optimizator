@@ -1,0 +1,80 @@
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+
+if (args[0] === "--version") {
+  console.log("2.1.303 (Claude Code)");
+  process.exit(0);
+}
+
+const accountDir = process.env.HOME;
+const identityPath = path.join(accountDir, "fixture-identity");
+const log = (entry) => fs.appendFileSync(path.join(accountDir, "fixture-log"), `${JSON.stringify(entry)}\n`);
+const signedIn = fs.existsSync(identityPath);
+if (args[0] === "auth") {
+  if (args[1] === "status") {
+    console.log(JSON.stringify(signedIn
+      ? { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: fs.readFileSync(identityPath, "utf8") }
+      : { loggedIn: false }));
+    process.exit(signedIn ? 0 : 1);
+  }
+  if (args[1] === "logout") {
+    fs.rmSync(identityPath, { force: true });
+    process.exit(0);
+  }
+  process.exit(1);
+}
+
+const toolsIndex = args.indexOf("--tools");
+if (toolsIndex < 0 || args[toolsIndex + 1] !== "" || !args.includes("--safe-mode")
+  || !args.includes("--strict-mcp-config") || !args.includes("--no-chrome")
+  || process.env.ANTHROPIC_API_KEY || process.env.TELEGRAM_BOT_TOKEN || process.env.CODEX_HOME) process.exit(2);
+
+if (args.includes("--print")) {
+  const resume = args.includes("--resume");
+  const sessionId = args[args.indexOf(resume ? "--resume" : "--session-id") + 1];
+  const sessionFile = path.join(accountDir, `fixture-session-${sessionId}`);
+  if (resume !== fs.existsSync(sessionFile)) {
+    console.error("No session found");
+    process.exit(1);
+  }
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { text += chunk; });
+  process.stdin.on("end", () => {
+    log({ action: "send", sessionId, resume, text });
+    fs.writeFileSync(sessionFile, "");
+    setTimeout(() => console.log(JSON.stringify({
+      type: "result", subtype: "success", is_error: false, session_id: sessionId, result: "Synthetic reply."
+    })), 500);
+  });
+} else {
+  if (!process.stdin.isTTY || process.stdout.columns !== 120 || process.stdout.rows !== 60) process.exit(2);
+  process.stdin.setRawMode(true);
+  process.stdin.setEncoding("utf8");
+  const paint = (text) => process.stdout.write(`\x1b[2J\x1b[H${text.replaceAll("\n", "\r\n")}`);
+  paint("Claude Code v2.1.303\n\n❯");
+  let typed = "";
+  process.stdin.on("data", (chunk) => {
+    typed += chunk;
+    if (typed === "/usage") {
+      paint("Claude Code v2.1.303\n\n❯ /usage\n\n  /usage    Show plan usage limits");
+      return;
+    }
+    if (typed !== "/usage\r") {
+      log({ action: "unexpected-input", typed });
+      process.exit(2);
+    }
+    log({ action: "usage" });
+    const { primary = 25, weekly = 42, state } = JSON.parse(fs.readFileSync(path.join(accountDir, "fixture-quota"), "utf8"));
+    if (state === "malformed") return paint("Usage\n\nUnexpected format");
+    const now = Date.now();
+    const time = (timestamp) => new Intl.DateTimeFormat("en-US", {
+      timeZone: "UTC", hour: "numeric", minute: "2-digit", hour12: true
+    }).format(timestamp).replace(/\s/g, "").toLowerCase();
+    const date = (timestamp) => new Intl.DateTimeFormat("en-US", {
+      timeZone: "UTC", month: "short", day: "numeric"
+    }).format(timestamp);
+    paint(`Usage\n\nCurrent session\n██████  ${primary}% used\nResets ${time(now + 2 * 3600000)} (UTC)\n\nCurrent week (all models)\n██████  ${weekly}% used\nResets ${date(now + 86400000)}, ${time(now + 86400000)} (UTC)\n\n${state === "cached" ? "Showing last-known usage from 5 min ago" : ""}`);
+  });
+}

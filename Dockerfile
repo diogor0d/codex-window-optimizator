@@ -1,4 +1,30 @@
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS base
+
+WORKDIR /app
+RUN useradd --create-home --shell /usr/sbin/nologin app \
+  && install -d -o app -g app -m 0700 /run/claude-worker
+
+FROM base AS claude-deps
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+COPY package*.json ./
+RUN npm_config_nodedir=/usr/local npm ci --omit=dev
+
+FROM base AS claude-worker
+ARG CLAUDE_PACKAGE_VERSION=2.1.303
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates tzdata \
+  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_PACKAGE_VERSION}" \
+  && rm -rf /var/lib/apt/lists/* \
+  && install -d -o app -g app -m 0700 /claude/accounts
+COPY --from=claude-deps /app/node_modules ./node_modules
+COPY src/claude-client.mjs src/claude-usage.mjs src/claude-worker.mjs ./src/
+USER app
+ENV NODE_ENV=production
+CMD ["node", "src/claude-worker.mjs"]
+
+FROM base AS runner
 
 ARG CODEX_PACKAGE_VERSION=0.154.0-alpha.3
 
@@ -8,14 +34,11 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
 COPY package.json ./
 COPY src ./src
 COPY public ./public
 
-RUN useradd --create-home --shell /usr/sbin/nologin app \
-  && mkdir -p /data/app /data/codex-home /workspace \
+RUN mkdir -p /data/app /data/codex-home /workspace \
   && chown -R app:app /app /data /workspace
 
 USER app

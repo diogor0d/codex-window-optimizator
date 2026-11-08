@@ -230,6 +230,11 @@
               <pre id="loginOutput" class="terminal"></pre>
             </details>
           </section>
+          <section id="claudeLoginInstructions" class="login-progress" hidden aria-labelledby="claudeLoginTitle">
+            <h4 id="claudeLoginTitle">Sign in on the server</h4>
+            <p>Run this from the Compose project directory. Complete Anthropic’s sign-in and first-run setup, open /usage, then exit and check the connection here.</p>
+            <pre id="claudeLoginCommand" class="terminal"></pre>
+          </section>
           <label class="checkbox-line account-schedule-toggle">
             <input id="accountEnabledInput" type="checkbox">
             Include this account in scheduled sends
@@ -243,10 +248,12 @@
             <strong id="windowUsageLabel">Usage unknown</strong>
             <div class="meter-track" aria-hidden="true"><div id="windowUsageBar" class="meter-bar"></div></div>
             <p id="windowResetHint" class="hint">Reset unknown</p>
+            <p id="claudeQuotaStatus" class="hint" hidden></p>
           </div>
           <dl class="usage-facts">
             <div><dt>Plan</dt><dd id="windowPlan">Unknown</dd></div>
-            <div><dt>Reserve</dt><dd id="windowReserve">Unavailable</dd></div>
+            <div data-codex-only><dt>Reserve</dt><dd id="windowReserve">Unavailable</dd></div>
+            <div id="claudeWeeklyFact" hidden><dt title="Across all models">Weekly</dt><dd id="claudeWeeklyUsage">Unknown</dd></div>
             <div><dt>Last run</dt><dd id="lastRun">None</dd></div>
           </dl>
         </section>
@@ -263,14 +270,14 @@
               <div><h3>Connection</h3><dl class="facts">
                 <div><dt>Status</dt><dd><span id="serviceBadge" class="badge neutral">Unknown</span></dd></div>
                 <div><dt>Sign-in</dt><dd id="authState">Unknown</dd></div>
-                <div><dt>App server</dt><dd id="appServerState">Unknown</dd></div>
+                <div><dt id="appServerLabel">App server</dt><dd id="appServerState">Unknown</dd></div>
                 <div><dt>Thread</dt><dd id="threadState">None</dd></div>
               </dl></div>
               <div><h3>Quota &amp; recent messages</h3><dl class="facts">
-                <div><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
-                <div><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
-                <div><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
-                <div><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
+                <div data-codex-only><dt>Reserve state</dt><dd id="windowReserveState">Not reported</dd></div>
+                <div data-codex-only><dt>Reserve reset</dt><dd id="windowReserveReset">Not reported</dd></div>
+                <div data-codex-only><dt>Usage resets</dt><dd id="windowResetCredits">Not reported</dd></div>
+                <div data-codex-only><dt>Reset expirations</dt><dd id="windowResetExpiry">Not reported</dd></div>
                 <div><dt>Last message</dt><dd id="lastPing">None</dd></div>
                 <div><dt>Last reply</dt><dd id="lastReply">None</dd></div>
               </dl></div>
@@ -374,16 +381,16 @@
     <dialog id="accountOverrides" class="settings-dialog" aria-labelledby="accountRunSettingsTitle">
       <div class="dialog-header"><h2 id="accountRunSettingsTitle">Account run settings</h2><button id="closeAccountRunSettingsBtn" type="button" aria-label="Close account run settings">×</button></div>
               <form id="accountOverridesForm">
-                <p class="hint">Leave fields empty to use the shared settings in Schedule.</p>
+                <p id="accountOverridesHint" class="hint">Leave fields empty to use the shared settings in Schedule.</p>
                 <label>
                   Schedule times
                   <input id="accountScheduleInput" autocomplete="off" placeholder="Inherited">
                 </label>
-                <label>
+                <label data-codex-only>
                   Workspace directory
                   <input id="accountWorkspaceInput" autocomplete="off" placeholder="Inherited">
                 </label>
-                <label>
+                <label data-codex-only>
                   Model
                   <select id="accountModelInput"><option value="">Use global model</option></select>
                   <small id="accountModelHint">Models load from the selected account's Codex catalog.</small>
@@ -419,6 +426,7 @@
           <input id="scheduleInput" type="hidden" name="scheduleTimes">
           </div>
           <div id="run-tab-panel" role="tabpanel" aria-labelledby="run-tab" hidden>
+          <p class="hint">These run defaults apply to Codex accounts. Configure Claude prompts in the account’s run settings.</p>
           <div class="grid-2">
             <label>
               Model
@@ -556,8 +564,10 @@
     <dialog id="addAccountDialog" aria-labelledby="addAccountTitle" aria-describedby="addAccountHint">
       <form id="addAccountForm">
         <div class="dialog-header"><h2 id="addAccountTitle">Add an account</h2><button id="closeAddAccountBtn" type="button" aria-label="Close add account">✕</button></div>
-        <p id="addAccountHint" class="hint">Give it a name, then sign in to connect it to Codex.</p>
+        <p id="addAccountHint" class="hint">Give the account a name, then sign in to connect it.</p>
         <label>Account name<input id="newAccountLabelInput" name="label" autocomplete="off" placeholder="e.g. Work" required maxlength="80" autofocus></label>
+        <label>Provider<select id="newAccountProviderInput" name="provider"><option value="codex">Codex</option><option value="claude" disabled>Claude Code</option></select></label>
+        <p id="claudeProviderHint" class="hint">Claude Code is available after the Docker quota pilot passes.</p>
         <p class="hint">Scheduled sends start only after you enable them for this account.</p>
         <p id="addAccountMessage" class="form-message" role="status"></p>
         <div class="dialog-actions"><button id="cancelAddAccountBtn" type="button">Cancel</button><button id="addAccountBtn" type="submit" class="primary">Add account</button></div>
