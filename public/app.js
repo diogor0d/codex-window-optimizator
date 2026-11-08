@@ -2201,8 +2201,8 @@ function renderAccountAccess() {
     $("#accountAccessHint").textContent = !state.claudeAvailable ? "The Claude worker is unavailable or has not been enabled."
       : auth.authIssue || uncertain ? auth.detail
         : auth.loggedIn ? "Ready for text messages. Scheduled sends follow the switch below." : "Sign in with your Claude subscription.";
-    $("#deviceLoginBtn").hidden = !state.claudeAvailable || Boolean(auth.loggedIn && !auth.authIssue && !uncertain);
-    $("#deviceLoginBtn").textContent = auth.authIssue ? "Sign in again" : "Sign in";
+    $("#deviceLoginBtn").hidden = !state.claudeAvailable;
+    $("#deviceLoginBtn").textContent = auth.loggedIn || auth.authIssue ? "Sign in again" : "Sign in";
     renderClaudeLogin(account);
     return;
   }
