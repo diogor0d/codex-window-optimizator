@@ -19,7 +19,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && install -d -o app -g app -m 0700 /claude/accounts
 COPY --from=claude-deps /app/node_modules ./node_modules
-COPY src/claude-client.mjs src/claude-usage.mjs src/claude-worker.mjs ./src/
+COPY --chown=app:app src/claude-client.mjs src/claude-usage.mjs src/claude-login.mjs src/claude-worker.mjs ./src/
 USER app
 ENV NODE_ENV=production
 CMD ["node", "src/claude-worker.mjs"]

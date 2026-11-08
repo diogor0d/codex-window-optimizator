@@ -1060,6 +1060,26 @@ async function exerciseClaudeAccount(browser, fixture, contextOptions) {
       accounts: [...original.accounts, claudeAccount], auth: claudeAccount.auth,
       appServer: claudeAccount.appServer, thread: claudeAccount.thread, dashboard: claudeAccount.dashboard
     });
+    let browserLogin = { accountId: claudeId, provider: "claude", status: "none" };
+    const authUrl = new URL("https://claude.com/cai/oauth/authorize");
+    authUrl.search = new URLSearchParams({ response_type: "code", redirect_uri: "https://platform.claude.com/oauth/code/callback",
+      code_challenge_method: "S256", code_challenge: "c".repeat(43), state: "s".repeat(43) });
+    await page.route("**/api/auth/claude/current?*", route => route.fulfill({ json: browserLogin }));
+    await page.route("**/api/auth/claude/start", route => {
+      browserLogin = { accountId: claudeId, provider: "claude", id: "synthetic-login", status: "running", phase: "authorize", url: authUrl.href };
+      return route.fulfill({ json: browserLogin });
+    });
+    await page.route("**/api/auth/claude/cancel", route => {
+      browserLogin = { ...browserLogin, status: "cancelled", url: "" };
+      return route.fulfill({ json: browserLogin });
+    });
+    await page.route("**/api/auth/claude/code", route => {
+      assert.equal(route.request().postDataJSON().code, "synthetic-browser-code");
+      assert.equal(route.request().postDataJSON().sessionId, "synthetic-login");
+      browserLogin = { ...browserLogin, status: "completed", phase: "ready", url: "" };
+      claudeAccount.auth.loggedIn = true;
+      return route.fulfill({ json: browserLogin });
+    });
     await page.route("**/api/status", route => route.fulfill({ json: claudeStatus() }));
     await page.goto(fixture.base, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector("#accountSelect").value === "acct_000000000001");
@@ -1068,7 +1088,7 @@ async function exerciseClaudeAccount(browser, fixture, contextOptions) {
     assert.equal(await page.locator("#windowUsageLabel").textContent(), "73% remaining");
     assert.match(await page.locator("#claudeWeeklyUsage").textContent(), /0% remaining/);
     assert.equal(await page.locator("#accountResetCredits").isVisible(), false);
-    assert.equal(await page.locator("#claudeLoginInstructions").isVisible(), false);
+    assert.equal(await page.locator("#claudeLoginProgress").isVisible(), false);
     await page.locator("#editAccountRunSettingsBtn").click();
     assert.equal(await page.locator("#accountModelInput").isVisible(), false);
     assert.equal(await page.locator("#accountWorkspaceInput").isVisible(), false);
@@ -1079,7 +1099,25 @@ async function exerciseClaudeAccount(browser, fixture, contextOptions) {
     await page.locator("#refreshBtn").click();
     await page.waitForFunction(() => document.querySelector("#claudeQuotaStatus").textContent.includes("Stale"));
     assert.equal(await page.locator("#windowUsageLabel").textContent(), "73% last reported");
-    assert.match(await page.locator("#claudeLoginCommand").textContent(), /login acct_000000000001$/);
+    assert.equal(await page.locator("#deviceLoginBtn").textContent(), "Sign in");
+    await page.locator("#deviceLoginBtn").click();
+    await page.locator("#claudeLoginSteps").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#claudeLoginLink").getAttribute("href"), authUrl.href);
+    assert.equal(await page.locator("#claudeLoginCode").getAttribute("type"), "password");
+    const loginWidth = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+    assert.ok(loginWidth.scroll <= loginWidth.client + 1, "Claude sign-in fits the viewport");
+    await page.locator("#claudeLoginProgress").scrollIntoViewIfNeeded();
+    await screenshot(page, `claude-sign-in-${loginWidth.client}`);
+    await page.locator("#cancelClaudeLoginBtn").click();
+    await page.waitForFunction(() => document.querySelector("#claudeLoginStatus").textContent === "Cancelled");
+    assert.equal(await page.locator("#claudeLoginLink").getAttribute("href"), null);
+    await page.locator("#deviceLoginBtn").click();
+    await page.locator("#claudeLoginCode").fill("synthetic-browser-code");
+    await page.locator("#completeClaudeLoginBtn").click();
+    await page.waitForFunction(() => document.querySelector("#claudeLoginStatus").textContent === "Connected");
+    assert.equal(await page.locator("#claudeLoginCode").inputValue(), "");
+    assert.equal(await page.evaluate(() => JSON.stringify({ ...localStorage }).includes("synthetic-browser-code")), false);
+    assert.equal(await page.locator("#claudeLoginLink").getAttribute("href"), null);
     await assertNoPageErrors(page, pageErrors);
   } finally {
     await page.close();

@@ -22,6 +22,26 @@ if (args[0] === "auth") {
     fs.rmSync(identityPath, { force: true });
     process.exit(0);
   }
+  if (args[1] === "login" && args.includes("--claudeai")) {
+    const url = new URL("https://claude.com/cai/oauth/authorize");
+    url.search = new URLSearchParams({ code: "true", client_id: "fixture-client", response_type: "code",
+      redirect_uri: "https://platform.claude.com/oauth/code/callback", code_challenge: "c".repeat(43),
+      code_challenge_method: "S256", state: "s".repeat(43) });
+    // Mimic the CLI's split OSC hyperlink and include output that must stay private.
+    process.stdout.write(`PRIVATE_LOGIN_DIAGNOSTIC\nIf the browser didn't open, visit: \x1b]8;;${url}\x07`);
+    setTimeout(() => process.stdout.write(`${url}\x1b]8;;\x07\nPaste code here if prompted > `), 15);
+    process.stdin.setEncoding("utf8");
+    let code = "";
+    process.stdin.on("data", (chunk) => {
+      code += chunk;
+      if (!code.endsWith("\n")) return;
+      if (code.trim() !== `fixture-code#${"s".repeat(43)}`) process.exit(1);
+      fs.writeFileSync(identityPath, "browser@example.invalid");
+      process.stdout.write("SECRET_TOKEN_MUST_STAY_PRIVATE\nLogin successful\n");
+      process.exit(0);
+    });
+    return;
+  }
   process.exit(1);
 }
 
@@ -53,9 +73,17 @@ if (args.includes("--print")) {
   process.stdin.setRawMode(true);
   process.stdin.setEncoding("utf8");
   const paint = (text) => process.stdout.write(`\x1b[2J\x1b[H${text.replaceAll("\n", "\r\n")}`);
-  paint("Claude Code v2.1.303\n\n❯");
+  let setup = !fs.existsSync(path.join(accountDir, "fixture-setup"));
+  paint(setup ? "Welcome to Claude Code\nChoose the text style that looks best with your terminal\n❯ Dark mode" : "Claude Code v2.1.303\n\n❯");
   let typed = "";
   process.stdin.on("data", (chunk) => {
+    if (setup) {
+      if (chunk !== "\r") process.exit(2);
+      setup = false;
+      fs.writeFileSync(path.join(accountDir, "fixture-setup"), "");
+      paint("Claude Code v2.1.303\n\n❯");
+      return;
+    }
     typed += chunk;
     if (typed === "/usage") {
       paint("Claude Code v2.1.303\n\n❯ /usage\n\n  /usage    Show plan usage limits");

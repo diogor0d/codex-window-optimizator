@@ -1333,6 +1333,9 @@ function renderAccounts() {
   if (changed) {
     state.renderedAccountId = selected?.id;
     state.loginSession = null;
+    $("#claudeLoginCode").value = "";
+    $("#claudeLoginLink").removeAttribute("href");
+    feedback("claudeLoginMessage", "");
     $("#loginOutput").textContent = "";
     $("#loginProgress").hidden = true;
     $("#accountOverrides").close();
@@ -1387,7 +1390,7 @@ function updateAccountControls() {
   for (const id of ["closeRemoveAccountBtn", "cancelRemoveAccountBtn"]) $("#" + id).disabled = state.removalBusy;
   for (const id of ["accountDetailsForm", "accountOverridesForm"]) $("#" + id).inert = state.accountBusy;
   if (!state.sendBusy) {
-    $("#manualSendBtn").disabled = $("#runNowBtn").disabled = state.accountBusy || !account || !account.auth?.loggedIn || claudeUnavailable
+    $("#manualSendBtn").disabled = $("#runNowBtn").disabled = state.accountBusy || signingIn || !account || !account.auth?.loggedIn || claudeUnavailable
       || (account.provider === "claude" && account.appServer?.running);
   }
   if (account && !account.auth?.loggedIn) $("#sendTarget").textContent = `Sign in to ${account.label} in Accounts before sending.`;
@@ -2137,12 +2140,60 @@ function loginPresentation(session, now = Date.now()) {
   return { status: expired ? "expired" : session.status, code: session.status === "running" && !expired ? code : "", url: rawUrl };
 }
 
+function claudeLoginPresentation(session) {
+  let url = "";
+  if (session?.status === "running" && session.phase === "authorize") {
+    try {
+      const parsed = new URL(session.url);
+      if (((parsed.origin === "https://claude.com" && parsed.pathname === "/cai/oauth/authorize")
+        || (parsed.origin === "https://claude.ai" && parsed.pathname === "/oauth/authorize"))
+        && !parsed.username && !parsed.password && !parsed.hash
+        && parsed.searchParams.get("redirect_uri") === "https://platform.claude.com/oauth/code/callback"
+        && parsed.searchParams.get("response_type") === "code"
+        && parsed.searchParams.get("code_challenge_method") === "S256") url = parsed.href;
+    } catch {}
+  }
+  return { status: session?.status || "none", phase: session?.phase || "", url };
+}
+
+function renderClaudeLogin(account) {
+  const session = state.loginSession?.accountId === account?.id ? state.loginSession : null;
+  const view = claudeLoginPresentation(session);
+  $("#claudeLoginProgress").hidden = view.status === "none";
+  if (view.status === "none") {
+    $("#claudeLoginLink").removeAttribute("href");
+    return;
+  }
+  const copy = {
+    running: [view.url ? "Finish signing in" : "Connecting to Claude", view.url ? "Open Anthropic’s sign-in page, then paste the code it gives you below."
+      : view.phase === "setup" ? "Finishing Claude Code setup…" : view.phase === "verifying" ? "Verifying your sign-in…" : "Preparing your sign-in link…", "Waiting", "neutral"],
+    completed: ["Sign-in complete", "You can now send messages and enable scheduled sends.", "Connected", "ok"],
+    cancelled: ["Sign-in cancelled", "Choose Sign in when you’re ready to try again.", "Cancelled", "neutral"],
+    expired: ["Sign-in expired", "Choose Sign in to get a new link and code.", "Expired", "warn"],
+    failed: ["Sign-in did not complete", "Choose Sign in to try again with a new code from Anthropic.", "Try again", "bad"]
+  }[view.status] || ["Sign-in unavailable", "Refresh to check the connection.", "Unavailable", "warn"];
+  $("#claudeLoginTitle").textContent = copy[0];
+  $("#claudeLoginHint").textContent = copy[1];
+  badge($("#claudeLoginStatus"), copy[2], copy[3]);
+  $("#claudeLoginSteps").hidden = !view.url;
+  if (view.url) $("#claudeLoginLink").href = view.url;
+  else $("#claudeLoginLink").removeAttribute("href");
+  $("#cancelClaudeLoginBtn").hidden = view.status !== "running";
+  if (view.status === "running") {
+    $("#accountAccessTitle").textContent = `Connecting ${account.label}`;
+    $("#deviceLoginBtn").hidden = true;
+  } else {
+    $("#claudeLoginCode").value = "";
+    feedback("claudeLoginMessage", "");
+  }
+}
+
 function renderAccountAccess() {
   const account = state.accounts.find((item) => item.id === state.selectedAccountId);
   const auth = account?.auth || {};
   const uncertain = auth.probeUnavailable || auth.logoutConfirmationPending;
   const isClaude = account?.provider === "claude";
-  $("#claudeLoginInstructions").hidden = !isClaude || !state.claudeAvailable || Boolean(auth.loggedIn && !auth.authIssue);
+  $("#claudeLoginProgress").hidden = !isClaude;
   if (isClaude) {
     $("#loginProgress").hidden = true;
     $(".account-access-head").hidden = false;
@@ -2150,10 +2201,9 @@ function renderAccountAccess() {
     $("#accountAccessHint").textContent = !state.claudeAvailable ? "The Claude worker is unavailable or has not been enabled."
       : auth.authIssue || uncertain ? auth.detail
         : auth.loggedIn ? "Ready for text messages. Scheduled sends follow the switch below." : "Sign in with your Claude subscription.";
-    $("#deviceLoginBtn").hidden = !state.claudeAvailable;
-    $("#deviceLoginBtn").textContent = "Check sign-in";
-    $("#claudeLoginCommand").textContent = /^acct_[a-f0-9]{12}$/.test(account.id)
-      ? `docker compose --profile claude exec claude-worker node src/claude-worker.mjs login ${account.id}` : "";
+    $("#deviceLoginBtn").hidden = !state.claudeAvailable || Boolean(auth.loggedIn && !auth.authIssue && !uncertain);
+    $("#deviceLoginBtn").textContent = auth.authIssue ? "Sign in again" : "Sign in";
+    renderClaudeLogin(account);
     return;
   }
   $(".account-access-head").hidden = Boolean(auth.loggedIn && !auth.authIssue && !uncertain && state.loginSession?.status !== "running");
@@ -2195,6 +2245,7 @@ function renderAccountAccess() {
 
 function renderLoginOutput(session) {
   if (!session || session.accountId !== selectedAccountId()) return;
+  if (state.loginSession?.id !== session.id || session.phase !== "authorize") $("#claudeLoginCode").value = "";
   if (state.loginSession?.status !== session.status || state.loginSession?.id !== session.id) $(".login-diagnostics").open = false;
   state.loginSession = session;
   // Terminal output is text only and is never stored in browser snapshots.
@@ -2205,8 +2256,13 @@ function renderLoginOutput(session) {
 
 async function refreshLoginSession() {
   const accountId = selectedAccountId();
-  if (!accountId || state.accounts.find(({ id }) => id === accountId)?.provider === "claude") return;
-  const session = await api(`/api/auth/device/current?accountId=${encodeURIComponent(accountId)}`);
+  if (!accountId) return;
+  const provider = state.accounts.find(({ id }) => id === accountId)?.provider;
+  if (provider === "claude" && !state.claudeAvailable) {
+    renderLoginOutput({ accountId, provider, status: "none" });
+    return;
+  }
+  const session = await api(`/api/auth/${provider === "claude" ? "claude" : "device"}/current?accountId=${encodeURIComponent(accountId)}`);
   if (accountId === selectedAccountId()) renderLoginOutput(session);
 }
 
@@ -3385,15 +3441,24 @@ function bindActions() {
     markSettingsDirty();
   });
   $("#deviceLoginBtn").addEventListener("click", () => void accountAction($("#deviceLoginBtn"), "accountMessage", async () => {
-    if (state.accounts.find(({ id }) => id === selectedAccountId())?.provider === "claude") {
-      const auth = await api(`/api/auth/status?accountId=${encodeURIComponent(selectedAccountId())}`);
-      await refreshStatus();
-      feedback("accountMessage", auth.detail, auth.loggedIn ? "success" : "neutral");
-      return;
-    }
+    const isClaude = state.accounts.find(({ id }) => id === selectedAccountId())?.provider === "claude";
     feedback("accountMessage", "Preparing sign-in…");
-    renderLoginOutput(await api("/api/auth/device/start", { method: "POST", body: JSON.stringify({ accountId: selectedAccountId() }) }));
+    renderLoginOutput(await api(`/api/auth/${isClaude ? "claude" : "device"}/start`, { method: "POST", body: JSON.stringify({ accountId: selectedAccountId() }) }));
     feedback("accountMessage", "");
+  }));
+  $("#claudeLoginForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const code = $("#claudeLoginCode").value.trim();
+    $("#claudeLoginCode").value = "";
+    const accountId = selectedAccountId();
+    const sessionId = state.loginSession?.id;
+    void buttonAction($("#completeClaudeLoginBtn"), "claudeLoginMessage", async () => {
+      renderLoginOutput(await api("/api/auth/claude/code", { method: "POST", body: JSON.stringify({ accountId, sessionId, code }) }));
+    });
+  });
+  $("#cancelClaudeLoginBtn").addEventListener("click", () => void buttonAction($("#cancelClaudeLoginBtn"), "claudeLoginMessage", async () => {
+    renderLoginOutput(await api("/api/auth/claude/cancel", { method: "POST", body: JSON.stringify({ accountId: selectedAccountId(), sessionId: state.loginSession?.id }) }));
+    await refreshStatus();
   }));
   $("#copyLoginCodeBtn").addEventListener("click", () => void buttonAction($("#copyLoginCodeBtn"), "loginMessage", async () => {
     try {
@@ -3731,6 +3796,7 @@ export {
   dashboardView,
   positionUsageLabels,
   loginPresentation,
+  claudeLoginPresentation,
   activityTone,
   shouldShowEvent,
   summarizeEvent,

@@ -7,12 +7,14 @@ import { fileURLToPath } from "node:url";
 import pty from "node-pty";
 import { CLAUDE_ACCOUNT_ID, CLAUDE_ERRORS, CLAUDE_REPLY_LIMIT, CLAUDE_RUN_TIMEOUT_MS, CLAUDE_SESSION_ID, ClaudeError } from "./claude-client.mjs";
 import { readClaudeUsage } from "./claude-usage.mjs";
+import { beginClaudeLogin, finishClaudeSetup } from "./claude-login.mjs";
 
 const ROOT = process.env.CLAUDE_ACCOUNTS_DIR || "/claude/accounts";
 const SOCKET = process.env.CLAUDE_WORKER_SOCKET || "/run/claude-worker/worker.sock";
 const BIN = process.env.CLAUDE_BINARY || "claude";
 const SAFE_ARGS = ["--safe-mode", "--tools", "", "--strict-mcp-config", "--no-chrome"];
 const active = new Map();
+const logins = new Map();
 process.umask(0o077);
 
 function childEnv(home) {
@@ -160,6 +162,7 @@ async function remove(id) {
     await previous.done.catch(() => {});
   }
   return singleOperation(id, "remove", async () => {
+    logins.delete(id);
     await rm(path.join(ROOT, id), { recursive: true, force: true });
     return { removed: true };
   });
@@ -167,11 +170,54 @@ async function remove(id) {
 
 async function invoke(action, id, data) {
   if (action === "remove") return remove(id);
+  if (action === "login-current") return logins.get(id)?.view() || { accountId: id, provider: "claude", status: "none" };
+  if (["login-code", "login-cancel"].includes(action)) {
+    const login = logins.get(id);
+    if (!login || login.view().id !== data.sessionId) throw new ClaudeError("login-session");
+    if (action === "login-code") login.submit(data.code);
+    else {
+      login.cancel();
+      await active.get(id)?.done;
+    }
+    return login.view();
+  }
+  if (action === "login-start" && logins.get(id)?.view().status === "running") return logins.get(id).view();
   const previous = active.get(id);
-  if (previous && !previous.removing && ["run", "logout"].includes(action) && ["status", "usage"].includes(previous.action)) {
+  if (previous && !previous.removing && ["run", "logout", "login-start"].includes(action) && ["status", "usage"].includes(previous.action)) {
     // A foreground operation can interrupt a passive probe, but never another send.
     previous.controller.abort();
     await previous.done.catch(() => {});
+  }
+  if (action === "login-start") {
+    if (active.has(id)) throw new ClaudeError("busy");
+    // Hold the account lock for the whole sign-in while returning progress immediately.
+    let login;
+    let ready;
+    const started = new Promise((resolve) => { ready = resolve; });
+    const task = singleOperation(id, "login", async (signal) => {
+      try {
+        const context = await accountContext(id, true);
+        login = beginClaudeLogin({
+          accountId: id, signal,
+          spawnLogin: () => spawn(BIN, ["auth", "login", "--claudeai"], {
+            cwd: context.cwd, env: context.env, stdio: ["pipe", "pipe", "pipe"], detached: true
+          }),
+          verify: (signal) => requireSubscription(context, signal),
+          finishSetup: (signal) => finishClaudeSetup({ signal, spawnTerminal: (cols, rows) => pty.spawn(BIN, SAFE_ARGS, {
+            cwd: context.cwd, env: context.env, name: "xterm-256color", cols, rows
+          }) })
+        });
+        logins.set(id, login);
+        ready();
+        await login.done;
+      } catch (error) {
+        ready(error);
+      }
+    });
+    void task.catch(() => {});
+    const error = await started;
+    if (error) throw error;
+    return login.view();
   }
   return singleOperation(id, action, async (signal) => {
     const context = await accountContext(id, action === "prepare");
@@ -182,6 +228,7 @@ async function invoke(action, id, data) {
       const result = await runCli(["auth", "logout"], context, { signal });
       if (result.code !== 0) throw new ClaudeError("failed");
       await rm(path.join(context.home, "quota-backoff"), { force: true });
+      logins.delete(id);
       return { code: 0 };
     }
     const backoffFile = path.join(context.home, "quota-backoff");
@@ -208,7 +255,7 @@ async function serve() {
   const versionResult = await runCli(["--version"], { cwd: fileURLToPath(new URL("..", import.meta.url)), env: childEnv("/tmp") });
   const version = versionResult.code === 0 ? /^([\d.]+)\s+\(Claude Code\)/.exec(versionResult.stdout.trim())?.[1] : null;
   const enabled = Boolean(version && version === process.env.CLAUDE_QUOTA_VERIFIED_VERSION);
-  const actions = new Set(["prepare", "status", "usage", "run", "logout", "remove"]);
+  const actions = new Set(["prepare", "status", "usage", "run", "logout", "remove", "login-start", "login-current", "login-code", "login-cancel"]);
   const server = createServer(async (req, res) => {
     const reply = (status, result) => {
       res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });

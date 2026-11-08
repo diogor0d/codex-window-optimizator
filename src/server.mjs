@@ -2293,6 +2293,7 @@ function claudeHttpError(error) {
 async function logoutClaude(account) {
   if (claudeRuns.has(account.id)) throw claudeHttpError(new ClaudeError("busy"));
   await claude.call("logout", account.id).catch((error) => { throw claudeHttpError(error); });
+  loginSessions.delete(account.id);
   const status = { ...unknownAuthStatus(), mode: "none", detail: "Signed out of Claude Code", code: 0 };
   authStatusCacheByAccount.set(account.id, { checkedAt: Date.now(), status });
   authStatusProbeAtByAccount.delete(account.id);
@@ -2304,9 +2305,53 @@ async function logoutClaude(account) {
   return { code: 0 };
 }
 
+async function claudeBrowserLogin(action, account, data = {}) {
+  if (account.provider !== "claude") {
+    const error = new Error("This sign-in flow is for Claude accounts.");
+    error.statusCode = 422;
+    throw error;
+  }
+  const session = await claude.call(action, account.id, data).catch((error) => { throw claudeHttpError(error); });
+  const previous = loginSessions.get(account.id);
+  // Keep only progress metadata here; never persist the URL, CLI output, or code.
+  loginSessions.set(account.id, { id: session.id, accountId: account.id, status: session.status });
+  if (session.id && (previous?.id !== session.id || previous.status !== session.status)) {
+    addAuthEvent(`Claude browser sign-in ${session.status === "running" ? "started" : session.status}`, {
+      accountId: account.id, accountLabel: account.label
+    });
+    if (session.status === "completed") {
+      authStatusCacheByAccount.delete(account.id);
+      authStatusProbeAtByAccount.delete(account.id);
+      clearAuthenticationFailure(account);
+      delete store.telegramAlertState.intentionalLogouts[account.id];
+      void refreshClaudeAccount(account, true).then(() => broadcast("status", { accountId: account.id }));
+    }
+  }
+  return session;
+}
+
 async function handleApi(req, res, url) {
   if (!isAuthorized(req)) {
     return sendError(res, 403, "Forbidden");
+  }
+
+  if (url.pathname.startsWith("/api/auth/claude/")) {
+    if (req.method === "GET" && url.pathname === "/api/auth/claude/current") {
+      return sendJson(res, 200, await claudeBrowserLogin("login-current", requireAccount(accountIdFromUrl(url))));
+    }
+    const actions = { "/api/auth/claude/start": "login-start", "/api/auth/claude/code": "login-code", "/api/auth/claude/cancel": "login-cancel" };
+    if (req.method !== "POST" || !Object.hasOwn(actions, url.pathname)) return sendError(res, 404, "Not found");
+    // Browser sign-in mutations must be same-origin JSON requests, never cross-site form posts.
+    let sameOrigin = true;
+    try { if (req.headers.origin) sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { sameOrigin = false; }
+    if (!sameOrigin || req.headers["sec-fetch-site"] === "cross-site"
+      || !/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] || "")) return sendError(res, 403, "Forbidden");
+    let body;
+    try { body = await readJson(req); } catch { return sendError(res, 400, "Invalid sign-in request."); }
+    const account = requireAccount(body.accountId || store.selectedAccountId);
+    return sendJson(res, 200, await claudeBrowserLogin(actions[url.pathname], account, {
+      sessionId: body.sessionId, code: body.code
+    }));
   }
 
   if (req.method === "GET" && url.pathname === "/api/health") {

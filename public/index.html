@@ -230,10 +230,27 @@
               <pre id="loginOutput" class="terminal"></pre>
             </details>
           </section>
-          <section id="claudeLoginInstructions" class="login-progress" hidden aria-labelledby="claudeLoginTitle">
-            <h4 id="claudeLoginTitle">Sign in on the server</h4>
-            <p>Run this from the Compose project directory. Complete Anthropic’s sign-in and first-run setup, open /usage, then exit and check the connection here.</p>
-            <pre id="claudeLoginCommand" class="terminal"></pre>
+          <section id="claudeLoginProgress" class="login-progress" hidden aria-labelledby="claudeLoginTitle">
+            <div class="login-progress-head">
+              <h4 id="claudeLoginTitle">Sign in to Claude</h4>
+              <span id="claudeLoginStatus" class="badge neutral">Waiting</span>
+            </div>
+            <p id="claudeLoginHint" role="status"></p>
+            <div id="claudeLoginSteps" hidden>
+              <ol class="login-steps">
+                <li><span>Sign in with your Claude subscription</span><a id="claudeLoginLink" class="button-link primary" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Continue to Anthropic <span aria-hidden="true">↗</span></a></li>
+                <li>
+                  <form id="claudeLoginForm">
+                    <label for="claudeLoginCode">Paste the code shown by Anthropic</label>
+                    <input id="claudeLoginCode" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="2048" required>
+                    <div class="button-row"><button id="completeClaudeLoginBtn" class="primary" type="submit">Complete sign-in</button></div>
+                  </form>
+                </li>
+              </ol>
+              <p class="hint">Your password stays on Anthropic’s page. This one-time code is used only for this sign-in and is not saved.</p>
+            </div>
+            <button id="cancelClaudeLoginBtn" type="button">Cancel sign-in</button>
+            <p id="claudeLoginMessage" class="form-message" role="status"></p>
           </section>
           <label class="checkbox-line account-schedule-toggle">
             <input id="accountEnabledInput" type="checkbox">
