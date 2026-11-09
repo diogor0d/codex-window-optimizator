@@ -198,7 +198,10 @@ globalThis.fetch = async (url, options) => {
   await writeFile(path.join(homes, second.id, "fixture-identity"), "second@example.invalid");
   await quota(first.id, { primary: 20, weekly: 32 });
   await quota(second.id, { primary: 30, weekly: 42 });
+  const slowStartup = path.join(homes, first.id, "fixture-start-delay");
+  await writeFile(slowStartup, "19000");
   await refresh();
+  await rm(slowStartup);
   const live = await account(first.id);
   assert.equal(live.quotaStatus.live, true);
   assert.equal(live.dashboard.rateLimits.primary.usedPercent, 20);

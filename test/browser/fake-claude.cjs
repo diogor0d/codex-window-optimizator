@@ -75,7 +75,10 @@ if (args.includes("--print")) {
   process.stdin.setEncoding("utf8");
   const paint = (text) => process.stdout.write(`\x1b[2J\x1b[H${text.replaceAll("\n", "\r\n")}`);
   let setup = !fs.existsSync(path.join(accountDir, "fixture-setup"));
-  paint(setup ? "Welcome to Claude Code\nChoose the text style that looks best with your terminal\n❯ Dark mode" : "Claude Code v2.1.303\n\n❯");
+  const firstFrame = () => paint(setup ? "Welcome to Claude Code\nChoose the text style that looks best with your terminal\n❯ Dark mode" : "Claude Code v2.1.303\n\n❯");
+  const delayFile = path.join(accountDir, "fixture-start-delay");
+  if (fs.existsSync(delayFile)) setTimeout(firstFrame, Number(fs.readFileSync(delayFile, "utf8")));
+  else firstFrame();
   let typed = "";
   process.stdin.on("data", (chunk) => {
     if (setup) {

@@ -2,6 +2,7 @@ import { request } from "node:http";
 
 export const CLAUDE_POLL_MS = 10 * 60_000;
 export const CLAUDE_AUTH_TIMEOUT_MS = 30_000;
+export const CLAUDE_USAGE_TIMEOUT_MS = 35_000;
 export const CLAUDE_RUN_TIMEOUT_MS = 120_000;
 export const CLAUDE_ACCOUNT_ID = /^acct_[a-f0-9]{12}$/;
 export const CLAUDE_SESSION_ID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
@@ -71,7 +72,7 @@ export function claudeClient(socketPath, verifiedVersion) {
       });
       const deadline = {
         run: CLAUDE_AUTH_TIMEOUT_MS + CLAUDE_RUN_TIMEOUT_MS + 10_000,
-        usage: CLAUDE_AUTH_TIMEOUT_MS + 25_000,
+        usage: CLAUDE_AUTH_TIMEOUT_MS + CLAUDE_USAGE_TIMEOUT_MS + 5_000,
         status: CLAUDE_AUTH_TIMEOUT_MS + 5_000,
         health: 2000
       }[action] ?? 15_000;

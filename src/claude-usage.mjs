@@ -1,5 +1,5 @@
 import xterm from "@xterm/headless";
-import { ClaudeError } from "./claude-client.mjs";
+import { CLAUDE_USAGE_TIMEOUT_MS, ClaudeError } from "./claude-client.mjs";
 
 const { Terminal } = xterm;
 const COLS = 120;
@@ -63,7 +63,7 @@ export function parseClaudeUsage(screen, now = Date.now()) {
   return { primary, secondary };
 }
 
-export function readClaudeUsage({ spawnTerminal, signal, timeoutMs = 18_000 }) {
+export function readClaudeUsage({ spawnTerminal, signal, timeoutMs = CLAUDE_USAGE_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new ClaudeError("interrupted"));
     const screen = new Terminal({ cols: COLS, rows: ROWS, scrollback: 0, allowProposedApi: true });
