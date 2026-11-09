@@ -1101,6 +1101,8 @@ class CodexAppServer {
       return;
     }
     await ensureDirs();
+    // Another caller may have started the process while directories were prepared.
+    if (this.running) return;
     requireAccount(this.accountId);
     const proc = trackAccountProcess(account.id, spawn("codex", ["app-server", "--listen", "stdio://"], {
       cwd: workspaceCwd(),
@@ -1145,7 +1147,12 @@ class CodexAppServer {
     });
 
     this.readyPromise = this.initializeConnection();
-    await this.readyPromise;
+    try {
+      await this.readyPromise;
+    } catch (error) {
+      if (this.proc === proc) this.stop();
+      throw error;
+    }
   }
 
   stop() {

@@ -62,6 +62,11 @@ process.stdin.on("data", chunk => {
     let result = {};
     switch (request.method) {
       case "initialize":
+        if (fs.existsSync(marker("fail-initialize-once"))) {
+          fs.rmSync(marker("fail-initialize-once"));
+          process.stdout.write(`${JSON.stringify({ id: request.id, error: { code: -32000, message: "Simulated initialization failure" } })}\n`);
+          continue;
+        }
         result = { userAgent: "codex-window-local-e2e" };
         break;
       case "account/read":

@@ -118,7 +118,12 @@ globalThis.fetch = async (url, options) => {
   const auth = (id) => request(`/api/auth/status?accountId=${id}`);
   const runs = async () => (await request("/api/activity")).body.runs;
 
+  const failedInitialization = path.join(codexHome, ".fake-fail-initialize-once");
+  await writeFile(failedInitialization, "");
   await startApp("");
+  await until(() => readFile(failedInitialization).then(() => false).catch((error) => error.code === "ENOENT"));
+  assert.equal((await refresh()).body.accounts.find(({ accountId }) => accountId === "default").rateLimits,
+    "updated", "a failed Codex initialization must recover on a later read");
   assert.equal((await account("default")).provider, "codex");
   assert.equal((await request("/api/accounts", "POST", { provider: "claude" })).status, 503);
   assert.equal((await request("/api/accounts", "POST", { provider: "invalid" })).status, 400);
