@@ -5,7 +5,7 @@ import { chmod, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pty from "node-pty";
-import { CLAUDE_ACCOUNT_ID, CLAUDE_ERRORS, CLAUDE_REPLY_LIMIT, CLAUDE_RUN_TIMEOUT_MS, CLAUDE_SESSION_ID, ClaudeError } from "./claude-client.mjs";
+import { CLAUDE_ACCOUNT_ID, CLAUDE_AUTH_TIMEOUT_MS, CLAUDE_ERRORS, CLAUDE_REPLY_LIMIT, CLAUDE_RUN_TIMEOUT_MS, CLAUDE_SESSION_ID, ClaudeError } from "./claude-client.mjs";
 import { readClaudeUsage } from "./claude-usage.mjs";
 import { beginClaudeLogin, finishClaudeSetup } from "./claude-login.mjs";
 
@@ -89,7 +89,10 @@ function runCli(args, context, { input = "", timeoutMs = 8000, signal } = {}) {
 }
 
 async function authStatus(context, signal) {
-  const result = await runCli(["auth", "status", "--json"], context, { signal });
+  const result = await runCli(["auth", "status", "--json"], context, { signal, timeoutMs: CLAUDE_AUTH_TIMEOUT_MS }).catch((error) => {
+    if (error.code === "timeout") throw new ClaudeError("auth-timeout");
+    throw error;
+  });
   let data;
   try { data = JSON.parse(result.stdout); } catch { throw new ClaudeError("unavailable"); }
   if (result.code === 1 && data.loggedIn === false) return { status: "signed-out" };

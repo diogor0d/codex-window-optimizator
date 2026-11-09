@@ -999,7 +999,8 @@ function markAuthValidated(account) {
     credentialPresent: true,
     authIssue: false,
     mode: account.provider,
-    detail: previous?.authIssue ? "Logged in (live request verified)" : previous?.detail || "Logged in",
+    detail: account.provider === "claude" ? "Signed in to Claude Code"
+      : previous?.authIssue ? "Logged in (live request verified)" : previous?.detail || "Logged in",
     code: 0
   };
   authStatusCacheByAccount.set(account.id, { checkedAt: Date.now(), status });
@@ -1025,11 +1026,15 @@ async function getAuthStatus(accountOrId = store.selectedAccountId, force = fals
     authStatusProbeAtByAccount.set(account.id, Date.now());
     const previous = authStatusCacheByAccount.get(account.id)?.status;
     let status = account.provider === "claude" ? interpreted : mergeAuthenticationProbe(previous, interpreted);
-    if (account.provider === "claude" && previous?.authIssue && interpreted.loggedIn) {
-      status = { ...previous, credentialPresent: true, probeUnavailable: false };
-    }
-    if (account.provider === "claude" && (!status.loggedIn || status.probeUnavailable)) {
-      claudeQuota.set(account.id, { ...claudeQuota.get(account.id), live: false, detail: status.detail });
+    if (account.provider === "claude") {
+      if (interpreted.probeUnavailable) {
+        status = { ...(previous || unknownAuthStatus()), probeUnavailable: true, detail: interpreted.detail };
+      } else if (previous?.authIssue && interpreted.loggedIn) {
+        status = { ...previous, credentialPresent: true, probeUnavailable: false };
+      }
+      if (!status.probeUnavailable && !status.loggedIn) {
+        claudeQuota.set(account.id, { ...claudeQuota.get(account.id), live: false, detail: status.detail });
+      }
     }
     const next = {
       checkedAt: Date.now(),
@@ -1058,6 +1063,8 @@ async function probeClaudeAuth(account) {
 
 function refreshAuthStatusesInBackground() {
   const staleAccounts = store.accounts.filter((account) => {
+    // Claude checks its sign-in as part of the independent quota poll.
+    if (account.provider === "claude") return false;
     const cached = authStatusCacheByAccount.get(account.id);
     return !cached || Date.now() - cached.checkedAt >= 10000;
   });
@@ -1442,10 +1449,12 @@ function refreshClaudeAccount(account, force = false) {
     if (deletingAccountIds.has(account.id) || !claude.configured || claudeRuns.has(account.id)
       || state?.retryAt > Date.now() || (!force && state?.nextAt > Date.now())) return result;
     try {
-      const auth = await getAuthStatus(account, force);
+      // A usage request validates the subscription again inside the worker.
+      const cachedAuth = authStatusCacheByAccount.get(account.id)?.status;
+      const auth = cachedAuth?.loggedIn && !cachedAuth.probeUnavailable ? cachedAuth : await getAuthStatus(account, force);
       result.loggedIn = auth.loggedIn;
       if (deletingAccountIds.has(account.id) || !store.accounts.includes(account)) return result;
-      if (auth.probeUnavailable) throw new ClaudeError("unavailable");
+      if (auth.probeUnavailable) throw new Error(auth.detail);
       if (!auth.loggedIn && !auth.credentialPresent) {
         claudeQuota.set(account.id, { live: false, nextAt: Date.now() + CLAUDE_POLL_MS, detail: auth.detail });
         if (account.enabled) recordAuthenticationFailure(account, auth.detail);

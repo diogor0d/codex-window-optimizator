@@ -209,6 +209,18 @@ globalThis.fetch = async (url, options) => {
   assert.equal(await session(first.id), null);
   assert.equal(JSON.stringify(live).includes("first@example.invalid"), false);
 
+  const authUnavailable = path.join(homes, first.id, "fixture-auth-unavailable");
+  await writeFile(authUnavailable, "");
+  const uncertainAuth = (await auth(first.id)).body;
+  assert.equal(uncertainAuth.loggedIn, true, "an unavailable check must preserve the confirmed sign-in");
+  assert.equal(uncertainAuth.probeUnavailable, true);
+  assert.equal((await account(first.id)).quotaStatus.live, true, "a standalone auth check does not invalidate quota");
+  const unavailableRefresh = (await refresh()).body.accounts.find(({ accountId }) => accountId === first.id);
+  assert.equal(unavailableRefresh.rateLimits, "failed");
+  assert.equal((await account(first.id)).quotaStatus.live, false, "a failed quota refresh marks the reading stale");
+  assert.equal((await account(first.id)).quotaStatus.observedAt, live.quotaStatus.observedAt);
+  await rm(authUnavailable);
+
   await quota(first.id, { primary: 85, weekly: 35 });
   await refresh();
   await until(() => readFile(messages, "utf8"), (text) => text.includes("Claude A"));

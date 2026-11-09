@@ -1,6 +1,7 @@
 import { request } from "node:http";
 
 export const CLAUDE_POLL_MS = 10 * 60_000;
+export const CLAUDE_AUTH_TIMEOUT_MS = 30_000;
 export const CLAUDE_RUN_TIMEOUT_MS = 120_000;
 export const CLAUDE_ACCOUNT_ID = /^acct_[a-f0-9]{12}$/;
 export const CLAUDE_SESSION_ID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
@@ -17,6 +18,7 @@ export const CLAUDE_ERRORS = {
   "login-session": "This sign-in attempt is no longer accepting a code. Start sign-in again.",
   "login-code": "Paste the complete sign-in code from Anthropic for this account's current sign-in attempt.",
   "login-setup": "Claude signed in, but first-run setup did not complete. Try signing in again.",
+  "auth-timeout": "Claude's sign-in check timed out.",
   timeout: "Claude timed out. No automatic retry was sent.",
   interrupted: "The Claude operation was interrupted.",
   "quota-stale": "Claude returned a cached quota reading.",
@@ -67,8 +69,13 @@ export function claudeClient(socketPath, verifiedVersion) {
           }
         });
       });
-      const timeout = setTimeout(() => req.destroy(new ClaudeError("unavailable")),
-        action === "run" ? CLAUDE_RUN_TIMEOUT_MS + 20_000 : action === "usage" ? 35_000 : action === "health" ? 2000 : 15_000);
+      const deadline = {
+        run: CLAUDE_AUTH_TIMEOUT_MS + CLAUDE_RUN_TIMEOUT_MS + 10_000,
+        usage: CLAUDE_AUTH_TIMEOUT_MS + 25_000,
+        status: CLAUDE_AUTH_TIMEOUT_MS + 5_000,
+        health: 2000
+      }[action] ?? 15_000;
+      const timeout = setTimeout(() => req.destroy(new ClaudeError("unavailable")), deadline);
       req.once("close", () => clearTimeout(timeout));
       req.on("error", () => reject(new ClaudeError("unavailable")));
       req.end(body);

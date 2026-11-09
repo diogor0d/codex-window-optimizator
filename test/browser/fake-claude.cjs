@@ -13,6 +13,7 @@ const log = (entry) => fs.appendFileSync(path.join(accountDir, "fixture-log"), `
 const signedIn = fs.existsSync(identityPath);
 if (args[0] === "auth") {
   if (args[1] === "status") {
+    if (fs.existsSync(path.join(accountDir, "fixture-auth-unavailable"))) process.exit(2);
     console.log(JSON.stringify(signedIn
       ? { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: fs.readFileSync(identityPath, "utf8") }
       : { loggedIn: false }));
