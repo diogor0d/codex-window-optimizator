@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Codex Window Runner",
-  "short_name": "Window Runner",
-  "description": "Private operations console for Codex account windows and scheduled sends.",
+  "name": "WindowRelay",
+  "short_name": "WindowRelay",
+  "description": "Private console for Codex and Claude Code quota windows, scheduled messages, and alerts.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

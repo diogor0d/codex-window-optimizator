@@ -1,13 +1,12 @@
 <div align="center">
 
-<img src="public/icon-512.png" width="104" alt="Codex Window Runner logo — three schedule slots, the center one lit amber">
+<img src="public/icon-512.png" width="104" alt="WindowRelay logo">
 
-# Codex Window Runner
+# WindowRelay
 
-**A clear view of your Codex account windows.**
+**Quota windows and scheduled messages for Codex and Claude Code.**
 
-Four departures a day. Every account on its own five-hour window.
-One private, self-hosted console.
+One private, self-hosted console for all your accounts.
 
 ![Node](https://img.shields.io/badge/node-%E2%89%A522-161e28?style=flat-square&labelColor=10161d&color=f5a83c)
 ![Codex CLI](https://img.shields.io/badge/codex_cli-0.154.0--alpha.3-161e28?style=flat-square&labelColor=10161d&color=f5a83c)
@@ -17,9 +16,9 @@ One private, self-hosted console.
 
 ---
 
-Codex usage resets in roughly five-hour windows. This service keeps a fleet of ChatGPT/Codex accounts inside that rhythm: at every scheduled time it sends a ping into each enabled account's persistent Codex thread, spaced `5h05` apart, so local-message usage stays aligned with the documented windows.
+WindowRelay tracks quota windows across Codex and Claude Code accounts, sends manual and scheduled messages, resumes each account's conversation, and delivers Telegram alerts.
 
-It cannot see OpenAI's internal reset clock. What it does is simple and predictable: fixed local times, no duplicate sends within a minute, and a console that shows exactly what departed, what failed, and when the next train leaves.
+Choose shared daily send times or per-account overrides. The dashboard shows remaining quota, reported reset times, quota history, and run outcomes. Each scheduled slot is deduplicated per account.
 
 ## The console
 
@@ -57,6 +56,8 @@ Each account is fully isolated: its own `CODEX_HOME` (credentials), its own app-
 
 ## Quick start
 
+Existing installations retain the `codex-window-runner` Compose service and container, named volumes, account directories, and browser storage keys. These stable identifiers preserve credentials, saved conversations, and local preferences across the rebrand.
+
 ```bash
 mkdir -p workspace
 docker compose up -d --build
@@ -70,7 +71,7 @@ http://127.0.0.1:8787
 
 On iPhone, open the HTTPS URL in Safari, tap **Share**, then **Add to Home Screen**. The installed app uses a standalone, safe-area-aware layout. It immediately shows a privacy-reduced saved fleet snapshot while live data loads; prompts, messages, workspace paths, credentials, and API responses are not stored in that snapshot. Its offline shell can open without a network connection, but account management still requires access to this server.
 
-Connect an account from **Accounts → Sign in**. Copy the one-time code, choose **Continue to OpenAI**, and enter the code on the sign-in page. Return to the console for automatic confirmation; technical output stays under **Sign-in diagnostics**. Credentials stay in the persistent server volume and survive restarts and rebuilds.
+Connect a Codex account from **Accounts → Sign in**. Copy the one-time code, choose **Continue to OpenAI**, and enter the code on the sign-in page. Return to the console for automatic confirmation; technical output stays under **Sign-in diagnostics**. Credentials stay in the persistent server volume and survive restarts and rebuilds.
 
 ## Multiple accounts
 
@@ -138,7 +139,7 @@ Back up the worker's account volume separately if you want to preserve its crede
 
 ## Security model
 
-This is a **private admin app** with full control over Codex sessions. Do not expose it to the public internet.
+WindowRelay is a **private admin app** with access to your Codex and Claude Code accounts. Do not expose it to the public internet.
 
 - Bind the port to localhost, or to your LAN only if that network is trusted.
 - Put it behind **Cloudflare Tunnel + Cloudflare Access**.

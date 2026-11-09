@@ -1279,7 +1279,7 @@ class CodexAppServer {
     const result = await this.rawRequest("initialize", {
       clientInfo: {
         name: SERVICE_NAME,
-        title: "Codex Window Runner",
+        title: "WindowRelay",
         version: "0.1.0"
       }
     }, 30000);
@@ -2611,7 +2611,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/alerts/telegram/test") {
-    await deliverTelegramMessage(`Codex Window Runner\nTelegram alerts are configured and reachable.\n${new Date().toLocaleString("en-GB", { timeZone: store.settings.timezone })}`);
+    await deliverTelegramMessage(`WindowRelay\nTelegram alerts are configured and reachable.\n${new Date().toLocaleString("en-GB", { timeZone: store.settings.timezone })}`);
     addActivity("telegram", "info", "Telegram test alert sent");
     return sendJson(res, 200, { ok: true });
   }
@@ -2756,7 +2756,7 @@ async function bootstrap() {
   const server = createServer(requestHandler);
   server.listen(PORT, "0.0.0.0", () => {
     addActivity("server", "info", "Web server listening", { port: PORT });
-    console.log(`codex-window-runner listening on :${PORT}`);
+    console.log(`WindowRelay listening on :${PORT}`);
   });
 
   startScheduler();

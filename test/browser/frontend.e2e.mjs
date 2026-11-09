@@ -479,6 +479,14 @@ async function exercise(browserType, fixture, viewport, label) {
     await page.waitForFunction(() => document.querySelector("#accountSelect").options.length === 2);
     await page.waitForFunction(() => document.querySelector("#timezoneInput").value === "Europe/Lisbon");
     await navigate(page, "fleet");
+    assert.equal(await page.title(), "Overview · WindowRelay");
+    assert.match(await page.locator(".brand-name").textContent(), /^WindowRelay/);
+    assert.equal(await page.locator(".brand").getAttribute("aria-label"), "WindowRelay overview");
+    const manifest = await requestJson(fixture.base, "/app.webmanifest");
+    assert.equal(manifest.name, "WindowRelay");
+    assert.equal(manifest.short_name, "WindowRelay");
+    assert.equal(manifest.id, "/", "rebranding preserves the installed app identity");
+    await screenshot(page, `${label}-windowrelay`);
     // Each credit retains its own expiry and urgency rather than coloring the whole inventory.
     await page.waitForFunction(() => document.querySelector('[data-account-row="alpha"] .reset-credit-stack')?.dataset.creditState === "expiring");
     const alphaCredits = page.locator('[data-account-row="alpha"] .reset-credit-stack');

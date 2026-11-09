@@ -254,13 +254,13 @@ export function telegramEventStillRelevant(dashboard, event, settings, context =
 
 export function formatTelegramAlert(accountLabel, events) {
   return [
-    `Codex Window Runner: ${accountLabel}`,
+    `WindowRelay: ${accountLabel}`,
     ...events.map((event) => `- ${event.text}`)
   ].join("\n");
 }
 
 export function formatTelegramAlertMessages(accountLabel, events, maxLength = 4000) {
-  const header = `Codex Window Runner: ${String(accountLabel).slice(0, 200)}`;
+  const header = `WindowRelay: ${String(accountLabel).slice(0, 200)}`;
   const messages = [];
   let current = header;
   for (const event of events) {

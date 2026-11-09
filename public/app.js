@@ -1929,7 +1929,7 @@ function summarizeEvent(event) {
     const reset = Number.isFinite(primary?.resetsAt) ? `resets ${formatUnixSeconds(primary.resetsAt)}` : "reset unknown";
     return {
       kind: "window",
-      title: "Codex window updated",
+      title: "Quota window updated",
       body: `${used}, ${reset}`,
       tags: [limits?.planType || "plan unknown", `${primary?.windowDurationMins || "?"} min window`],
       payload: {
@@ -3704,7 +3704,7 @@ function initDashboardNavigation() {
     const [title, description] = DASHBOARD_VIEWS[view];
     $("#pageTitle").textContent = title;
     $("#pageDescription").textContent = description;
-    document.title = `${title} · Codex Window Runner`;
+    document.title = `${title} · WindowRelay`;
     // Keep a predictable start position; focus moves only after navigation, not polling.
     if (focus) {
       $("#mainContent").focus({ preventScroll: true });

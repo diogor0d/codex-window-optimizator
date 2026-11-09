@@ -295,7 +295,7 @@ test("formats one compact Telegram message per account", () => {
     { type: "reserve-active", text: "Luna Reserve fallback is active" }
   ]);
 
-  assert.equal(text, "Codex Window Runner: CHATGPT1\n- 5-hour quota reached 80%\n- Luna Reserve fallback is active");
+  assert.equal(text, "WindowRelay: CHATGPT1\n- 5-hour quota reached 80%\n- Luna Reserve fallback is active");
 });
 
 test("splits Telegram alerts below the message size limit", () => {
