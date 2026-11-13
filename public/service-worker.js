@@ -1,8 +1,10 @@
-const CACHE_NAME = "window-relay-shell-v57";
+const CACHE_NAME = "window-relay-shell-v58";
 const SHELL_PATHS = [
   "/",
   "/styles.css",
   "/app.js",
+  "/usage-metrics.js",
+  "/cost-simulator.js",
   "/app.webmanifest",
   "/favicon.svg",
   "/apple-touch-icon.png",

@@ -75,7 +75,7 @@ process.stdin.on("data", chunk => {
           : { account: null, requiresOpenaiAuth: true };
         break;
       case "account/rateLimits/read":
-        result = { rateLimits: {
+        result = { accountId: `synthetic-${path.basename(process.env.CODEX_HOME || "")}`, rateLimits: {
           primary: { usedPercent: 24, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
           secondary: { usedPercent: 38, windowDurationMins: 10080, resetsAt: Math.floor(Date.now() / 1000) + 86400 },
           planType: "plus"
@@ -87,6 +87,20 @@ process.stdin.on("data", chunk => {
             : [{ expiresAt: creditExpiryBase + 7 * 86400 }]
         } };
         break;
+      case "account/usage/read": {
+        if (request.params?.threadId || fs.existsSync(marker("usage-unavailable"))) {
+          process.stdout.write(`${JSON.stringify({ id: request.id, error: { code: -32601, message: "Usage unavailable" } })}\n`);
+          continue;
+        }
+        const multiplier = path.basename(process.env.CODEX_HOME || "") === "home-a" ? 1 : 2;
+        const dailyUsageBuckets = Array.from({ length: 90 }, (_, n) => ({
+          startDate: new Date(Date.now() - n * 86400000).toISOString().slice(0, 10),
+          tokens: (10000 + n * 100) * multiplier
+        })).reverse();
+        result = { summary: { lifetimeTokens: 12_345_678 * multiplier, peakDailyTokens: 40000 * multiplier,
+          longestRunningTurnSec: 540, currentStreakDays: 8, longestStreakDays: 14 }, dailyUsageBuckets };
+        break;
+      }
       case "model/list":
         result = { data: [
           { id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "Sol", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "medium" }] },

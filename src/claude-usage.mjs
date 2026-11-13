@@ -10,6 +10,25 @@ const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "
 const SESSION = "Current session";
 const WEEK = "Current week (all models)";
 
+export function parseClaudeExtraUsage(screen, now = Date.now()) {
+  const section = screen.split(/(?:^|\n)\s*(?:Usage credits|Extra usage)\s*\n/i)[1];
+  if (!section) return null;
+  const rows = section.split("\n").slice(0, 6).join("\n");
+  const money = "(USD|US\\$|\\$|EUR|€|GBP|£)\\s*(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)";
+  const pair = new RegExp(money + "\\s*(?:/|of)\\s*" + money + "\\s*(?:spent|used|monthly limit)", "i").exec(rows);
+  const single = new RegExp(money + "\\s*(?:spent|used)(?:\\s+this month)?", "i").exec(rows);
+  if (!pair && !single) return null;
+  const currency = symbol => ({ "$": "USD", "US$": "USD", USD: "USD", EUR: "EUR", "€": "EUR", GBP: "GBP", "£": "GBP" })[symbol.toUpperCase()];
+  const minor = text => {
+    const value = Math.round(Number(text.replaceAll(",", "")) * 100);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  };
+  if (pair && currency(pair[1]) !== currency(pair[3])) return null;
+  return { currency: currency((pair || single)[1]), spentMinor: minor((pair || single)[2]),
+    limitMinor: pair ? minor(pair[4]) : null,
+    period: /this month|monthly/i.test(rows) ? new Date(now).toISOString().slice(0, 7) : null };
+}
+
 function utcReset(text, now, horizon, allowImplicitZone = false) {
   // Claude displays minute precision. Interpret only known English UTC formats.
   const match = /^(?:([A-Z]{3})\s+(\d{1,2})(?:,| at)?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s+(?:\((?:Etc\/)?UTC\)|UTC))?$/i.exec(text.trim());
@@ -60,7 +79,8 @@ export function parseClaudeUsage(screen, now = Date.now()) {
   const primary = parseWindow(SESSION, 300);
   const secondary = parseWindow(WEEK, 10080);
   if (primary === undefined || secondary === undefined || (!primary && !secondary)) return null;
-  return { primary, secondary };
+  const extraUsage = parseClaudeExtraUsage(screen, now);
+  return { primary, secondary, ...(extraUsage ? { extraUsage } : {}) };
 }
 
 export function readClaudeUsage({ spawnTerminal, signal, timeoutMs = CLAUDE_USAGE_TIMEOUT_MS }) {

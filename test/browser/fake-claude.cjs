@@ -98,7 +98,7 @@ if (args.includes("--print")) {
       process.exit(2);
     }
     log({ action: "usage" });
-    const { primary = 25, weekly = 42, state } = JSON.parse(fs.readFileSync(path.join(accountDir, "fixture-quota"), "utf8"));
+    const { primary = 25, weekly = 42, state, extraUsage = "" } = JSON.parse(fs.readFileSync(path.join(accountDir, "fixture-quota"), "utf8"));
     if (state === "malformed") return paint("Usage\n\nUnexpected format");
     const now = Date.now();
     const time = (timestamp) => new Intl.DateTimeFormat("en-US", {
@@ -107,6 +107,6 @@ if (args.includes("--print")) {
     const date = (timestamp) => new Intl.DateTimeFormat("en-US", {
       timeZone: "UTC", month: "short", day: "numeric"
     }).format(timestamp);
-    paint(`Usage\n\nCurrent session\n██████  ${primary}% used\nResets ${time(now + 2 * 3600000)} (UTC)\n\nCurrent week (all models)\n██████  ${weekly}% used\nResets ${date(now + 86400000)}, ${time(now + 86400000)} (UTC)\n\n${state === "cached" ? "Showing last-known usage from 5 min ago" : ""}`);
+    paint(`Usage\n\nCurrent session\n██████  ${primary}% used\nResets ${time(now + 2 * 3600000)} (UTC)\n\nCurrent week (all models)\n██████  ${weekly}% used\nResets ${date(now + 86400000)}, ${time(now + 86400000)} (UTC)\n\n${extraUsage ? `Usage credits\n${extraUsage}\n` : ""}${state === "cached" ? "Showing last-known usage from 5 min ago" : ""}`);
   });
 }

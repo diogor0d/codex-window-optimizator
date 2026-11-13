@@ -1,3 +1,5 @@
+import { initUsageMetrics } from "./usage-metrics.js";
+
 const $ = (selector) => document.querySelector(selector);
 
 const state = {
@@ -65,6 +67,9 @@ function feedback(id, text, tone = "neutral") {
   element.dataset.tone = tone;
   if (id === "runMessage") element.hidden = !text;
 }
+
+const usageMetrics = typeof document === "undefined" ? null
+  : initUsageMetrics({ api, getAccounts: () => state.accounts, onFilter: () => renderUsageHistory() });
 
 async function buttonAction(button, messageId, action) {
   if (button.dataset.pending) return;
@@ -939,6 +944,9 @@ function renderUsageInspector(model, timeMs, inspectorId, visibleAccounts) {
 }
 
 function renderUsageHistory() {
+  const metricsScope = usageMetrics.filters();
+  const usageAccounts = state.accounts.filter(account => (!metricsScope.provider || account.provider === metricsScope.provider)
+    && (!metricsScope.accountId || account.id === metricsScope.accountId));
   const focusedSeriesId = document.activeElement?.closest(".usage-series-toggle")?.dataset.accountId;
   const fiveHourChart = $("#usageHistoryFiveHourChart");
   const weeklyChart = $("#usageHistoryWeeklyChart");
@@ -953,11 +961,11 @@ function renderUsageHistory() {
     button.classList.toggle("active", button.dataset.range === state.usageHistoryRange);
     button.setAttribute("aria-pressed", String(button.dataset.range === state.usageHistoryRange));
   });
-  const histories = state.accounts.map((account, index) => {
+  const histories = usageAccounts.map((account, index) => {
     const cached = state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`);
     return cached?.data ? { account, index, data: cached.data } : null;
   }).filter(Boolean);
-  const chartHistories = state.accounts.map((account, index) => ({
+  const chartHistories = usageAccounts.map((account, index) => ({
     account,
     index,
     data: state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`)?.data || { samples: [], baseline: null, observedAt: {} }
@@ -967,7 +975,7 @@ function renderUsageHistory() {
   const startMs = endMs - rangeMs;
   const chartModels = {};
   const tracked = histories.filter(({ data }) => data.baseline || data.samples?.length);
-  const failedAccounts = state.accounts.filter((account) =>
+  const failedAccounts = usageAccounts.filter((account) =>
     state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`));
   const recordedChanges = histories.reduce((sum, { data }) => sum + (data.samples?.length || 0), 0);
   const polling = histories.map(({ data }) => data.polling).filter(Boolean)
@@ -976,7 +984,7 @@ function renderUsageHistory() {
     ? fmtCountdown(Date.parse(polling.nextAt) - endMs)
     : "pending";
   summary.innerHTML = [
-    ["Accounts tracked", `${tracked.length}/${state.accounts.length}${failedAccounts.length ? ` · ${failedAccounts.length} failed` : ""}`],
+    ["Accounts tracked", `${tracked.length}/${usageAccounts.length}${failedAccounts.length ? ` · ${failedAccounts.length} failed` : ""}`],
     ["Recorded changes", recordedChanges],
     ["Visible range", state.usageHistoryRange],
     ["Polling", histories.some(({ data }) => data.savedSnapshot) ? "Saved snapshot" : Number.isFinite(polling.intervalMs) ? `${formatPollingInterval(polling.intervalMs)} · ${nextCheck}` : "Adaptive"]
@@ -988,9 +996,12 @@ function renderUsageHistory() {
 
   const renderChart = (host, key, chartRange = state.usageHistoryRange) => {
     if (!host) return;
-    const model = buildUsageChartModel(chartHistories, key, endMs - USAGE_HISTORY_RANGES[chartRange], endMs);
+    const source = host.classList.contains("compact-usage-chart") ? state.accounts.map((account, index) => ({
+      account, index, data: state.usageHistory.get(`${account.id}:${state.usageHistoryRange}`)?.data || { samples: [], observedAt: {} }
+    })) : chartHistories;
+    const model = buildUsageChartModel(source, key, endMs - USAGE_HISTORY_RANGES[chartRange], endMs);
     if (!host.classList.contains("compact-usage-chart")) chartModels[key] = model;
-    const loading = state.accounts.some((account) => state.usageHistoryRequests.has(`${account.id}:${state.usageHistoryRange}`));
+    const loading = usageAccounts.some((account) => state.usageHistoryRequests.has(`${account.id}:${state.usageHistoryRange}`));
     if (!model.timestamps.length) {
       usageChartModels.delete(host);
       host.innerHTML = `<p class="board-empty">${loading ? "Loading fleet usage history..." : failedAccounts.length ? `History unavailable for ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"}.` : "No readings recorded for this window yet."}</p>`;
@@ -1033,14 +1044,14 @@ function renderUsageHistory() {
     const index = state.accounts.findIndex(item => item.id === account.id);
     return `<span><i class="usage-legend pattern-${index % USAGE_ACCOUNT_DASHES.length}" style="--account-color:${USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length]}"></i>${escapeHtml(account.label)}</span>`;
   }).join("");
-  legend.innerHTML = state.accounts.map((account, index) => {
+  legend.innerHTML = usageAccounts.map((account, index) => {
     const selected = !state.usageHistoryVisibleAccounts || state.usageHistoryVisibleAccounts.has(account.id);
     const color = USAGE_ACCOUNT_COLORS[index % USAGE_ACCOUNT_COLORS.length];
     const dashClass = `pattern-${index % USAGE_ACCOUNT_DASHES.length}`;
     return `<button type="button" class="usage-series-toggle ${selected ? "" : "is-muted"} ${state.usageHistoryErrors.has(`${account.id}:${state.usageHistoryRange}`) ? "unavailable" : ""}" data-account-id="${escapeHtml(account.id)}" aria-pressed="${selected}" style="--account-color:${color}"><i class="usage-legend ${dashClass}"></i>${escapeHtml(account.label)}</button>`;
   }).join("") || '<span>No accounts configured.</span>';
   legend.querySelectorAll("[data-account-id]").forEach((button) => button.addEventListener("click", () => {
-    if (!state.usageHistoryVisibleAccounts) state.usageHistoryVisibleAccounts = new Set(state.accounts.map((account) => account.id));
+    if (!state.usageHistoryVisibleAccounts) state.usageHistoryVisibleAccounts = new Set(usageAccounts.map((account) => account.id));
     const id = button.dataset.accountId;
     if (state.usageHistoryVisibleAccounts.has(id)) {
       if (state.usageHistoryVisibleAccounts.size > 1) state.usageHistoryVisibleAccounts.delete(id);
@@ -1050,7 +1061,7 @@ function renderUsageHistory() {
   if (focusedSeriesId) {
     [...legend.querySelectorAll(".usage-series-toggle")].find((button) => button.dataset.accountId === focusedSeriesId)?.focus({ preventScroll: true });
   }
-  const latestRows = state.accounts.map((account, index) => {
+  const latestRows = usageAccounts.map((account, index) => {
     const historyKey = `${account.id}:${state.usageHistoryRange}`;
     const data = state.usageHistory.get(historyKey)?.data;
     const latest = data?.samples?.at(-1) || data?.baseline;
@@ -1073,10 +1084,10 @@ function renderUsageHistory() {
     .map((item) => [item.account.id, item.summary]));
   const weeklyInsights = new Map(usageInsightStats(chartModels.weeklyUsed?.series || [], "weeklyUsed", startMs, endMs)
     .map((item) => [item.account.id, item.summary]));
-  const insights = `<table><thead><tr><th>Account</th><th>5-hour changes</th><th>Weekly changes</th></tr></thead><tbody>${state.accounts.map((account) => `
+  const insights = `<table><thead><tr><th>Account</th><th>5-hour changes</th><th>Weekly changes</th></tr></thead><tbody>${usageAccounts.map((account) => `
     <tr><th>${escapeHtml(account.label)}</th><td>${escapeHtml(fiveHourInsights.get(account.id) || "No observations")}</td><td>${escapeHtml(weeklyInsights.get(account.id) || "No observations")}</td></tr>
   `).join("")}</tbody></table>`;
-  latestHost.innerHTML = state.accounts.length ? `
+  latestHost.innerHTML = usageAccounts.length ? `
     <div class="usage-history-insights"><p><strong>Range insights</strong> · low remaining, net change, observed use and replenishments</p>${insights}</div>
     <table>
       <thead><tr><th>Account</th><th>5h remaining</th><th>Weekly remaining</th><th>Last change / source</th></tr></thead>
@@ -1403,6 +1414,7 @@ async function refreshStatus() {
   updateStatus(status);
   saveStatusSnapshot(status);
   setSnapshotMode();
+  void usageMetrics.refresh();
 }
 
 let refreshFeedbackTimer = null;
@@ -1438,6 +1450,7 @@ async function refreshAllState({ interactive = true } = {}) {
     : [refreshStatus(), refreshActivity()]);
   const reloadFailures = reloads.filter((result) => result.status === "rejected").length;
   await loadFleetUsageHistory(true);
+  await usageMetrics.refresh(true);
 
   if (interactive) {
     if (upstreamError) {
@@ -2914,6 +2927,7 @@ function tickFleet() {
 
 function connectEvents() {
   const events = new EventSource("/api/events");
+  events.addEventListener("metrics", () => { void usageMetrics.refresh(true); });
   events.addEventListener("activity", (message) => {
     const event = JSON.parse(message.data);
     addActivity(event, true);
@@ -3605,7 +3619,7 @@ function bindActions() {
 const DASHBOARD_VIEWS = {
   fleet: ["Overview", "Account capacity and today’s scheduled sends."],
   account: ["Accounts", "Manage sign-in, account settings, and messages."],
-  usage: ["Usage", "Compare quota history and inspect recorded readings."],
+  usage: ["Usage", "Compare account tokens, quota, costs and projections."],
   schedule: ["Schedule", "Control when and how scheduled messages are sent."],
   alerts: ["Alerts", "Choose the events and reminders you want to hear about."],
   activity: ["Activity", "Follow runs, replies, and changes across your accounts."]
@@ -3771,6 +3785,7 @@ async function init() {
   await Promise.all([refreshSettings(), refreshStatus(), refreshActivity()]);
   await loadFleetUsageHistory();
   await refreshLoginSession();
+  await usageMetrics.refresh(true);
   setInterval(tickFleet, 1000);
   setInterval(() => {
     if (document.visibilityState === "visible" && state.loginSession?.status === "running") void refreshLoginSession().then(() => refreshStatus()).catch(() => {});

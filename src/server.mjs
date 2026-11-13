@@ -12,6 +12,8 @@ import { normalizeTelegramSettings, patchTelegramSettings, TELEGRAM_EVENT_TYPES,
 import { adaptivePollingInterval, appendUsageSample, latestUsageActivityAt, normalizeUsageHistory, observedUsageKeys } from "./usage-history.mjs";
 import { chooseModel, readModelCatalog } from "./models.mjs";
 import { CLAUDE_POLL_MS, CLAUDE_SESSION_ID, ClaudeError, claudeClient } from "./claude-client.mjs";
+import { bindMetricsIdentity, buildUsageMetrics, emptyMetrics, normalizeBilling, normalizeExtraUsage, normalizeMetrics, recordQuotaObservations, updateBilling } from "./usage-metrics.mjs";
+import { createMetricsCollector } from "./metrics-collector.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -117,6 +119,16 @@ let telegramSendingItemId = null;
 let telegramRetryTimer = null;
 let claudeRefreshTimer = null;
 let shuttingDown = false;
+const refreshAccountMetrics = createMetricsCollector({
+  read: (account, method, params) => getAppServer(account.id).send(method, params, 30000),
+  isCurrent: account => !deletingAccountIds.has(account.id) && store.accounts.includes(account),
+  revision: account => getAppServer(account.id, false)?.proc,
+  changed: async account => {
+    if (!store.accounts.includes(account)) return;
+    await saveStore();
+    broadcast("metrics", { accountId: account.id });
+  }
+});
 
 function nowIso() {
   return new Date().toISOString();
@@ -139,6 +151,8 @@ function defaultAccount() {
     threadState: clone(DEFAULT_THREAD_STATE),
     dashboard: clone(DEFAULT_DASHBOARD),
     usageHistory: [],
+    metrics: emptyMetrics(),
+    billing: [],
     usageObservedAt: { fiveHourUsed: null, weeklyUsed: null, reserveUsed: null }
   };
 }
@@ -157,6 +171,8 @@ function createAccount(label = "New account", provider = "codex") {
     threadState: clone(DEFAULT_THREAD_STATE),
     dashboard: clone(DEFAULT_DASHBOARD),
     usageHistory: [],
+    metrics: emptyMetrics(provider),
+    billing: [],
     usageObservedAt: { fiveHourUsed: null, weeklyUsed: null, reserveUsed: null }
   };
 }
@@ -231,6 +247,8 @@ function normalizeAccount(account, fallback = defaultAccount()) {
     threadState: mergeDefaults(account?.threadState || {}, DEFAULT_THREAD_STATE),
     dashboard: mergeDefaults(account?.dashboard || {}, DEFAULT_DASHBOARD),
     usageHistory: normalizeUsageHistory(account?.usageHistory),
+    metrics: normalizeMetrics(account?.metrics, account?.provider),
+    billing: normalizeBilling(account?.billing),
     usageObservedAt: normalizeUsageObservedAt(account?.usageObservedAt)
   };
   normalized.updatedAt ||= nowIso();
@@ -285,6 +303,7 @@ function publicAccount(account) {
       quotaStatus: claudeQuotaStatus(account)
     } : {}),
     settings: clone(account.settings || {}),
+    billing: clone(account.billing || []),
     effectiveSettings: effectiveSettings(account),
     thread: account.threadState,
     dashboard: account.dashboard
@@ -390,7 +409,10 @@ async function loadStore() {
     store = mergeDefaults(saved, DEFAULT_STORE);
   } catch (error) {
     if (error.code !== "ENOENT") {
-      console.error(`Failed to read ${STORE_PATH}; starting with defaults`, error);
+      // Keep the unreadable file: saving defaults over it would drop every account.
+      const kept = `${STORE_PATH}.corrupt-${Date.now()}`;
+      await rename(STORE_PATH, kept);
+      console.error(`Failed to read ${STORE_PATH}; kept it as ${kept} and started with defaults`, error);
     }
     store = structuredClone(DEFAULT_STORE);
     await saveStore();
@@ -1356,7 +1378,10 @@ function recordRateLimits(account, payload, merge = false) {
   const usage = appendUsageSample(account.usageHistory, account.dashboard, updatedAt);
   account.usageHistory = usage.history;
   account.usageObservedAt = normalizeUsageObservedAt(account.usageObservedAt);
-  for (const key of observedUsageKeys(previousDashboard, account.dashboard, payload, merge)) {
+  const observedKeys = observedUsageKeys(previousDashboard, account.dashboard, payload, merge);
+  account.metrics ||= emptyMetrics(account.provider);
+  recordQuotaObservations(account.metrics, account.dashboard, observedKeys);
+  for (const key of observedKeys) {
     account.usageObservedAt[key] = updatedAt;
   }
   if (account.id === store.selectedAccountId) {
@@ -1365,7 +1390,9 @@ function recordRateLimits(account, payload, merge = false) {
   return { updatedAt, historyChanged: usage.changed, activityDetected: usage.activityDetected };
 }
 
-async function refreshAccountState(account) {
+async function refreshAccountState(account, forceMetrics = false) {
+  let canReadMetrics = false;
+  let accountIdentity = null;
   const outcome = {
     accountId: account.id,
     accountLabel: account.label,
@@ -1395,12 +1422,14 @@ async function refreshAccountState(account) {
       recordAuthenticationFailure(account, "Codex account is not logged in");
       return outcome;
     }
+    canReadMetrics = true;
     const result = await getAppServer(account.id).send("account/rateLimits/read", {
       supportsLunaReserve: true
     }, 30000);
     if (!result?.rateLimits) {
       throw new Error("Codex returned no rate-limit data");
     }
+    accountIdentity = typeof result.accountId === "string" ? result.accountId : null;
     const previousDashboard = account.dashboard;
     const recorded = recordRateLimits(account, result);
     outcome.updatedAt = recorded.updatedAt;
@@ -1419,6 +1448,13 @@ async function refreshAccountState(account) {
       if (!error.authFailureRecorded) {
         recordAuthenticationFailure(account, "Authentication failed during quota refresh");
       }
+    }
+  }
+  if (canReadMetrics && store.accounts.includes(account) && !deletingAccountIds.has(account.id)) {
+    outcome.metrics = (await refreshAccountMetrics(account, { force: forceMetrics, accountIdentity })).status;
+    if (outcome.metrics === "superseded" && store.accounts.includes(account) && !deletingAccountIds.has(account.id)) {
+      account.metrics.nextAt = null;
+      outcome.metrics = (await refreshAccountMetrics(account, { force: true })).status;
     }
   }
   return outcome;
@@ -1467,9 +1503,17 @@ function refreshClaudeAccount(account, force = false) {
         if (account.enabled) recordAuthenticationFailure(account, auth.detail);
         return result;
       }
-      const limits = normalizedClaudeLimits(await claude.call("usage", account.id));
+      const response = await claude.call("usage", account.id);
+      const limits = normalizedClaudeLimits(response);
       if (deletingAccountIds.has(account.id) || !store.accounts.includes(account)) return result;
       const previousDashboard = account.dashboard;
+      account.metrics ||= emptyMetrics("claude");
+      if (typeof response.identity === "string" && /^[a-f0-9]{64}$/.test(response.identity)) {
+        bindMetricsIdentity(account.metrics, `claude:${response.identity}`, response.identity);
+      }
+      account.metrics.status = "unsupported";
+      account.metrics.extraUsage = normalizeExtraUsage(response.rateLimits?.extraUsage
+        ? { ...response.rateLimits.extraUsage, updatedAt: nowIso() } : null);
       claudeQuota.set(account.id, { live: true, nextAt: Date.now() + CLAUDE_POLL_MS });
       const recorded = recordRateLimits(account, limits);
       result.rateLimits = "updated";
@@ -1497,7 +1541,8 @@ function refreshClaudeAccount(account, force = false) {
 
 async function refreshAllAccountStates(trigger = "manual") {
   if (!stateRefreshPromise) {
-    stateRefreshPromise = Promise.all(store.accounts.filter((account) => account.provider === "codex").map(refreshAccountState)).finally(() => {
+    stateRefreshPromise = Promise.all(store.accounts.filter((account) => account.provider === "codex")
+      .map(account => refreshAccountState(account, trigger === "request"))).finally(() => {
       stateRefreshPromise = null;
     });
   }
@@ -2091,7 +2136,8 @@ function isAuthorized(req) {
 function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store"
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff"
   });
   res.end(`${JSON.stringify(body)}\n`);
 }
@@ -2100,16 +2146,50 @@ function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
 }
 
+function httpError(statusCode, message) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
 async function readJson(req) {
   const chunks = [];
+  let bytes = 0;
   for await (const chunk of req) {
-    chunks.push(chunk);
-    if (Buffer.concat(chunks).length > 1_000_000) {
-      throw new Error("Request body too large");
+    bytes += chunk.length;
+    // Drain a moderately oversized body so the client reads the 413 instead of a connection reset.
+    if (bytes > 8_000_000) {
+      throw httpError(413, "Request body too large");
+    }
+    if (bytes <= 1_000_000) {
+      chunks.push(chunk);
     }
   }
+  if (bytes > 1_000_000) {
+    throw httpError(413, "Request body too large");
+  }
   const raw = Buffer.concat(chunks).toString("utf8").trim();
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    throw httpError(400, "Request body must be valid JSON");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw httpError(400, "Request body must be a JSON object");
+  }
+  return body;
+}
+
+// Browsers attach these headers themselves, so another site cannot forge a same-origin request.
+function isCrossSiteRequest(req) {
+  const site = req.headers["sec-fetch-site"];
+  if (site) return site !== "same-origin" && site !== "none";
+  if (!req.headers.origin) return false;
+  try {
+    return new URL(req.headers.origin).host !== req.headers.host;
+  } catch {
+    return true;
+  }
 }
 
 function accountIdFromUrl(url) {
@@ -2133,13 +2213,13 @@ async function patchSettings(body) {
   const next = patchTelegramSettings(store.settings, body);
   if (body.timezone !== undefined) {
     if (!validateTimezone(body.timezone)) {
-      throw new Error("Invalid timezone");
+      throw httpError(400, "Invalid timezone");
     }
     next.timezone = body.timezone;
   }
   if (body.scheduleTimes !== undefined) {
     if (!Array.isArray(body.scheduleTimes) || body.scheduleTimes.length === 0 || !body.scheduleTimes.every(validateTime)) {
-      throw new Error("scheduleTimes must be a non-empty HH:mm array");
+      throw httpError(400, "scheduleTimes must be a non-empty HH:mm array");
     }
     next.scheduleTimes = [...new Set(body.scheduleTimes)].sort();
   }
@@ -2155,7 +2235,7 @@ async function patchSettings(body) {
   ]) {
     if (body[key] !== undefined) {
       if (typeof body[key] !== "boolean") {
-        throw new Error(`${key} must be a boolean`);
+        throw httpError(400, `${key} must be a boolean`);
       }
       next[key] = body[key];
     }
@@ -2163,17 +2243,17 @@ async function patchSettings(body) {
   for (const key of ["promptTemplate", "model", "effort", "summary", "approvalPolicy", "workspaceDir"]) {
     if (body[key] !== undefined) {
       if (typeof body[key] !== "string") {
-        throw new Error(`${key} must be a string`);
+        throw httpError(400, `${key} must be a string`);
       }
       next[key] = body[key];
     }
   }
   next.approvalPolicy = normalizeApprovalPolicy(next.approvalPolicy);
   if (next.telegramAlertsEnabled && !telegramConfigured()) {
-    throw new Error("Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID before enabling Telegram alerts");
+    throw httpError(400, "Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID before enabling Telegram alerts");
   }
   if (!next.promptTemplate.trim()) {
-    throw new Error("promptTemplate cannot be empty");
+    throw httpError(400, "promptTemplate cannot be empty");
   }
   store.settings = next;
   await saveStore();
@@ -2251,6 +2331,8 @@ function startDeviceLogin(accountId = store.selectedAccountId) {
       clearAuthenticationFailure(account);
       try {
         await getAppServer(account.id).restart();
+        account.metrics.nextAt = null;
+        await refreshAccountState(account, true);
         await ensureThread(account.id);
       } catch (error) {
         addActivity("codex", "error", "Post-login app-server startup failed", {
@@ -2347,7 +2429,16 @@ async function claudeBrowserLogin(action, account, data = {}) {
 }
 
 async function handleApi(req, res, url) {
+  // Liveness carries no account data and must answer container probes that have no Access identity.
+  if (req.method === "GET" && url.pathname === "/api/health") {
+    return sendJson(res, 200, { ok: true, ts: nowIso() });
+  }
+
   if (!isAuthorized(req)) {
+    return sendError(res, 403, "Forbidden");
+  }
+
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && isCrossSiteRequest(req)) {
     return sendError(res, 403, "Forbidden");
   }
 
@@ -2370,8 +2461,16 @@ async function handleApi(req, res, url) {
     }));
   }
 
-  if (req.method === "GET" && url.pathname === "/api/health") {
-    return sendJson(res, 200, { ok: true, ts: nowIso() });
+  if (req.method === "GET" && url.pathname === "/api/usage-metrics") {
+    const provider = url.searchParams.get("provider") || "";
+    const range = url.searchParams.get("range") || "30d";
+    const accountId = url.searchParams.get("accountId") || "";
+    if (provider && !["codex", "claude"].includes(provider)) return sendError(res, 400, "Unknown provider");
+    if (!["today", "7d", "30d", "90d", "lifetime"].includes(range)) return sendError(res, 400, "Unknown metrics range");
+    if (accountId) requireAccount(accountId);
+    return sendJson(res, 200, buildUsageMetrics(store.accounts, {
+      provider, accountId, range, claudeLive: account => claudeQuotaStatus(account).live
+    }));
   }
 
   if (req.method === "POST" && url.pathname === "/api/refresh") {
@@ -2414,11 +2513,15 @@ async function handleApi(req, res, url) {
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-store",
+      "x-accel-buffering": "no",
       connection: "keep-alive"
     });
     res.write(`event: hello\ndata: ${JSON.stringify({ ts: nowIso() })}\n\n`);
     sseClients.add(res);
+    // Idle streams are cut by proxies; a comment line keeps the connection open.
+    const heartbeat = setInterval(() => res.write(": keep-alive\n\n"), 25_000);
     req.on("close", () => {
+      clearInterval(heartbeat);
       sseClients.delete(res);
     });
     return;
@@ -2503,9 +2606,11 @@ async function handleApi(req, res, url) {
     if (account.provider === "claude" && body.enabled && !await claude.available()) {
       return sendError(res, 503, new ClaudeError(claude.configured ? "unavailable" : "disabled").message);
     }
+    const nextBilling = body.billing !== undefined ? updateBilling(account.billing, body.billing) : account.billing;
     if (typeof body.label === "string" && body.label.trim()) {
       account.label = body.label.trim();
     }
+    account.billing = nextBilling;
     if (body.enabled !== undefined) {
       account.enabled = Boolean(body.enabled);
     }
@@ -2520,6 +2625,7 @@ async function handleApi(req, res, url) {
     account.updatedAt = nowIso();
     await saveStore();
     addActivity("account", "info", "Account updated", { accountId: account.id, accountLabel: account.label, enabled: account.enabled, settings: account.settings });
+    broadcast("metrics", { accountId: account.id });
     return sendJson(res, 200, { selectedAccountId: store.selectedAccountId, account: publicAccount(account), accounts: store.accounts.map(publicAccount) });
   }
 
@@ -2586,7 +2692,8 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/activity") {
-    const limit = Math.min(Number.parseInt(url.searchParams.get("limit") || "200", 10), 1000);
+    const requested = Number.parseInt(url.searchParams.get("limit") || "", 10);
+    const limit = requested > 0 ? Math.min(requested, 1000) : 200;
     return sendJson(res, 200, {
       events: store.activityEvents.slice(-limit),
       runs: store.scheduledRuns.slice(-100),
@@ -2705,34 +2812,52 @@ const CONTENT_TYPES = {
   ".ico": "image/x-icon"
 };
 
+const STATIC_HEADERS = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+  // Inline style attributes carry per-account chart colours; scripts stay same-origin only.
+  "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+};
+const INDEX_PATH = path.join(PUBLIC_DIR, "index.html");
+
 async function serveStatic(req, res, url) {
-  let filePath = url.pathname === "/" ? path.join(PUBLIC_DIR, "index.html") : path.join(PUBLIC_DIR, url.pathname);
-  const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(PUBLIC_DIR)) {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { allow: "GET, HEAD", "cache-control": "no-store" });
+    return res.end();
+  }
+  const resolved = path.resolve(PUBLIC_DIR, `.${url.pathname}`);
+  if (resolved !== PUBLIC_DIR && !resolved.startsWith(PUBLIC_DIR + path.sep)) {
     return sendError(res, 403, "Forbidden");
   }
-  try {
-    const info = await stat(resolved);
-    if (!info.isFile()) {
-      throw new Error("not file");
+  let filePath = resolved === PUBLIC_DIR ? INDEX_PATH : resolved;
+  const info = await stat(filePath).catch(() => null);
+  if (!info?.isFile()) {
+    // Only extension-less paths are client-side routes; a missing asset is a real 404.
+    if (path.extname(url.pathname)) {
+      return sendError(res, 404, "Not found");
     }
-    const ext = path.extname(resolved);
-    res.writeHead(200, {
-      "content-type": CONTENT_TYPES[ext] || "application/octet-stream",
-      "cache-control": "no-store"
-    });
-    createReadStream(resolved).pipe(res);
-  } catch {
-    res.writeHead(200, {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store"
-    });
-    createReadStream(path.join(PUBLIC_DIR, "index.html")).pipe(res);
+    filePath = INDEX_PATH;
   }
+  res.writeHead(200, {
+    "content-type": CONTENT_TYPES[path.extname(filePath)] || "application/octet-stream",
+    ...STATIC_HEADERS
+  });
+  if (req.method === "HEAD") {
+    return res.end();
+  }
+  createReadStream(filePath).on("error", () => res.destroy()).pipe(res);
 }
 
 async function requestHandler(req, res) {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  let url;
+  try {
+    // Only the path and query are used, so the client-supplied Host is not parsed.
+    url = new URL(req.url || "/", "http://localhost");
+  } catch {
+    return sendError(res, 400, "Malformed request URL");
+  }
   try {
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
@@ -2740,8 +2865,13 @@ async function requestHandler(req, res) {
       await serveStatic(req, res, url);
     }
   } catch (error) {
-    addActivity("server", "error", "Request failed", { path: url.pathname, error: error.message });
-    sendError(res, error.statusCode || 500, error.message);
+    const statusCode = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599 ? error.statusCode : 500;
+    addActivity("server", statusCode >= 500 ? "error" : "warn", "Request failed", { path: url.pathname, error: error.message });
+    if (res.headersSent) {
+      res.destroy();
+    } else {
+      sendError(res, statusCode, error.message);
+    }
   }
 }
 
@@ -2816,4 +2946,12 @@ async function bootstrap() {
   process.on("SIGTERM", shutdown);
 }
 
-void bootstrap();
+// A stray rejection in a background task must not take the scheduler and every account down with it.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection", reason);
+});
+
+bootstrap().catch((error) => {
+  console.error("WindowRelay failed to start", error);
+  process.exit(1);
+});

@@ -242,7 +242,7 @@ async function invoke(action, id, data) {
     const retryAt = Number(savedBackoff);
     if (retryAt > Date.now()) throw new ClaudeError("quota-limited", retryAt);
     try {
-      return { rateLimits: await usage(context, signal) };
+      return { rateLimits: await usage(context, signal), identity: await readFile(path.join(context.home, "identity"), "utf8") };
     } catch (error) {
       if (["quota-limited", "quota-stale"].includes(error.code)) {
         const retry = error.retryAt || Date.now() + 10 * 60_000;

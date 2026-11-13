@@ -201,7 +201,7 @@ globalThis.fetch = async (url, options) => {
   assert.equal((await auth(first.id)).body.loggedIn, false);
   await writeFile(path.join(homes, first.id, "fixture-identity"), "first@example.invalid");
   await writeFile(path.join(homes, second.id, "fixture-identity"), "second@example.invalid");
-  await quota(first.id, { primary: 20, weekly: 32 });
+  await quota(first.id, { primary: 20, weekly: 32, extraUsage: "$12.34 / $50.00 spent this month" });
   await quota(second.id, { primary: 30, weekly: 42 });
   const slowStartup = path.join(homes, first.id, "fixture-start-delay");
   await writeFile(slowStartup, "19000");
@@ -216,6 +216,16 @@ globalThis.fetch = async (url, options) => {
   assert.deepEqual((await logs(first.id)).map(({ action }) => action), ["usage"]);
   assert.equal(await session(first.id), null);
   assert.equal(JSON.stringify(live).includes("first@example.invalid"), false);
+  const analytics = (await request("/api/usage-metrics?range=lifetime")).body;
+  const claudeMetrics = analytics.accounts.find(row => row.id === first.id);
+  assert.equal(claudeMetrics.status, "unsupported");
+  assert.equal(claudeMetrics.usage.tokens, null);
+  assert.equal(claudeMetrics.costs.extraUsage.spentMinor, 1234);
+  assert.equal(claudeMetrics.costs.extraUsage.limitMinor, 5000);
+  assert.equal(analytics.totals.reportedExtraUsage[0].spentMinor, 1234);
+  assert.equal(analytics.totals.complete, false);
+  const persistedMetrics = JSON.parse(await readFile(store, "utf8")).accounts.find(row => row.id === first.id).metrics;
+  assert.equal(persistedMetrics.extraUsage.spentMinor, 1234);
 
   const authUnavailable = path.join(homes, first.id, "fixture-auth-unavailable");
   await writeFile(authUnavailable, "");

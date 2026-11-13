@@ -142,7 +142,20 @@
         </details>
       </section>
 
-        <section id="usage" hidden data-view="usage" class="panel usage-history-panel fleet-usage-history" aria-labelledby="usageHistoryTitle">
+        <section id="usage" hidden data-view="usage" class="panel usage-history-panel fleet-usage-history" aria-label="Account usage analytics">
+          <div class="metrics-navigation" role="tablist" aria-label="Usage analytics">
+            <button id="quotaTab" type="button" role="tab" aria-controls="quotaAnalytics" aria-selected="true" data-metrics-tab="quota">Quota &amp; projections</button>
+            <button id="tokensTab" type="button" role="tab" aria-controls="tokenAnalytics" aria-selected="false" tabindex="-1" data-metrics-tab="tokens">Tokens</button>
+            <button id="costsTab" type="button" role="tab" aria-controls="costAnalytics" aria-selected="false" tabindex="-1" data-metrics-tab="costs">Costs</button>
+          </div>
+          <div class="metrics-filters">
+            <label>Provider<select id="metricsProvider"><option value="">All providers</option><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
+            <label>Account<select id="metricsAccount"><option value="">All accounts</option></select></label>
+            <label id="metricsRangeLabel" hidden>Token range<select id="metricsRange"><option value="today">Today</option><option value="7d">7 days</option><option value="30d" selected>30 days</option><option value="90d">90 days</option><option value="lifetime">Lifetime</option></select></label>
+            <p id="metricsFeedback" class="hint" role="status">Loading account metrics…</p>
+          </div>
+          <div id="quotaAnalytics" role="tabpanel" aria-labelledby="quotaTab">
+          <div id="quotaProjections" class="quota-projections"></div>
           <div class="usage-history-head">
             <div>
               <p class="eyebrow">Recorded readings across your accounts</p>
@@ -179,6 +192,51 @@
             <summary>Recent fleet changes</summary>
             <div id="usageHistoryChanges"></div>
           </details>
+          </div>
+          <div id="tokenAnalytics" role="tabpanel" aria-labelledby="tokensTab" hidden>
+            <div id="tokenMetricsSummary" class="metrics-summary"></div>
+            <p class="hint">Account reports include activity outside WindowRelay. Missing days are unknown, not zero. Claude Pro/Max does not provide an account-wide token report.</p>
+            <div class="fleet-history-charts metrics-charts">
+              <div class="fleet-history-chart-group"><h3>Daily reported tokens</h3><div id="tokenDailyChart"></div></div>
+              <div class="fleet-history-chart-group"><h3>Cumulative reported tokens</h3><div id="tokenCumulativeChart"></div></div>
+            </div>
+            <div id="tokenAccounts" class="metrics-table-wrap"></div>
+            <div class="metrics-section-head"><h3>Monthly outlook</h3><p class="hint">If recent usage continues · based on completed provider days</p></div>
+            <div id="tokenOutlook" class="metrics-outlook"></div>
+          </div>
+          <div id="costAnalytics" role="tabpanel" aria-labelledby="costsTab" hidden>
+            <div id="costMetricsSummary" class="metrics-summary"></div>
+            <div id="costAccounts" class="metrics-table-wrap"></div>
+            <details class="console-disclosure"><summary>Subscription fees · user-entered</summary>
+              <form id="billingForm" class="metrics-form">
+                <label>Account<select id="billingAccount" required></select></label>
+                <label>Monthly amount<input id="billingAmount" type="number" min="0" step="0.01" required></label>
+                <label>Currency<select id="billingCurrency"><option>EUR</option><option>USD</option><option>GBP</option></select></label>
+                <label>Billing day<input id="billingDay" type="number" min="1" max="31" value="1" required></label>
+                <label>Effective from<input id="billingEffective" type="date" required></label>
+                <button type="submit">Save fee</button><p id="billingFeedback" class="hint" role="status"></p>
+              </form>
+              <div id="billingHistory"></div>
+            </details>
+            <div class="metrics-section-head"><h3>API-cost scenario calculator</h3><p class="hint">Hypothetical equivalent · separate from account spend and quota</p></div>
+            <form id="costSimulator" class="metrics-form">
+              <label>Token volume<input id="scenarioTokens" type="number" min="0" step="1" required></label>
+              <label>Volume source<select id="scenarioVolume"><option value="manual">Enter tokens</option><option value="reported">Selected reported total</option><option value="outlook">Selected monthly outlook</option></select></label>
+              <label>Model<select id="scenarioModel" required><option value="">Choose model</option></select></label>
+              <label>Output % of total<input id="scenarioOutput" type="number" min="0" max="100" step="0.1" required placeholder="Set assumption"></label>
+              <label>Cache read % of input<input id="scenarioRead" type="number" min="0" max="100" step="0.1" required placeholder="Set assumption"></label>
+              <label>Cache write % of input<input id="scenarioWrite" type="number" min="0" max="100" step="0.1" required placeholder="Set assumption"></label>
+              <label>Cache write TTL<select id="scenarioTTL"><option value="short">Short · 30m OpenAI / 5m Claude</option><option value="long">Long · 12h OpenAI / 1h Claude</option></select></label>
+              <label>Input USD / 1M<input id="rateInput" type="number" min="0" step="any" required></label>
+              <label>Output USD / 1M<input id="rateOutput" type="number" min="0" step="any" required></label>
+              <label>Cache read USD / 1M<input id="rateRead" type="number" min="0" step="any" required></label>
+              <label>Cache write USD / 1M<input id="rateWrite" type="number" min="0" step="any" required></label>
+              <button type="submit">Calculate scenario</button>
+            </form>
+            <p id="scenarioBasis" class="hint">Choose a model and set token-mix assumptions. Rates are editable; custom models use your entered rates.</p>
+            <div id="scenarioResult" class="scenario-result" role="status"></div>
+            <p class="hint">Standard text API pricing, USD. Context-length tiers, tools, tax, regional uplifts and Fast/Batch pricing are excluded. Reasoning is included in output. Token volume here assumes total processed input plus output; account reports do not expose that breakdown.</p>
+          </div>
         </section>
 
       <section id="account" hidden data-view="account" class="panel account-panel account-console" aria-labelledby="accountConsoleTitle">

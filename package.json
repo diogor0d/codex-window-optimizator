@@ -6,7 +6,7 @@
   "description": "A private dashboard for Codex and Claude Code quota windows, persistent conversations, scheduled messages, and alerts.",
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/claude-client.mjs && node --check src/claude-usage.mjs && node --check src/claude-login.mjs && node --check src/claude-worker.mjs && node --check public/app.js && node --check public/service-worker.js",
+    "check": "node --check src/server.mjs && node --check src/usage-metrics.mjs && node --check src/metrics-collector.mjs && node --check src/claude-client.mjs && node --check src/claude-usage.mjs && node --check src/claude-login.mjs && node --check src/claude-worker.mjs && node --check public/app.js && node --check public/usage-metrics.js && node --check public/cost-simulator.js && node --check public/service-worker.js",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "node test/browser/frontend.e2e.mjs"
   },

@@ -1,4 +1,62 @@
 /* Compact, content-first surfaces inspired by GitHub's Primer language. */
+.metrics-navigation { display: flex; gap: 4px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.metrics-navigation button { min-height: 44px; border-color: transparent; background: transparent; }
+.metrics-navigation button[aria-selected="true"] { color: var(--accent); background: var(--panel-sunken); border-color: var(--line); }
+.metrics-filters { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+.metrics-filters label, .metrics-form label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; min-width: 0; }
+.metrics-filters select { min-width: 140px; max-width: 100%; }
+.metrics-filters p { flex: 1; min-width: 160px; margin: 0 0 7px; }
+.metrics-summary { display: grid; grid-template-columns: repeat(auto-fit,minmax(170px,1fr)); gap: 12px; margin: 0 0 22px; }
+.metric-card { padding: 16px; background: var(--panel-sunken); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.metric-card > span { font-size: 12px; color: var(--muted); }
+.metric-card strong { font: 600 23px/1.3 var(--font-data); overflow-wrap: anywhere; }
+.metric-card small, .outlook-card small, .metrics-table small { display: block; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.metrics-charts { margin: 20px 0; }
+.metrics-charts h3 { font-size: 13px; margin: 0 0 12px; }
+.metrics-token-chart, .metrics-forecast-chart { width: 100%; height: auto; display: block; overflow: visible; }
+.metrics-token-chart text, .metrics-forecast-chart text { font: 11px var(--font-data); fill: var(--muted); }
+.metrics-grid { stroke: var(--line); stroke-width: 1; }
+.metrics-cumulative, .metrics-forecast-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.metrics-forecast-line { stroke-dasharray: 5 4; }
+.metrics-dot { fill: var(--accent); }
+.metrics-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.metrics-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.metrics-legend i { width: 9px; height: 9px; border-radius: 2px; }
+.metrics-table-wrap { overflow-x: auto; max-width: 100%; margin: 20px 0; }
+.metrics-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.metrics-table th, .metrics-table td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; min-width: 100px; font-variant-numeric: tabular-nums; }
+.metrics-table th { font-weight: 500; }
+.metrics-status { font-size: 11px; line-height: 1.5; color: var(--muted); }
+.metrics-status[data-status="at-risk"], .metrics-status[data-status="blocked"], .metrics-status[data-status="exhausted"], .metrics-risk { color: var(--bad); }
+.metrics-status[data-status="available"], .metrics-status[data-status="reset-first"] { color: var(--ok); }
+.metrics-section-head { margin: 22px 0 12px; }
+.metrics-section-head h3 { font-size: 14px; margin: 0 0 5px; }
+.metrics-section-head p { margin: 0; }
+.metrics-outlook { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 16px; margin-bottom: 24px; }
+.outlook-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 6px; }
+.outlook-card h4 { margin: 0 0 12px; font-size: 13px; }
+.outlook-card > strong { font: 600 21px var(--font-data); }
+.outlook-card p { font-size: 12px; margin: 8px 0; }
+.outlook-card button { margin-top: 12px; }
+.forecast-window + .forecast-window { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 14px; }
+.forecast-window > strong, .forecast-window > span { display: block; font-size: 12px; margin-bottom: 5px; }
+.metrics-form { display: grid; grid-template-columns: repeat(auto-fit,minmax(170px,1fr)); align-items: end; gap: 14px; margin: 12px 0; }
+.metrics-form input, .metrics-form select { width: 100%; min-width: 0; min-height: 40px; }
+.metrics-form p { grid-column: 1 / -1; margin: 0; }
+.scenario-result:not(:empty) { padding: 16px; background: var(--panel-sunken); margin-top: 16px; border-radius: 6px; overflow-wrap: anywhere; }
+.scenario-result strong { font-size: 20px; font-family: var(--font-data); }
+.scenario-result p { font-size: 12px; }
+.billing-history { font-size: 12px; color: var(--muted); padding-left: 18px; }
+@media (max-width: 600px) {
+  .metrics-filters > label { flex: 1 1 130px; }
+  .metrics-filters select { min-width: 0; width: 100%; }
+  .metrics-outlook { grid-template-columns: minmax(0,1fr); }
+  .metrics-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .metric-card { padding: 12px; }
+  .metric-card strong { font-size: 18px; }
+  .metrics-form { grid-template-columns: minmax(0,1fr); }
+  .metrics-form input, .metrics-form select { font-size: 16px; }
+}
 :root {
   color-scheme: light;
   --bg: #ffffff;

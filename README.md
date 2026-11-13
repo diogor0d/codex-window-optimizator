@@ -137,6 +137,30 @@ The November 8, 2026 pilot on Linux arm64 / Node 22 verified Claude Code `2.1.30
 
 Back up the worker's account volume separately if you want to preserve its credentials and conversations. Treat that backup as a password store. The shared worker socket is an admin interface for the dashboard.
 
+## Account analytics
+
+**Usage** has Quota & projections, Tokens, and Costs views. Provider and account filters apply to the Usage workspace. Collection is independent of scheduled sends and uses the existing services; no device collectors are required.
+
+Codex account totals come from `account/usage/read` without a thread ID, using each account's isolated app-server. They are provider-reported account activity, including work outside WindowRelay, rather than totals of dashboard runs. Reads happen at startup, after sign-in, every ten minutes through the quota refresh loop, and on manual refresh (with a one-minute minimum interval). Concurrent reads are coalesced; failures back off up to an hour. A token-report failure does not clear quota state or send a model request.
+
+The current CLI pin supports this method, but the backend may return null summaries or no daily buckets for an account. Missing values and dates stay unknown. The latest lifetime summary and up to 365 daily buckets are persisted under each account's `metrics` in `store.json`; provider revisions replace matching dates. Lifetime totals can cover more history than the retained daily chart. Daily date labels are preserved, with UTC calendar dates used to select ranges. Today's values can be partial.
+
+Metrics bind to the provider account ID when supplied, otherwise to a digest of the reported sign-in identity. Changed identities archive the previous report separately (up to five archives). Confirmed duplicate backend account IDs count once in fleet totals, using the freshest slot. An email alone does not prove that two workspace scopes are duplicates. Unavailable accounts remain visible in coverage counts, so a partial reported total is never labelled as complete fleet usage.
+
+Claude Pro/Max does not expose a documented account-wide token report through this integration. Its token counters stay **Unavailable**. The existing passive `/usage` reader collects quota and, when explicitly displayed, extra-usage money spent and limits. A balance or an `Unlimited` row without a spend amount is not treated as spending. Amounts with no stated reporting period remain visible per account but are excluded from period totals. No local Claude session tokens or API-cost estimates are substituted for account totals.
+
+Subscription fees are optional, user-entered monthly amounts, with a currency, billing day and effective date. Saving a change retains earlier dated entries; saving the same effective date corrects that entry. Billing days beyond a month's length use its last day. Fee commitments and reported extra usage are separate, currencies are not converted, and cost-per-million comparisons require a fully reported completed billing period with an unchanged fee. Subscription fees can cover products beyond coding, so this comparison is not a billed coding rate.
+
+The API-cost calculator is a separate scenario: choose a model, token volume, input/output mix and cache proportions. Rates are editable and use a dated snapshot of [OpenAI's standard text API pricing](https://developers.openai.com/api/docs/pricing) and [Anthropic's pricing](https://platform.claude.com/docs/en/about-claude/pricing). Tool charges, tax, regional uplifts, context-length tiers and speed discounts/premiums are excluded. Scenarios never contribute to reported spend or quota. Reasoning is already part of output, and cache reads/writes are disjoint portions of input.
+
+Quota projections use raw window percentages independently. Five-hour trends use the latest hour; weekly/Reserve trends use up to 24 hours. Each needs three readings spanning thirty minutes. Unchanged readings get ten-minute heartbeats; replenishment, material reset-time changes and gaps over thirty minutes start a new trend. Claude's minute-level reset jitter is tolerated. Stale readings suppress forecasts, and reported blocks take precedence. Dashed lines end at exhaustion or reset. All projections mean **If recent usage continues**, and do not change scheduling or send alerts.
+
+Codex's monthly outlook needs at least three consecutive completed provider days, using up to seven. With complete month-to-date history it estimates month-end usage; otherwise it shows a 30-day pace scenario. Today's partial bucket is excluded from the daily baseline, while its observed volume remains a minimum in month-end estimates. No Claude tokens are forecast from quota percentages.
+
+`GET /api/usage-metrics` accepts `provider=codex|claude`, `accountId`, and `range=today|7d|30d|90d|lifetime` (default `30d`). It returns account summaries, daily buckets, coverage, costs and projections. `PATCH /api/accounts/:id` accepts a `billing` entry `{ amountMinor, currency, billingDay, effectiveFrom }`. These routes use the existing admin access controls. Metric updates invalidate the display through the existing SSE connection.
+
+Before releasing this feature, back up the existing store and perform passive reads for every signed-in account. Check returned summary/daily availability and reporting lag, then confirm that normal activity from another coding client appears when the provider report updates. Do not generate model requests just to test counters. Automated tests use synthetic reports; they do not establish live provider coverage.
+
 ## Security model
 
 WindowRelay is a **private admin app** with access to your Codex and Claude Code accounts. Do not expose it to the public internet.
@@ -144,6 +168,9 @@ WindowRelay is a **private admin app** with access to your Codex and Claude Code
 - Bind the port to localhost, or to your LAN only if that network is trusted.
 - Put it behind **Cloudflare Tunnel + Cloudflare Access**.
 - Set `ADMIN_EMAILS` so the backend only accepts requests carrying a matching Access-authenticated email header. This is defense in depth — if the app is directly exposed, those headers can be spoofed.
+- State-changing API requests must be same-origin: the backend rejects them when the browser reports another site (`Sec-Fetch-Site`, or a mismatched `Origin`), so a page on another domain cannot drive the console through your Access session. Non-browser clients that send neither header are unaffected.
+- Pages are served with a Content Security Policy that only allows same-origin scripts, plus `nosniff` and frame denial.
+- `GET /api/health` answers without an Access identity so container health checks work when `ADMIN_EMAILS` is set. It returns only `ok` and a timestamp.
 - The app never asks for your ChatGPT password and never displays tokens. Treat the data volume like a password store — **backups contain live credentials; encrypt them**.
 - `codex login status` reports credential *presence*, not validity. The service therefore verifies authentication through live Codex requests and reports rejected or expired credentials as an **auth issue**. Re-login from Accounts; a successful device login restarts that account's app-server so it uses the new credentials.
 
@@ -203,7 +230,8 @@ Bot credentials remain server-side, are removed from Codex subprocess environmen
 # follow service and Codex activity
 docker compose logs -f codex-window-runner
 
-# health check
+# health (the compose file also runs this probe as a container healthcheck)
+docker compose ps codex-window-runner
 docker compose exec codex-window-runner \
   node -e "fetch('http://localhost:8080/api/health').then(r=>r.text()).then(console.log)"
 
@@ -218,6 +246,8 @@ git pull && docker compose up -d --build
 ```
 
 The Codex CLI version is pinned by the `CODEX_PACKAGE_VERSION` build arg, so rebuilds never surprise-upgrade Codex. The current alpha pin is required because the latest stable CLI does not yet expose Reserve usage capabilities. Rollback is `git checkout <ref> && docker compose up -d --build`; the store format migrates forward automatically and old code ignores newer fields.
+
+If `store.json` cannot be parsed at startup, the service keeps it as `store.json.corrupt-<timestamp>` in the data directory and starts with defaults instead of overwriting it. Account credentials stay in their own directories; restore the store from that file or a backup.
 
 The bundled compose binds `127.0.0.1:8787:8080`. To listen on another interface, add a `docker-compose.override.yml` (kept out of git) rather than editing the tracked file.
 
